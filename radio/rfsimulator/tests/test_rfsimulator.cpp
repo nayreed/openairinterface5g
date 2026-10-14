@@ -582,6 +582,324 @@ TEST(RFSimulatorBeamTest, GainMatrixAndScheduledSwitchApplyAtExactSample)
     StopDevice(client_device, client_cfg);
 }
 
+// msgmode passes samples unchanged, which crosstalk between antennas would break.
+TEST(RFSimulatorMsgmodeTest, RefusesMoreThanOneAntenna)
+{
+  const char *argv[] = {"test_rfsimulator_msgmode", "--rfsimulator.serveraddr", "server", "--rfsimulator.options", "msgmode"};
+  configmodule_interface_t *cfg = load_configmodule(sizeofArray(argv), (char **)argv, CONFIG_ENABLECMDLINEONLY);
+  uniqCfg = cfg;
+  openair0_device_t device = {0};
+  openair0_config_t config = {0};
+  config.tx_num_channels = 2;
+  config.rx_num_channels = 2;
+  config.sample_rate = 30.72e6;
+  EXPECT_EQ(device_init(&device, &config), -1);
+  end_configmodule(cfg);
+}
+
+namespace {
+
+// Full-range sample values unique to each client, so a sum of two clients, a clipped value or a
+// misplaced sample never matches either client's pattern.
+c16_t MsgPattern(int client, uint64_t sample_pos)
+{
+  // Knuth's multiplicative hash and the 32-bit golden ratio spread both inputs over all 32 bits
+  const uint32_t kPosMultiplier = 2654435761u;
+  const uint32_t kClientMultiplier = 0x9E3779B9u;
+  const uint32_t v = static_cast<uint32_t>(sample_pos * kPosMultiplier) ^ (static_cast<uint32_t>(client + 1) * kClientMultiplier);
+  return {static_cast<int16_t>(v), static_cast<int16_t>(v >> 16)};
+}
+
+bool BlockMatches(const std::vector<c16_t> &block, int client, uint64_t start_ts)
+{
+  for (size_t i = 0; i < block.size(); i++) {
+    const c16_t want = MsgPattern(client, start_ts + i);
+    if (block[i].r != want.r || block[i].i != want.i)
+      return false;
+  }
+  return true;
+}
+
+} // namespace
+
+// A msgmode server reads each client's block separately and unchanged.
+TEST(RFSimulatorMsgmodeTest, ServerReadsEachClientSeparately)
+{
+  const uint16_t port = PickPort();
+  const int nsamps = 256;
+  const int num_clients = 2;
+  const int advance_blocks = 3;
+  const int settle_reads = 6;
+  const int verify_reads = 6;
+  const std::vector<std::string> msgmode = {"--rfsimulator.options", "msgmode"};
+
+  openair0_device_t server_device = {0};
+  openair0_config_t server_config = {0};
+  configmodule_interface_t *server_cfg =
+      StartDevice(server_device, server_config, "test_rfsimulator_msgmode", "server", port, 1, 1, msgmode);
+  ASSERT_NE(server_device.trx_read_peers_func, nullptr);
+  ASSERT_EQ(server_device.trx_start_func(&server_device), 0);
+
+  openair0_device_t client_device[num_clients] = {};
+  openair0_config_t client_config[num_clients] = {};
+  configmodule_interface_t *client_cfg[num_clients];
+  for (int c = 0; c < num_clients; c++) {
+    client_cfg[c] = StartDevice(client_device[c], client_config[c], "test_rfsimulator_msgmode", "127.0.0.1", port, 1, 1, msgmode);
+    EXPECT_EQ(client_device[c].trx_read_peers_func, nullptr) << "only a server reads peers separately";
+  }
+
+  std::atomic<bool> stop{false};
+  std::atomic<int> clients_done{0};
+  std::vector<std::thread> client_threads;
+  for (int c = 0; c < num_clients; c++) {
+    client_threads.emplace_back([&, c] {
+      openair0_device_t *dev = &client_device[c];
+      if (dev->trx_start_func(dev) == 0) {
+        std::vector<c16_t> rx(nsamps);
+        std::vector<c16_t> tx(nsamps);
+        void *rx_ptr[1] = {rx.data()};
+        void *tx_ptr[1] = {tx.data()};
+        openair0_timestamp_t read_ts;
+        dev->trx_read_func(dev, &read_ts, rx_ptr, nsamps, 1);
+        openair0_timestamp_t next_write_ts = read_ts + static_cast<uint64_t>(advance_blocks) * nsamps;
+        while (!stop.load()) {
+          for (int i = 0; i < nsamps; i++)
+            tx[i] = MsgPattern(c, next_write_ts + i);
+          dev->trx_write_func(dev, next_write_ts, tx_ptr, nsamps, 1, 0);
+          next_write_ts += nsamps;
+          dev->trx_read_func(dev, &read_ts, rx_ptr, nsamps, 1);
+        }
+        for (int b = 0; b < advance_blocks + 2; b++) {
+          for (int i = 0; i < nsamps; i++)
+            tx[i] = MsgPattern(c, next_write_ts + i);
+          dev->trx_write_func(dev, next_write_ts, tx_ptr, nsamps, 1, 0);
+          next_write_ts += nsamps;
+        }
+      }
+      clients_done.fetch_add(1);
+    });
+  }
+
+  std::vector<std::vector<c16_t>> blocks(num_clients + 1, std::vector<c16_t>(nsamps));
+  std::vector<void *> block_ptrs;
+  for (auto &b : blocks)
+    block_ptrs.push_back(b.data());
+  std::vector<c16_t> tx(nsamps);
+  void *tx_ptr[1] = {tx.data()};
+  int remaining_settle = settle_reads;
+  int remaining_verify = verify_reads;
+  bool data_ok = true;
+  std::string details;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  openair0_timestamp_t next_write_ts = 0;
+  while (remaining_verify > 0 && std::chrono::steady_clock::now() < deadline) {
+    server_device.trx_write_func(&server_device, next_write_ts, tx_ptr, nsamps, 1, 0);
+    next_write_ts += nsamps;
+    openair0_timestamp_t read_ts;
+    const int peers = server_device.trx_read_peers_func(&server_device, &read_ts, block_ptrs.data(), nsamps, blocks.size());
+    ASSERT_GE(peers, 0);
+    if (peers < num_clients)
+      continue;
+    ASSERT_EQ(peers, num_clients);
+    if (remaining_settle > 0) {
+      remaining_settle--;
+      continue;
+    }
+    // Each block is exactly one client's, and each client appears once, in any order.
+    std::vector<bool> seen(num_clients, false);
+    for (int p = 0; p < peers; p++) {
+      int found = -1;
+      for (int c = 0; c < num_clients; c++)
+        if (!seen[c] && BlockMatches(blocks[p], c, read_ts))
+          found = c;
+      if (found < 0) {
+        data_ok = false;
+        details += "block " + std::to_string(p) + " at ts " + std::to_string(read_ts) + " matches no client\n";
+      } else {
+        seen[found] = true;
+      }
+    }
+    remaining_verify--;
+  }
+  stop.store(true);
+  for (int b = 0; b < advance_blocks + 2; b++) {
+    server_device.trx_write_func(&server_device, next_write_ts, tx_ptr, nsamps, 1, 0);
+    next_write_ts += nsamps;
+  }
+  EXPECT_LE(std::chrono::steady_clock::now(), deadline) << "server did not read both clients within the time budget";
+  EXPECT_TRUE(data_ok) << details;
+
+  const auto join_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (clients_done.load() < num_clients && std::chrono::steady_clock::now() < join_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  const bool joined = clients_done.load() == num_clients;
+  EXPECT_TRUE(joined) << "clients did not finish within the time budget";
+  for (auto &t : client_threads) {
+    if (joined)
+      t.join();
+    else
+      t.detach();
+  }
+
+  StopDevice(server_device, server_cfg);
+  for (int c = 0; c < num_clients && joined; c++)
+    StopDevice(client_device[c], client_cfg[c]);
+}
+
+// Clients that connect and leave must not take the place of a client still connected. rfsim has
+// a fixed number of connection slots; more short-lived clients than that pass through while one
+// client keeps exchanging data, which must still flow both ways afterwards.
+TEST(RFSimulatorSlotTest, ShortLivedClientsDoNotReplaceAConnectedOne)
+{
+  const uint16_t port = PickPort();
+  const int nsamps = 256;
+  const int advance_blocks = 3;
+  const int verify_reads = 6;
+  // More than rfsim's MAX_FD_RFSIMU (250) connection slots.
+  const int short_lived_clients = 300;
+  // msgmode only for TCP_NODELAY, which keeps each connect fast.
+  const std::vector<std::string> msgmode = {"--rfsimulator.options", "msgmode"};
+
+  openair0_device_t server_device = {0};
+  openair0_config_t server_config = {0};
+  configmodule_interface_t *server_cfg =
+      StartDevice(server_device, server_config, "test_rfsimulator_slots", "server", port, 1, 1, msgmode);
+  ASSERT_EQ(server_device.trx_start_func(&server_device), 0);
+  openair0_device_t client_device = {0};
+  openair0_config_t client_config = {0};
+  configmodule_interface_t *client_cfg =
+      StartDevice(client_device, client_config, "test_rfsimulator_slots", "127.0.0.1", port, 1, 1, msgmode);
+
+  std::atomic<bool> client_connected{false};
+  std::atomic<bool> churn_done{false};
+  std::atomic<bool> client_done{false};
+  bool client_data_ok = true;
+  std::string client_details;
+  std::thread client_thread([&] {
+    if (client_device.trx_start_func(&client_device) != 0) {
+      client_data_ok = false;
+      client_details = "client failed to connect\n";
+      client_done.store(true);
+      return;
+    }
+    client_connected.store(true);
+    std::vector<std::vector<c16_t>> rx(1, std::vector<c16_t>(nsamps));
+    std::vector<std::vector<c16_t>> tx(1, std::vector<c16_t>(nsamps));
+    void *rx_ptr[1] = {rx[0].data()};
+    void *tx_ptr[1] = {tx[0].data()};
+    openair0_timestamp_t read_ts;
+    client_device.trx_read_func(&client_device, &read_ts, rx_ptr, nsamps, 1);
+    openair0_timestamp_t next_write_ts = read_ts + static_cast<uint64_t>(advance_blocks) * nsamps;
+    int remaining_verify = verify_reads;
+    while (remaining_verify > 0) {
+      FillTxBlock(tx, /*sender_is_server=*/false, next_write_ts, 1, nsamps);
+      client_device.trx_write_func(&client_device, next_write_ts, tx_ptr, nsamps, 1, 0);
+      next_write_ts += nsamps;
+      bool churn_was_done = churn_done.load();
+      client_device.trx_read_func(&client_device, &read_ts, rx_ptr, nsamps, 1);
+      if (!churn_was_done)
+        continue;
+      VerifyResult v = VerifyRxBlock(rx, read_ts, 1, 1, /*peer_is_server=*/true);
+      if (!v.ok) {
+        client_data_ok = false;
+        client_details += v.details;
+      }
+      remaining_verify--;
+    }
+    for (int i = 0; i < advance_blocks + 2; i++) {
+      FillTxBlock(tx, /*sender_is_server=*/false, next_write_ts, 1, nsamps);
+      client_device.trx_write_func(&client_device, next_write_ts, tx_ptr, nsamps, 1, 0);
+      next_write_ts += nsamps;
+    }
+    client_done.store(true);
+  });
+
+  // The short-lived clients share one configuration, which device_init() reads each time; it
+  // reads the command line, so argv must outlive it.
+  const std::string port_str = std::to_string(port);
+  const char *churn_argv[] = {"test_rfsimulator_slots",
+                              "--rfsimulator.serveraddr",
+                              "127.0.0.1",
+                              "--rfsimulator.serverport",
+                              port_str.c_str(),
+                              "--rfsimulator.options",
+                              "msgmode"};
+  configmodule_interface_t *churn_cfg = load_configmodule(sizeofArray(churn_argv), (char **)churn_argv, CONFIG_ENABLECMDLINEONLY);
+  std::atomic<bool> server_running{true};
+  bool churn_ok = true;
+  std::thread churn_thread([&] {
+    while (!client_connected.load() && server_running.load())
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    for (int i = 0; i < short_lived_clients && server_running.load(); i++) {
+      openair0_device_t device = {0};
+      openair0_config_t config = {0};
+      config.tx_num_channels = 1;
+      config.rx_num_channels = 1;
+      config.sample_rate = 30.72e6;
+      uniqCfg = churn_cfg;
+      if (device_init(&device, &config) != 0 || device.trx_start_func(&device) != 0) {
+        churn_ok = false;
+        break;
+      }
+      device.trx_end_func(&device);
+    }
+    churn_done.store(true);
+  });
+
+  std::vector<std::vector<c16_t>> rx(1, std::vector<c16_t>(nsamps));
+  std::vector<std::vector<c16_t>> tx(1, std::vector<c16_t>(nsamps));
+  void *rx_ptr[1] = {rx[0].data()};
+  void *tx_ptr[1] = {tx[0].data()};
+  int remaining_verify = verify_reads;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  bool server_data_ok = true;
+  std::string server_details;
+  openair0_timestamp_t next_write_ts = 0;
+  while (remaining_verify > 0 && std::chrono::steady_clock::now() < deadline) {
+    FillTxBlock(tx, /*sender_is_server=*/true, next_write_ts, 1, nsamps);
+    server_device.trx_write_func(&server_device, next_write_ts, tx_ptr, nsamps, 1, 0);
+    next_write_ts += nsamps;
+    bool churn_was_done = churn_done.load();
+    openair0_timestamp_t read_ts;
+    ASSERT_EQ(server_device.trx_read_func(&server_device, &read_ts, rx_ptr, nsamps, 1), nsamps);
+    if (!churn_was_done)
+      continue;
+    VerifyResult v = VerifyRxBlock(rx, read_ts, 1, 1, /*peer_is_server=*/false);
+    if (!v.ok) {
+      server_data_ok = false;
+      server_details += v.details;
+    }
+    remaining_verify--;
+  }
+  server_running.store(false);
+  for (int i = 0; i < advance_blocks + 2; i++) {
+    FillTxBlock(tx, /*sender_is_server=*/true, next_write_ts, 1, nsamps);
+    server_device.trx_write_func(&server_device, next_write_ts, tx_ptr, nsamps, 1, 0);
+    next_write_ts += nsamps;
+  }
+  EXPECT_LE(std::chrono::steady_clock::now(), deadline) << "server stopped receiving from the connected client";
+  EXPECT_TRUE(server_data_ok) << server_details;
+
+  churn_thread.join();
+  EXPECT_TRUE(churn_ok) << "a short-lived client failed to connect";
+  const auto join_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!client_done.load() && std::chrono::steady_clock::now() < join_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  bool joined = client_done.load();
+  EXPECT_TRUE(joined) << "the connected client stopped receiving from the server";
+  if (joined) {
+    client_thread.join();
+    EXPECT_TRUE(client_data_ok) << client_details;
+  } else {
+    client_thread.detach();
+  }
+
+  StopDevice(server_device, server_cfg);
+  if (joined)
+    StopDevice(client_device, client_cfg);
+  end_configmodule(churn_cfg);
+}
+
 int main(int argc, char **argv)
 {
   logInit();

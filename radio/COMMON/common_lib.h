@@ -449,6 +449,17 @@ struct openair0_device {
    */
   int (*trx_read_func2)(openair0_device_t *device, openair0_timestamp_t *ptimestamp, uint32_t **buff, int nsamps);
 
+  /*! \brief Receive one block from each connected peer separately (rfsimulator server in msgmode only).
+   * Waits as trx_read_func does, then copies each peer's samples unchanged instead of adding them up.
+   * \param device the hardware to use
+   * \param[out] ptimestamp the time of the first sample of every block
+   * \param[out] buff max_peers buffers of nsamps samples; buff[i] receives the i-th connected peer's block
+   * \param nsamps number of samples per block
+   * \param max_peers number of buffers in buff
+   * \returns the number of peers read, or -1 if more than max_peers are connected
+   */
+  int (*trx_read_peers_func)(openair0_device_t *device, openair0_timestamp_t *ptimestamp, void **buff, int nsamps, int max_peers);
+
   /*! \brief print the device statistics
    * \param device the hardware to use
    * \returns  0 on success

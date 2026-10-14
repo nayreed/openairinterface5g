@@ -61,6 +61,7 @@ There is some general information in the [OpenAirInterface Gitlab Wiki](https://
 - [How to use the RT data recording app](./data_recording.md)
 - [How to use packages](./packages.md)
 - [How to test F1-based NR-DC](./nr-dc.md)
+- [How to run an Amber Reader and its Tags over the RFsimulator](../openair2/AMBER/README.md)
 
 Legacy unmaintained files:
 - [`L2NFAPI_NOS1.md`](./L2NFAPI_NOS1.md), [`L2NFAPI_S1.md`](./L2NFAPI_S1.md):

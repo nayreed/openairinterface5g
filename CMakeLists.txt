@@ -1972,6 +1972,21 @@ target_link_libraries(nr-uesoftmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
 target_link_libraries(nr-uesoftmodem PRIVATE
                       asn1_lte_rrc asn1_nr_rrc asn1_s1ap asn1_ngap asn1_m2ap asn1_m3ap asn1_x2ap asn1_f1ap asn1_lpp)
 
+# amber-reader and amber-tag run an Amber simulation (Reader on the gNB side, one Tag per UE)
+# over rfsim, with Amber itself in embedded Python
+###########################################################################################
+
+add_boolean_option(ENABLE_AMBER OFF "Build amber-reader and amber-tag (needs Python development files)" OFF)
+if (ENABLE_AMBER)
+  add_executable(amber-reader ${OPENAIR_DIR}/executables/amber-reader.c)
+  target_link_libraries(amber-reader PRIVATE amber_host)
+  add_executable(amber-tag ${OPENAIR_DIR}/executables/amber-tag.c)
+  target_link_libraries(amber-tag PRIVATE amber_host)
+  # librfsimulator.so is loaded at run time
+  add_dependencies(amber-reader rfsimulator)
+  add_dependencies(amber-tag rfsimulator)
+endif()
+
 ###################################"
 # Addexecutables for tests
 ####################################

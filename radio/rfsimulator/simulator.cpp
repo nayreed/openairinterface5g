@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -78,7 +79,8 @@ typedef enum { SIMU_ROLE_SERVER = 1, SIMU_ROLE_CLIENT } simuRole;
 #define RFSIM_CONFIG_HELP_OPTIONS                                                                  \
   " list of comma separated options to enable rf simulator functionalities. Available options: \n" \
   "        chanmod:   enable channel modelisation\n"                                               \
-  "        saviq:     enable saving written iqs to a file\n"
+  "        saviq:     enable saving written iqs to a file\n"                                       \
+  "        msgmode:   carry messages unchanged instead of signals (one antenna, no channel)\n"
 
 #define simOpt PARAMFLAG_CMDLINE_NOPREFIXENABLED
 #define simBool PARAMFLAG_BOOL | PARAMFLAG_CMDLINE_NOPREFIXENABLED
@@ -190,13 +192,13 @@ typedef struct {
   uint16_t port;
   int saveIQfile;
   buffer_t buf[MAX_FD_RFSIMU];
-  int next_buf;
   int rx_num_channels;
   int tx_num_channels;
   double sample_rate;
   double rx_freq;
   double tx_bw;
   int channelmod;
+  bool msgmode;
   double chan_pathloss;
   double chan_forgetfact;
   uint64_t chan_offset;
@@ -313,8 +315,12 @@ static bool flushInput(rfsimulator_state_t *t, int timeout, bool first_time);
 
 static buffer_t *allocCirBuf(rfsimulator_state_t *bridge, int sock)
 {
-  uint64_t buff_index = bridge->next_buf++ % MAX_FD_RFSIMU;
-  buffer_t *ptr = &bridge->buf[buff_index];
+  buffer_t *ptr = std::find_if(bridge->buf, bridge->buf + MAX_FD_RFSIMU, [](const buffer_t &b) { return b.conn_sock == -1; });
+  if (ptr == bridge->buf + MAX_FD_RFSIMU) {
+    LOG_E(HW, "all %d connections are in use, refusing a new one\n", MAX_FD_RFSIMU);
+    close(sock);
+    return NULL;
+  }
   bridge->nb_cnx++;
   ptr->conn_sock = sock;
   ptr->lastReceivedTS = 0;
@@ -327,6 +333,13 @@ static buffer_t *allocCirBuf(rfsimulator_state_t *bridge, int sock)
   int sendbuff = SEND_BUFF_SIZE;
   if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sendbuff, sizeof(sendbuff)) != 0) {
     LOG_E(HW, "setsockopt(SO_SNDBUF) failed\n");
+    return NULL;
+  }
+  // A message exchange sends one block and waits for the answer: without this, every block's
+  // last segment waits for the peer's delayed acknowledgement.
+  const int nodelay = 1;
+  if (bridge->msgmode && setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay)) != 0) {
+    LOG_E(HW, "setsockopt(TCP_NODELAY) failed\n");
     return NULL;
   }
   struct epoll_event ev = {0};
@@ -550,6 +563,8 @@ static void rfsimulator_readconfig(rfsimulator_state_t *rfsimulator)
                        rfsimulator->rx_freq,
                        rfsimulator->tx_bw);
       rfsimulator->channelmod = true;
+    } else if (strcmp(rfsimuParam[p].strlistptr[i], "msgmode") == 0) {
+      rfsimulator->msgmode = true;
     } else {
       fprintf(stderr, "unknown rfsimulator option: %s\n", rfsimuParam[p].strlistptr[i]);
       exit(-1);
@@ -1320,16 +1335,10 @@ static void rfsimulator_read_internal(rfsimulator_state_t *t,
   }
 }
 
-static int rfsimulator_read(openair0_device_t *device, openair0_timestamp_t *ptimestamp, void **samplesVoid, int nsamps, int nbAnt)
+/* Wait until every connected peer has sent its samples up to t->nextRxTstamp + nsamps. Returns
+ * false when no peer is connected and none connected within wait_timeout. */
+static bool wait_for_peers(rfsimulator_state_t *t, int nsamps)
 {
-  rfsimulator_state_t *t = static_cast<rfsimulator_state_t *>(device->priv);
-  LOG_D(HW,
-        "Enter rfsimulator_read, expect %d samples, will release at TS: %ld, nbAnt %d\n",
-        nsamps,
-        t->nextRxTstamp + nsamps,
-        nbAnt);
-
-  // deliver data from received data
   // check if a UE is connected
   int first_sock;
 
@@ -1341,40 +1350,69 @@ static int rfsimulator_read(openair0_device_t *device, openair0_timestamp_t *pti
     // no connected device (we are eNB, no UE is connected)
     if (t->nextRxTstamp == 0)
       LOG_I(HW, "No connected device, generating void samples...\n");
+    return flushInput(t, t->wait_timeout, false);
+  }
 
-    if (!flushInput(t, t->wait_timeout, false)) {
-      for (int x = 0; x < nbAnt; x++)
-        memset(samplesVoid[x], 0, sampleToByte(nsamps, 1));
-
-      t->nextRxTstamp += nsamps;
-
-      if (((t->nextRxTstamp / nsamps) % 100) == 0)
-        LOG_D(HW, "No UE, Generating void samples for Rx: %ld\n", t->nextRxTstamp);
-
-      *ptimestamp = t->nextRxTstamp - nsamps;
-      return nsamps;
+  bool have_to_wait;
+  do {
+    have_to_wait = false;
+    buffer_t *b = NULL;
+    for (int sock = 0; sock < MAX_FD_RFSIMU; sock++) {
+      b = &t->buf[sock];
+      if (b->conn_sock != -1 && (t->nextRxTstamp + nsamps) > b->lastReceivedTS) {
+        have_to_wait = true;
+        break;
+      }
     }
-  } else {
-    bool have_to_wait;
-    do {
-      have_to_wait = false;
-      buffer_t *b = NULL;
-      for (int sock = 0; sock < MAX_FD_RFSIMU; sock++) {
-        b = &t->buf[sock];
-        if (b->conn_sock != -1 && (t->nextRxTstamp + nsamps) > b->lastReceivedTS) {
-          have_to_wait = true;
-          break;
-        }
-      }
 
-      if (have_to_wait) {
-        LOG_D(HW,
-              "Waiting on socket, current last ts: %ld, expected at least : %ld\n",
-              b->lastReceivedTS,
-              t->nextRxTstamp + nsamps);
-        flushInput(t, 3, false);
+    if (have_to_wait) {
+      LOG_D(HW, "Waiting on socket, current last ts: %ld, expected at least : %ld\n", b->lastReceivedTS, t->nextRxTstamp + nsamps);
+      flushInput(t, 3, false);
+    }
+  } while (have_to_wait);
+  return true;
+}
+
+/* Free the received packets that reads from t->nextRxTstamp on no longer need. */
+static void release_read_packets(rfsimulator_state_t *t)
+{
+  for (int sock = 0; sock < MAX_FD_RFSIMU; sock++) {
+    buffer_t *ptr = &t->buf[sock];
+
+    if (ptr->conn_sock != -1 && !ptr->received_packets.empty()) {
+      openair0_timestamp_t timestamp_to_free = t->nextRxTstamp - 1;
+      if (ptr->channel_model) {
+        timestamp_to_free -=
+            (ptr->channel_model->channel_length - 1) + std::max(ptr->channel_model->channel_offset, t->chan_offset);
+      } else {
+        timestamp_to_free -= t->chan_offset;
       }
-    } while (have_to_wait);
+      clear_old_packets(ptr->received_packets, timestamp_to_free);
+    }
+  }
+}
+
+static int rfsimulator_read(openair0_device_t *device, openair0_timestamp_t *ptimestamp, void **samplesVoid, int nsamps, int nbAnt)
+{
+  rfsimulator_state_t *t = static_cast<rfsimulator_state_t *>(device->priv);
+  LOG_D(HW,
+        "Enter rfsimulator_read, expect %d samples, will release at TS: %ld, nbAnt %d\n",
+        nsamps,
+        t->nextRxTstamp + nsamps,
+        nbAnt);
+
+  // deliver data from received data
+  if (!wait_for_peers(t, nsamps)) {
+    for (int x = 0; x < nbAnt; x++)
+      memset(samplesVoid[x], 0, sampleToByte(nsamps, 1));
+
+    t->nextRxTstamp += nsamps;
+
+    if (((t->nextRxTstamp / nsamps) % 100) == 0)
+      LOG_D(HW, "No UE, Generating void samples for Rx: %ld\n", t->nextRxTstamp);
+
+    *ptimestamp = t->nextRxTstamp - nsamps;
+    return nsamps;
   }
 
   struct timespec start_time;
@@ -1431,22 +1469,53 @@ static int rfsimulator_read(openair0_device_t *device, openair0_timestamp_t *pti
   /* trace only first antenna */
   T(T_USRP_RX_ANT0, T_INT(t->nextRxTstamp), T_BUFFER(samplesVoid[0], (int)sampleToByte(nsamps, 1)));
 
-  for (int sock = 0; sock < MAX_FD_RFSIMU; sock++) {
-    buffer_t *ptr = &t->buf[sock];
+  release_read_packets(t);
+  return nsamps;
+}
 
-    if (ptr->conn_sock != -1 && !ptr->received_packets.empty()) {
-      openair0_timestamp_t timestamp_to_free = t->nextRxTstamp - 1;
-      if (ptr->channel_model) {
-        timestamp_to_free -=
-            (ptr->channel_model->channel_length - 1) + std::max(ptr->channel_model->channel_offset, t->chan_offset);
-      } else {
-        timestamp_to_free -= t->chan_offset;
+/* Copy the first antenna's samples that b received for [start, start + nsamps) into out,
+ * unchanged; zeros where b sent nothing. */
+static void copy_peer_block(const buffer_t *b, openair0_timestamp_t start, int nsamps, c16_t *out)
+{
+  memset(out, 0, sampleToByte(nsamps, 1));
+  for (std::queue<rfsim_packet_t *> packets = b->received_packets; !packets.empty(); packets.pop()) {
+    const rfsim_packet_t *pkt = packets.front();
+    const openair0_timestamp_t pkt_start = pkt->header.timestamp;
+    const openair0_timestamp_t begin = std::max(start, pkt_start);
+    const openair0_timestamp_t end = std::min(start + nsamps, pkt_start + pkt->header.size);
+    if (begin >= end)
+      continue;
+    const c16_t *samples = reinterpret_cast<const c16_t *>(&pkt->payload[sizeof(float) * pkt->header.nbAnt]);
+    memcpy(&out[begin - start], &samples[begin - pkt_start], sampleToByte(end - begin, 1));
+  }
+}
+
+/* msgmode server only: read one block per connected client, each exactly as that client wrote it. */
+static int rfsimulator_read_peers(openair0_device_t *device,
+                                  openair0_timestamp_t *ptimestamp,
+                                  void **buff,
+                                  int nsamps,
+                                  int max_peers)
+{
+  rfsimulator_state_t *t = static_cast<rfsimulator_state_t *>(device->priv);
+  int peers = 0;
+  if (wait_for_peers(t, nsamps)) {
+    for (int sock = 0; sock < MAX_FD_RFSIMU; sock++) {
+      const buffer_t *b = &t->buf[sock];
+      if (b->conn_sock == -1)
+        continue;
+      if (peers == max_peers) {
+        LOG_E(HW, "more than %d clients are connected\n", max_peers);
+        return -1;
       }
-      clear_old_packets(ptr->received_packets, timestamp_to_free);
+      copy_peer_block(b, t->nextRxTstamp, nsamps, static_cast<c16_t *>(buff[peers]));
+      peers++;
     }
   }
-
-  return nsamps;
+  *ptimestamp = t->nextRxTstamp;
+  t->nextRxTstamp += nsamps;
+  release_read_packets(t);
+  return peers;
 }
 
 static int rfsimulator_get_stats(openair0_device_t *device)
@@ -1533,6 +1602,12 @@ extern "C" __attribute__((__visibility__("default"))) int device_init(openair0_d
     rfsimulator->prop_delay_ms = rfsimulator->chan_offset * 1000 / rfsimulator->sample_rate;
     LOG_I(HW, "propagation delay %f ms, %lu samples\n", rfsimulator->prop_delay_ms, rfsimulator->chan_offset);
   }
+  if (rfsimulator->msgmode
+      && (rfsimulator->channelmod || rfsimulator->beam_ctrl->enable_beams || rfsimulator->chan_offset != 0
+          || rfsimulator->tx_num_channels != 1 || rfsimulator->rx_num_channels != 1)) {
+    LOG_E(HW, "msgmode passes samples unchanged: it needs one antenna, and no chanmod, beams or propagation delay\n");
+    return -1;
+  }
   mutexinit(rfsimulator->Sockmutex);
   LOG_I(HW,
         "Running as %s\n",
@@ -1547,6 +1622,8 @@ extern "C" __attribute__((__visibility__("default"))) int device_init(openair0_d
   device->trx_set_gains_func = rfsimulator_set_gains;
   device->trx_write_func = rfsimulator_write;
   device->trx_read_func = rfsimulator_read;
+  if (rfsimulator->msgmode && rfsimulator->role == SIMU_ROLE_SERVER)
+    device->trx_read_peers_func = rfsimulator_read_peers;
 
   /* let's pretend to be a b2x0 */
   device->type = RFSIMULATOR;
@@ -1559,7 +1636,6 @@ extern "C" __attribute__((__visibility__("default"))) int device_init(openair0_d
 
   for (int i = 0; i < MAX_FD_RFSIMU; i++)
     rfsimulator->buf[i].conn_sock = -1;
-  rfsimulator->next_buf = 0;
 
   AssertFatal((rfsimulator->epollfd = epoll_create1(0)) != -1, "epoll_create1() failed, errno(%d)", errno);
   // we need to call randominit() for telnet server (use gaussdouble=>uniformrand)

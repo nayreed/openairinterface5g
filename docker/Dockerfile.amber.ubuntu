@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: LicenseRef-CSSL-1.0
+
+#---------------------------------------------------------------------
+#
+# Dockerfile for amber-reader and amber-tag (openair2/AMBER) with Amber
+#   Valid for Ubuntu 24.04
+#
+# One image holds both programs, so a Reader and its Tags always run the
+# same OAI and Amber code. Build from the repository root:
+#   docker build -f docker/Dockerfile.amber.ubuntu -t oai-amber .
+#
+#---------------------------------------------------------------------
+
+ARG UBUNTU_IMAGE=ubuntu:noble
+
+FROM ${UBUNTU_IMAGE} AS amber-build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The Python development files the two programs embed Python with, then OAI's build dependencies
+# from OAI's own installer, as in Dockerfile.base.ubuntu but without radio drivers
+RUN apt-get update && \
+    apt-get install --yes \
+        build-essential \
+        git \
+        python3-dev \
+        python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /oai-ran/cmake_targets/tools
+COPY cmake_targets/tools/build_helper ./
+WORKDIR /oai-ran/cmake_targets
+COPY cmake_targets/build_oai .
+WORKDIR /oai-ran
+COPY oaienv .
+RUN /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    ./build_oai -I && \
+    rm -rf /var/lib/apt/lists/*
+
+# Amber's Python dependencies, at the versions amber.split was tested with
+RUN pip3 install --no-cache-dir --target /opt/oai-amber/python \
+        simpy==4.1.2 \
+        numpy==2.5.3 \
+        pandas==3.0.5 \
+        openpyxl==3.1.5 \
+        matplotlib==3.11.2
+
+ARG AMBER_REPO=https://github.com/nayreed/Amber
+ARG AMBER_REF=554c619
+RUN git clone --quiet ${AMBER_REPO} /opt/amber && \
+    git -C /opt/amber checkout --quiet ${AMBER_REF} && \
+    rm -rf /opt/amber/.git
+
+WORKDIR /oai-ran
+COPY . .
+RUN cmake -B build -GNinja -DENABLE_AMBER=ON && \
+    ninja -C build amber-reader amber-tag rfsimulator
+
+
+FROM ${UBUNTU_IMAGE} AS oai-amber
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/opt/oai-amber/bin:$PATH"
+ENV PYTHONPATH="/opt/amber:/opt/oai-amber/python"
+ENV MPLCONFIGDIR="/opt/oai-amber/matplotlib"
+
+RUN apt-get update && \
+    apt-get install --yes --no-install-recommends \
+        python3 \
+        libpython3.12t64 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=amber-build /opt/oai-amber/python /opt/oai-amber/python
+COPY --from=amber-build /opt/amber /opt/amber
+COPY --from=amber-build /oai-ran/build/librfsimulator.so /usr/local/lib/
+WORKDIR /opt/oai-amber/bin
+COPY --from=amber-build \
+    /oai-ran/build/amber-reader \
+    /oai-ran/build/amber-tag \
+    ./
+COPY docker/scripts/amber_compose.py ./amber-compose
+
+# Fail here rather than at run time if a library is missing. Importing matplotlib.pyplot, as
+# Amber's propagation module does, builds matplotlib's font cache once, so that containers do not
+# each build it.
+RUN ldconfig && \
+    echo "---- ldd on amber-reader, amber-tag and librfsimulator.so ----" && \
+    ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so && \
+    ! ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so | grep "not found" && \
+    python3 -c "import amber.split.session, matplotlib.pyplot"
+
+WORKDIR /opt/oai-amber
+# The image amber-compose names in the compose files it writes
+ARG OAI_AMBER_IMAGE=oai-amber:latest
+ENV OAI_AMBER_IMAGE=${OAI_AMBER_IMAGE}
