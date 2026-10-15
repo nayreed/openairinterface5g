@@ -32,7 +32,8 @@ jobs:
 
       - name: Validate AMBER campaign tooling
         run: |
-          bash -n docker/scripts/amber_campaign.sh docker/scripts/amber_check_image.sh
+          bash -n docker/scripts/amber_campaign.sh
+          bash -n docker/scripts/amber_check_image.sh
           python3 -m py_compile docker/scripts/amber_compose.py
 
       - name: Build
