@@ -24,11 +24,16 @@
 #   --scenario-format py|toml             legacy Python demos or seeded TOML scenarios (default py)
 #   --demos "NAMES"                       scenario names; TOML mode also supports registration and adaptive_aloha
 #   --seeds "N ..."                       run seeds; each run sets the scenario's SEED to one of them
+#   --tags "N ..."                        TOML only: run each demo with N Tags, for each N in turn (at most 250).
+#                                         The demo's Tag groups keep their share of the Tags; a group placed
+#                                         by positions is placed on a ring 5 to 100 m around (0, 0) instead,
+#                                         with layout seed 7 for the first group, 8 for the second, ...
 #   --allocation ID                       the POS allocation both nodes must be in
 #   --pos-user USER                       allocation owner to require (default: id -un)
-#   --hello-timeout S                     seconds for every Tag to connect (default 120)
-#   --sim-timeout DEMO=S                  seconds for a demo's simulation (repeatable); a demo without
-#                                         one gets --calibration-ceiling and its time is reported
+#   --hello-timeout S                     seconds for every Tag to connect (default 120, or 2 s per Tag if more)
+#   --sim-timeout DEMO=S                  seconds for a demo's simulation (repeatable), or DEMO-nTAGS=S for
+#                                         one Tag count; a demo without one gets --calibration-ceiling and
+#                                         its time is reported
 #   --calibration-ceiling S               default 1800
 #   --stall-seconds S                     fail a run when the Reader uses no CPU for S seconds (default 60)
 #   --out DIR                             campaign directory here (default ./amber-campaigns/CAMPAIGN)
@@ -73,8 +78,8 @@ elapsed() {
 
 reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src="" scenario_ref="" scenario_format=py
 library_ref=0bc99f13a55f27b5c16983b23b0e02017e9578af
-demos="broadcast broadcast_sic unicast custom_protocol" seeds="" allocation="" pos_user=$(id -un)
-hello_timeout=120 calibration_ceiling=1800 stall_seconds=60 out="" campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
+demos="broadcast broadcast_sic unicast custom_protocol" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
+hello_timeout="" calibration_ceiling=1800 stall_seconds=60 out="" campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
 pos_results_root=/srv/testbed/results docker=docker skip_tags="" dry_run=0 keep_going=0
 declare -A sim_timeout=()
 ssh_cmd=${AMBER_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10}
@@ -92,12 +97,13 @@ while [ $# -gt 0 ]; do
     --scenario-format) scenario_format=$2; shift 2 ;;
     --demos) demos=$2; shift 2 ;;
     --seeds) seeds=$2; shift 2 ;;
+    --tags) tag_counts=$2; shift 2 ;;
     --allocation) allocation=$2; shift 2 ;;
     --pos-user) pos_user=$2; shift 2 ;;
     --hello-timeout) hello_timeout=$2; shift 2 ;;
     --sim-timeout)
-      [[ $2 =~ ^([a-z_]+)=([0-9]+)$ ]] || die "--sim-timeout takes DEMO=SECONDS, got $2"
-      sim_timeout[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+      [[ $2 =~ ^([a-z_]+(-n[0-9]+)?)=([0-9]+)$ ]] || die "--sim-timeout takes DEMO=SECONDS or DEMO-nTAGS=SECONDS, got $2"
+      sim_timeout[${BASH_REMATCH[1]}]=${BASH_REMATCH[3]}
       shift 2 ;;
     --calibration-ceiling) calibration_ceiling=$2; shift 2 ;;
     --stall-seconds) stall_seconds=$2; shift 2 ;;
@@ -118,15 +124,19 @@ for v in reader_node tag_node reader_addr image amber_src allocation seeds; do
 done
 [[ $campaign =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "campaign name $campaign: use letters, digits, _ . -"
 [[ $image =~ @sha256:[0-9a-f]{64}$ ]] || die "--image must name a digest (IMAGE@sha256:...), not a tag such as latest"
-for n in $port $hello_timeout $calibration_ceiling $stall_seconds $seeds $skip_tags; do
+for n in $port ${hello_timeout:-0} $calibration_ceiling $stall_seconds $seeds $skip_tags $tag_counts; do
   [[ $n =~ ^[0-9]+$ ]] || die "expected a non-negative integer, got $n"
+done
+for n in $tag_counts; do
+  if [ "$n" -lt 1 ] || [ "$n" -gt 250 ]; then die "--tags: $n is not between 1 and 250, the Tags an rfsim server accepts"; fi
 done
 for d in $demos; do
   [[ $d =~ ^[a-z_]+$ ]] || die "demo name $d"
 done
 case "$scenario_format" in py|toml) ;; *) die "--scenario-format must be py or toml" ;; esac
+[ -z "$tag_counts" ] || [ "$scenario_format" = toml ] || die "--tags needs --scenario-format toml"
 for d in "${!sim_timeout[@]}"; do
-  [[ " $demos " == *" $d "* ]] || die "--sim-timeout for $d, which is not in --demos"
+  [[ " $demos " == *" ${d%-n*} "* ]] || die "--sim-timeout for $d, which is not in --demos"
 done
 [ "$reader_node" != "$tag_node" ] || die "the Reader and the Tags must run on different nodes"
 out=${out:-./amber-campaigns/$campaign}
@@ -271,9 +281,9 @@ print(json.dumps({"SEED": getattr(s, "SEED", None), "LAYOUT_SEED": getattr(s, "L
                   "layout": [[b.node.id, b.node.x, b.node.y] for b in bsms]}))
 '
 
-# Writes the scenario files of one run into $1/scen, with SEED set to $3.
+# Writes the scenario files of one run into $1/scen, with SEED set to $3 and, if $4 is given, $4 Tags.
 make_scenario() {
-  local dir=$1 demo=$2 seed=$3 file rel
+  local dir=$1 demo=$2 seed=$3 ntags=${4:-} file rel
   mkdir -p "$dir/scen"
   if [[ "$scenario_format" == py ]]; then
     git -C "$amber_src" archive "$scenario_sha" demo_experiments/split tests/split/scenarios/demo_common.py |
@@ -288,12 +298,13 @@ make_scenario() {
     rel=$(scenario_rel_path "$demo")
     file=$dir/scen/$rel
     [ -f "$file" ] || die "Amber $scenario_sha has no $rel"
-    python3 - "$file" "$seed" <<'PY'
+    python3 - "$file" "$seed" "$ntags" <<'PY'
 from pathlib import Path
 import re
 import sys
 path = Path(sys.argv[1])
 seed = int(sys.argv[2])
+ntags = int(sys.argv[3]) if sys.argv[3] else None
 lines = path.read_text().splitlines()
 start = next((i for i, line in enumerate(lines) if line.strip() == "[run]"), None)
 if start is None:
@@ -307,6 +318,38 @@ else:
     if sim_line is None:
         raise SystemExit(f"{path}: [run] has no sim_time_ms")
     lines.insert(sim_line + 1, f"seed = {seed}")
+if ntags is not None:
+    # The [[tag_group]] tables are last; replace them with the same groups holding ntags Tags in all.
+    import tomllib
+    data = tomllib.loads("\n".join(lines))
+    groups = data.get("tag_group", [])
+    first = next((i for i, line in enumerate(lines) if line.strip() == "[[tag_group]]"), None)
+    if first is None or not groups:
+        raise SystemExit(f"{path}: no [[tag_group]]")
+    sizes = []
+    for g in groups:
+        extra = set(g) - {"energy_mode", "positions", "count", "layout"}
+        if extra:
+            raise SystemExit(f"{path}: --tags cannot rescale a Tag group with {', '.join(sorted(extra))}")
+        sizes.append(len(g["positions"]) if "positions" in g else g["count"])
+    # Largest remainder, so the counts add up to ntags; the earlier group wins a tie.
+    exact = [ntags * n / sum(sizes) for n in sizes]
+    counts = [int(x) for x in exact]
+    for i in sorted(range(len(groups)), key=lambda i: counts[i] - exact[i])[:ntags - sum(counts)]:
+        counts[i] += 1
+    out = lines[:first]
+    for i, (g, n) in enumerate(zip(groups, counts)):
+        if n == 0:
+            continue
+        layout = g.get("layout", {"kind": "ring", "r_min": 5.0, "r_max": 100.0, "seed": 7 + i})
+        if "seed" not in layout:
+            raise SystemExit(f"{path}: Tag group {i} has a layout without a seed")
+        fields = ", ".join(f"{k} = {v!r}" if not isinstance(v, str) else f'{k} = "{v}"' for k, v in layout.items())
+        out += ["[[tag_group]]", f'energy_mode = "{g["energy_mode"]}"', f"count = {n}", f"layout = {{ {fields} }}", ""]
+    rescaled = tomllib.loads("\n".join(out))
+    if {k: v for k, v in rescaled.items() if k != "tag_group"} != {k: v for k, v in data.items() if k != "tag_group"}:
+        raise SystemExit(f"{path}: tables after the first [[tag_group]] other than Tag groups")
+    lines = out
 path.write_text("\n".join(lines) + "\n")
 PY
   fi
@@ -322,15 +365,24 @@ fail() {
   run_status=FAIL run_reason=$1 run_detail=${2:-}
 }
 
-# Prints "ID STATE EXITCODE CONNECTED" for each Tag container.
+# Prints "ID STATE EXITCODE" for each Tag container, from one docker inspect; a container that does not
+# exist is "missing -1".
 tag_states() {
-  local cmd="" id
-  for id in "${tag_ids[@]}"; do
-    cmd+="s=\$($docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' $run_name-tag$id 2>/dev/null || echo missing -1);"
-    cmd+="c=0; $docker logs $run_name-tag$id 2>&1 | grep -qF $(q "Connection to $reader_addr:$port established") && c=1;"
-    cmd+="echo $id \$s \$c;"
-  done
-  on "$tag_node" "$cmd"
+  local names=() id
+  for id in "${tag_ids[@]}"; do names+=("$run_name-tag$id"); done
+  on "$tag_node" "$docker inspect --format '{{.Name}} {{.State.Status}} {{.State.ExitCode}}' ${names[*]} 2> /dev/null; true" |
+    awk -v prefix="/$run_name-tag" -v ids="${tag_ids[*]}" '
+      index($1, prefix) == 1 { state[substr($1, length(prefix) + 1)] = $2 " " $3 }
+      END { n = split(ids, id, " "); for (i = 1; i <= n; i++) print id[i], (id[i] in state ? state[id[i]] : "missing -1") }'
+}
+
+# Prints those of the Tag ids given that have connected to the Reader, 16 at a time.
+tags_connected() {
+  [ $# -gt 0 ] || return 0
+  on "$tag_node" "n=0; for id in $*; do
+      { $docker logs $run_name-tag\$id 2>&1 | grep -qF $(q "Connection to $reader_addr:$port established") && echo \$id; } &
+      n=\$((n + 1)); [ \$((n % 16)) != 0 ] || wait;
+    done; wait"
 }
 
 reader_state() {
@@ -363,23 +415,43 @@ run_containers() {
     sleep 1
   done
 
-  t0=$(now)
+  # All Tags from one shell on the node, 16 docker run at a time; one that fails to start shows as missing.
+  local starts="n=0" started_ids=()
   for id in "${tag_ids[@]}"; do
     if [[ " $skip_tags " == *" $id "* ]]; then
       log "not starting Tag $id (--skip-tags)"
       continue
     fi
-    on "$tag_node" "$docker run -d --name $run_name-tag$id --network host --init \
-      -v $(q "$tag_dir/scen"):/scenarios:ro -v $(q "$tag_dir/out"):/out $(q "$image") \
-      amber-tag --rfsimulator.serveraddr $(q "$reader_addr") --amber.node_id $id $common" > /dev/null
+    started_ids+=("$id")
+    starts+="
+$docker run -d --name $run_name-tag$id --network host --init \
+  -v $(q "$tag_dir/scen"):/scenarios:ro -v $(q "$tag_dir/out"):/out $(q "$image") \
+  amber-tag --rfsimulator.serveraddr $(q "$reader_addr") --amber.node_id $id $common > /dev/null &
+n=\$((n + 1)); [ \$((n % 16)) != 0 ] || wait"
   done
+  t0=$(now)
+  on "$tag_node" "$starts
+wait"
+  log "started ${#started_ids[@]} Tags in $(elapsed "$t0" "$(now)") s"
 
   # Hello: every Tag connected, before the simulation deadline starts.
-  local connected missing exited
+  local wait_hello=${hello_timeout:-$((${#tag_ids[@]} * 2 > 120 ? ${#tag_ids[@]} * 2 : 120))}
+  t0=$(now)
+  local missing exited
+  declare -A is_connected=()
   while true; do
-    connected=() missing=() exited=()
-    while read -r id status code line; do
-      if [ "$line" = 1 ]; then connected+=("$id"); else missing+=("$id"); fi
+    missing=() exited=()
+    for id in "${tag_ids[@]}"; do
+      [ -n "${is_connected[$id]:-}" ] || missing+=("$id")
+    done
+    while read -r id; do
+      is_connected[$id]=1
+    done < <(tags_connected "${missing[@]}")
+    missing=()
+    for id in "${tag_ids[@]}"; do
+      [ -n "${is_connected[$id]:-}" ] || missing+=("$id")
+    done
+    while read -r id status code _; do
       case $status in running|created|missing) ;; *) exited+=("$id:$status:$code") ;; esac
     done < <(tag_states)
     read -r status code <<< "$(reader_state)"
@@ -394,16 +466,16 @@ run_containers() {
       return
     fi
     [ ${#missing[@]} -gt 0 ] || break
-    if [ "$(elapsed "$t0" "$(now)" | cut -d. -f1)" -ge "$hello_timeout" ]; then
+    if [ "$(elapsed "$t0" "$(now)" | cut -d. -f1)" -ge "$wait_hello" ]; then
       missing_ids="${missing[*]}"
-      fail hello_timeout "${#connected[@]} of ${#tag_ids[@]} Tags connected in $hello_timeout s; missing node ids: ${missing[*]}"
+      fail hello_timeout "${#is_connected[@]} of ${#tag_ids[@]} Tags connected in $wait_hello s; missing node ids: ${missing[*]}"
       log "hello timeout, missing node ids: ${missing[*]}"
       return
     fi
     sleep 2
   done
   t_hello=$(elapsed "$t0" "$(now)")
-  log "all ${#tag_ids[@]} Tags connected (${connected[*]}) in $t_hello s; simulation deadline $deadline s"
+  log "all ${#tag_ids[@]} Tags connected in $t_hello s; simulation deadline $deadline s"
 
   # Simulation: until the Reader ends; fail on a Tag ending first, the deadline, or a stall.
   t0=$(now)
@@ -467,13 +539,11 @@ run_containers() {
 
 # Keeps the log and state of the run's containers on a node whose names match $3, then removes them.
 collect_containers() {
-  local node=$1 dir=$2 names name
-  names=$(on "$node" "$docker ps -a --format '{{.Names}}' --filter $(q "name=$3")")
-  on "$node" "mkdir -p $(q "$dir/logs")"
-  for name in $names; do
-    on "$node" "$docker logs $name > $(q "$dir/logs/$name.log") 2>&1; \
-      $docker inspect $name > $(q "$dir/logs/$name.inspect.json"); $docker rm -f $name > /dev/null"
-  done
+  local node=$1 dir=$2
+  on "$node" "mkdir -p $(q "$dir/logs") && cd $(q "$dir/logs") &&
+    for name in \$($docker ps -a --format '{{.Names}}' --filter $(q "name=$3")); do
+      $docker logs \$name > \$name.log 2>&1; $docker inspect \$name > \$name.inspect.json; $docker rm -f \$name > /dev/null
+    done"
 }
 
 # Compares the run's logs with the reference and sets PASS or CHECK.
@@ -510,7 +580,7 @@ $(comm -3 <(echo "$ref_files") <(echo "$split_files") | tr -d '\t' | tr '\n' ' '
 finish_run() {
   local run_dir=$1
   jq -n \
-    --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" \
+    --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" --arg ntags "$ntags" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
     --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg scenario_format "$scenario_format" \
@@ -522,6 +592,7 @@ finish_run() {
     --arg t_scenario "$t_scenario" --arg t_reference "$t_reference" --arg t_hello "$t_hello" --arg t_sim "$t_sim" \
     --arg t_collect "$t_collect" --arg t_run "$(elapsed "$run_t0" "$(now)")" \
     '{campaign: $campaign, run: $run, demo: $demo, seed: $seed, attempt: $attempt,
+      tags_option: (if $ntags == "" then null else ($ntags | tonumber) end),
       status: $status, reason: $reason, detail: $detail,
       missing_node_ids: ($missing | split(" ") | map(select(. != "") | tonumber)),
       scenario: $scenario, scenario_format: $scenario_format,
@@ -558,16 +629,16 @@ do_run() {
   run_t0=$(now)
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   attempt=1
-  while [ -e "$out/runs/$demo-s$seed-a$attempt" ]; do attempt=$((attempt + 1)); done
-  run_name=amb-$campaign-$demo-s$seed-a$attempt
-  run_dir=$out/runs/$demo-s$seed-a$attempt
+  while [ -e "$out/runs/$label-s$seed-a$attempt" ]; do attempt=$((attempt + 1)); done
+  run_name=amb-$campaign-$label-s$seed-a$attempt
+  run_dir=$out/runs/$label-s$seed-a$attempt
   mkdir -p "$run_dir"
   run_status="" run_reason="" missing_ids="" run_detail="" t_hello="" t_sim="" t_reference="" t_collect=""
   log "run $run_name"
 
   local t0
   t0=$(now)
-  make_scenario "$run_dir" "$demo" "$seed"
+  make_scenario "$run_dir" "$demo" "$seed" "$ntags"
   scen_rel=$(scenario_rel_path "$demo")
   scen_path="/scenarios/$scen_rel"
   reader_dir=$reader_home/amber-campaign/$campaign/${run_dir##*/}
@@ -578,21 +649,23 @@ do_run() {
   on "$tag_node" "mkdir -p $(q "$tag_dir/out")"
   scenario_json=$(on "$reader_node" "$docker run --rm --name $run_name-inspect -v $(q "$reader_dir/scen"):/scenarios:ro \
     $(q "$image") python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1)
-  jq -e --argjson seed "$seed" '.SEED == $seed and (.NODE_IDS | length > 0) and
-      (.NODE_IDS | all(type == "number" and . >= 0 and floor == .)) and (.NODE_IDS | unique | length) == (.NODE_IDS | length)' \
-    <<< "$scenario_json" > /dev/null || die "scenario $demo seed $seed: $scenario_json"
+  jq -e --argjson seed "$seed" --arg n "$ntags" '.SEED == $seed and (.NODE_IDS | length > 0) and
+      (.NODE_IDS | all(type == "number" and . >= 0 and floor == .)) and (.NODE_IDS | unique | length) == (.NODE_IDS | length)
+      and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' \
+    <<< "$scenario_json" > /dev/null || die "scenario $label seed $seed: $scenario_json"
   printf '%s\n' "$scenario_json" > "$run_dir/scenario.json"
   mapfile -t tag_ids < <(jq -r '.NODE_IDS[]' <<< "$scenario_json")
   # Only SEED may change between runs of a demo: where the nodes stand must not.
   local layout
   layout=$(jq -c '{LAYOUT_SEED, layout}' <<< "$scenario_json")
-  if [ -z "${demo_layout[$demo]:-}" ]; then
-    demo_layout[$demo]=$layout
-  elif [ "${demo_layout[$demo]}" != "$layout" ]; then
-    die "$demo seed $seed moved the nodes: the layout must not depend on SEED (see $run_dir/scenario.json)"
+  if [ -z "${demo_layout[$label]:-}" ]; then
+    demo_layout[$label]=$layout
+  elif [ "${demo_layout[$label]}" != "$layout" ]; then
+    die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $run_dir/scenario.json)"
   fi
   t_scenario=$(elapsed "$t0" "$(now)")
-  log "$demo seed $seed: ${#tag_ids[@]} Tags (${tag_ids[*]}), SIM_TIME_MS $(jq .SIM_TIME_MS <<< "$scenario_json")"
+  log "$label seed $seed: ${#tag_ids[@]} Tags (${tag_ids[0]} to ${tag_ids[-1]}), SIM_TIME_MS \
+$(jq .SIM_TIME_MS <<< "$scenario_json")"
 
   t0=$(now)
   on "$reader_node" "$docker run --rm --name $run_name-ref -v $(q "$reader_dir/scen"):/scenarios:ro \
@@ -602,7 +675,7 @@ do_run() {
 
   t_reference=$(elapsed "$t0" "$(now)")
 
-  deadline=${sim_timeout[$demo]:-$calibration_ceiling}
+  deadline=${sim_timeout[$label]:-${sim_timeout[$demo]:-$calibration_ceiling}}
   on "$reader_node" "! ss -Htln 'sport = :$port' | grep -q ." || die "port $port is already in use on $reader_node"
   run_containers "$reader_dir" "$tag_dir" "$deadline"
 
@@ -625,7 +698,7 @@ do_run() {
   finish_run "$run_dir"
   log "$run_name: $run_status ($run_reason) $run_detail"
   counts[$run_status]=$((counts[$run_status] + 1))
-  echo "$run_name $demo $run_status $run_reason ${t_sim:-0}" >> "$out/runs.txt"
+  echo "$run_name $label $run_status $run_reason ${t_sim:-0}" >> "$out/runs.txt"
   upload "$run_dir" "$campaign/runs/${run_dir##*/}"
 }
 
@@ -639,39 +712,54 @@ printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
 preflight
 declare -A counts=([PASS]=0 [CHECK]=0 [FAIL]=0) demo_layout=()
 scenario_json="" t_scenario="" t_reference="" t_hello="" t_sim="" t_collect="" started="" deadline=0 attempt=0 run_t0=0
+ntags="" label=""
+
+# A run's label: the demo, and the Tag count when --tags sets it.
+ntags_list=${tag_counts:-default}
+set_label() {
+  if [ "$1" = default ]; then ntags="" label=$demo; else ntags=$1 label=$demo-n$1; fi
+}
 
 if [ "$dry_run" = 1 ]; then
+  for n in $ntags_list; do
   for demo in $demos; do
+    set_label "$n"
     for seed in $seeds; do
-      dir=$out/dry-run/$demo-s$seed
+      dir=$out/dry-run/$label-s$seed
       mkdir -p "$dir"
-      make_scenario "$dir" "$demo" "$seed"
-      remote=$reader_home/amber-campaign/$campaign/dry-run/$demo-s$seed
+      make_scenario "$dir" "$demo" "$seed" "$ntags"
+      remote=$reader_home/amber-campaign/$campaign/dry-run/$label-s$seed
       put_dir "$reader_node" "$dir/scen" "$remote/scen"
       scen_rel=$(scenario_rel_path "$demo")
       scen_path="/scenarios/$scen_rel"
       on "$reader_node" "$docker run --rm -v $(q "$remote/scen"):/scenarios:ro $(q "$image") \
         python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1 > "$dir/scenario.json"
-      jq -e --argjson seed "$seed" '.SEED == $seed and (.NODE_IDS | length > 0)' "$dir/scenario.json" > /dev/null ||
-        die "scenario $demo seed $seed: $(cat "$dir/scenario.json")"
+      jq -e --argjson seed "$seed" --arg n "$ntags" '.SEED == $seed and (.NODE_IDS | length > 0)
+          and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' "$dir/scenario.json" > /dev/null ||
+        die "scenario $label seed $seed: $(cat "$dir/scenario.json")"
       layout=$(jq -c '{LAYOUT_SEED, layout}' "$dir/scenario.json")
-      [ -z "${demo_layout[$demo]:-}" ] || [ "${demo_layout[$demo]}" = "$layout" ] ||
-        die "$demo seed $seed moved the nodes: the layout must not depend on SEED (see $dir/scenario.json)"
-      demo_layout[$demo]=$layout
-      log "dry run: $demo seed $seed: $(jq -c '{SEED, LAYOUT_SEED, SIM_TIME_MS, NODE_IDS}' "$dir/scenario.json")"
+      [ -z "${demo_layout[$label]:-}" ] || [ "${demo_layout[$label]}" = "$layout" ] ||
+        die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $dir/scenario.json)"
+      demo_layout[$label]=$layout
+      log "dry run: $label seed $seed: $(jq -c '{SEED, LAYOUT_SEED, SIM_TIME_MS, tags: (.NODE_IDS | length)}' \
+        "$dir/scenario.json")"
     done
+  done
   done
   log "dry run passed; no container was started for a run and nothing was uploaded"
   exit 0
 fi
 
-for demo in $demos; do
-  for seed in $seeds; do
-    do_run
-    if [ "$run_status" != PASS ] && [ "$keep_going" = 0 ]; then
-      log "stopping after $run_name ($run_status: $run_reason); --keep-going runs the rest anyway"
-      break 2
-    fi
+for n in $ntags_list; do
+  for demo in $demos; do
+    set_label "$n"
+    for seed in $seeds; do
+      do_run
+      if [ "$run_status" != PASS ] && [ "$keep_going" = 0 ]; then
+        log "stopping after $run_name ($run_status: $run_reason); --keep-going runs the rest anyway"
+        break 3
+      fi
+    done
   done
 done
 
