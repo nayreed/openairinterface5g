@@ -1,12 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 #
-# Run an Amber scenario from an oai-amber image with docker compose, as one amber-reader and one
-# amber-tag per node, and check that its CSV logs equal those of the scenario run in one process.
+# Run a Python or TOML Amber scenario as one Reader and one Tag per node, then compare
+# the split logs byte-for-byte with amber.split.reference from the same image.
 #
 #   amber_check_image.sh IMAGE [SCENARIO]
 #
-# SCENARIO is a path inside the image; by default Amber's 4-node registration scenario.
+# TOML scenarios are copied into a temporary, path-preserving tree and get a fixed run.seed
+# (12345). Any relative energy trace is copied next to that tree at the same relative path.
+# This tests the embedded Amber source without changing the image or repository.
 
 set -euo pipefail
 
@@ -18,20 +20,85 @@ image=$1
 scenario=${2:-/opt/amber/tests/split/scenarios/registration.py}
 work=$(mktemp -d)
 compose=(docker compose -f "$work/compose.yaml")
+scenario_for_compose=$scenario
+scenario_volume=()
 
 cleanup() {
   "${compose[@]}" down --remove-orphans > /dev/null 2>&1 || true
-  # The containers write as root: remove their files from a container too.
+  # The containers write as root: remove generated data using the same image.
   docker run --rm -v "$work:/work" "$image" rm -rf /work/out /work/ref || true
   rm -rf "$work"
 }
 trap cleanup EXIT
 
-docker run --rm "$image" amber-compose --image "$image" "$scenario" > "$work/compose.yaml"
-# Returns once every container has stopped.
+if [[ "$scenario" == *.toml ]]; then
+  case "$scenario" in
+    /opt/amber/*) scenario_rel=${scenario#/opt/amber/} ;;
+    *) echo "TOML scenario must be under /opt/amber: $scenario" >&2; exit 2 ;;
+  esac
+  mkdir -p "$work/scenarios"
+  docker run --rm -i -v "$work/scenarios:/scenario-stage" "$image" \
+    python3 - "$scenario" "$scenario_rel" 12345 <<'PY'
+from pathlib import Path
+import re
+import shutil
+import sys
+import tomllib
+
+source = Path(sys.argv[1]).resolve()
+relative = Path(sys.argv[2])
+seed = int(sys.argv[3])
+source_root = Path("/opt/amber").resolve()
+stage_root = Path("/scenario-stage").resolve()
+source.relative_to(source_root)
+destination = stage_root / relative
+destination.parent.mkdir(parents=True, exist_ok=True)
+raw = source.read_text()
+data = tomllib.loads(raw)
+
+lines = raw.splitlines()
+run_start = next((i for i, line in enumerate(lines) if line.strip() == "[run]"), None)
+if run_start is None:
+    raise SystemExit(f"{source}: missing [run] table")
+run_end = next((i for i in range(run_start + 1, len(lines))
+                if re.match(r"^\s*\[", lines[i])), len(lines))
+seed_line = next((i for i in range(run_start + 1, run_end)
+                  if re.match(r"^\s*seed\s*=", lines[i])), None)
+if seed_line is not None:
+    lines[seed_line] = re.sub(r"^(\s*seed\s*=\s*).*$",
+                              lambda match: match.group(1) + str(seed), lines[seed_line])
+else:
+    sim_line = next((i for i in range(run_start + 1, run_end)
+                     if re.match(r"^\s*sim_time_ms\s*=", lines[i])), None)
+    if sim_line is None:
+        raise SystemExit(f"{source}: [run] has no sim_time_ms to anchor seed insertion")
+    lines.insert(sim_line + 1, f"seed = {seed}")
+
+destination.write_text("\n".join(lines) + "\n")
+
+trace = data.get("energy", {}).get("trace")
+if trace:
+    asset = (source.parent / trace).resolve()
+    asset.relative_to(source_root)
+    staged_asset = (destination.parent / trace).resolve()
+    staged_asset.relative_to(stage_root)
+    staged_asset.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(asset, staged_asset)
+
+print(f"Prepared seeded TOML scenario: {destination} (seed={seed})")
+PY
+  scenario_for_compose="/scenarios/$scenario_rel"
+  scenario_volume=(-v "$work/scenarios:/scenarios:ro")
+fi
+
+docker run --rm "${scenario_volume[@]}" "$image" \
+  amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
+
+# Compose waits until the Reader and all Tags have stopped.
 "${compose[@]}" up
+
 failed=0
-for id in $("${compose[@]}" ps --all --quiet); do
+for id in $(" ${compose[@]}" ps --all --quiet); do
   read -r name code <<< "$(docker inspect --format '{{.Name}} {{.State.ExitCode}}' "$id")"
   if [ "$code" != 0 ]; then
     echo "$name exited with $code" >&2
@@ -40,6 +107,7 @@ for id in $("${compose[@]}" ps --all --quiet); do
 done
 [ "$failed" = 0 ]
 
-docker run --rm -v "$work:/work" "$image" python3 -m amber.split.reference "$scenario" /work/ref
+docker run --rm -v "$work:/work" "${scenario_volume[@]}" "$image" \
+  python3 -m amber.split.reference "$scenario_for_compose" /work/ref
 diff -r "$work/ref" "$work/out"
-echo "$scenario: the containers wrote the same logs as one process ($(ls "$work/out" | wc -l) files)"
+echo "$scenario: split containers match one-process reference ($(find "$work/out" -type f | wc -l) files)"
