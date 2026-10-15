@@ -18,9 +18,9 @@
 #   --port PORT                           rfsim server port (default 4043)
 #   --image IMAGE@sha256:DIGEST           the image, by digest; it must already be pulled on both nodes
 #   --amber-src DIR                       a git clone of Amber holding both refs below
-#   --library-ref REF                     the Amber the image embeds (default 554c619): the image's
-#                                         /opt/amber/amber must equal this commit's amber/
-#   --scenario-ref REF                    the Amber commit the scenario files come from (default HEAD)
+#   --library-ref REF                     the Amber the image embeds (default 0bc99f1, the AMBER_REF
+#                                         of Dockerfile.amber.ubuntu): the image's /opt/amber must equal it
+#   --scenario-ref REF                    the Amber commit the scenario files come from (default: --library-ref)
 #   --scenario-format py|toml             legacy Python demos or seeded TOML scenarios (default py)
 #   --demos "NAMES"                       scenario names; TOML mode also supports registration and adaptive_aloha
 #   --seeds "N ..."                       run seeds; each run sets the scenario's SEED to one of them
@@ -71,7 +71,8 @@ elapsed() {
   awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", b - a }'
 }
 
-reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src="" library_ref=554c619 scenario_ref=HEAD scenario_format=py
+reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src="" scenario_ref="" scenario_format=py
+library_ref=0bc99f13a55f27b5c16983b23b0e02017e9578af
 demos="broadcast broadcast_sic unicast custom_protocol" seeds="" allocation="" pos_user=$(id -un)
 hello_timeout=120 calibration_ceiling=1800 stall_seconds=60 out="" campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
 pos_results_root=/srv/testbed/results docker=docker skip_tags="" dry_run=0 keep_going=0
@@ -134,6 +135,7 @@ command -v jq > /dev/null || die "jq is needed"
 command -v pos > /dev/null || die "the pos command is needed: run this on the POS frontend"
 git -C "$amber_src" rev-parse --git-dir > /dev/null 2>&1 || die "--amber-src $amber_src is not a git clone"
 library_sha=$(git -C "$amber_src" rev-parse --verify "$library_ref^{commit}") || die "no commit $library_ref in $amber_src"
+scenario_ref=${scenario_ref:-$library_ref}
 scenario_sha=$(git -C "$amber_src" rev-parse --verify "$scenario_ref^{commit}") || die "no commit $scenario_ref in $amber_src"
 if [[ "$scenario_format" == toml && "$scenario_sha" != "$library_sha" ]]; then
   die "TOML runs require --scenario-ref and --library-ref to resolve to the same Amber commit"
@@ -182,7 +184,8 @@ scenario_rel_path() {
     custom_protocol) printf '%s\n' 'demo_experiments/custom_protocol/custom_protocol.toml' ;;
     registration) printf '%s\n' 'tests/split/scenarios/registration.toml' ;;
     adaptive_aloha) printf '%s\n' 'tests/split/scenarios/adaptive_aloha.toml' ;;
-    *) die "no TOML scenario mapping for '$demo' (use broadcast, broadcast_sic, unicast, custom_protocol, registration, or adaptive_aloha)" ;;
+    *) die "no TOML scenario mapping for '$demo' (use broadcast, broadcast_sic, unicast, custom_protocol," \
+      "registration, or adaptive_aloha)" ;;
   esac
 }
 
@@ -243,7 +246,8 @@ preflight() {
   local lib=$out/preflight/library
   mkdir -p "$lib"
   git -C "$amber_src" archive "$library_sha" amber demo_experiments tests/split/scenarios | tar -C "$lib" -xf -
-  local hash_cmd='find amber demo_experiments tests/split/scenarios -type f \( -name "*.py" -o -name "*.toml" \) | LC_ALL=C sort | xargs sha256sum;
+  local hash_cmd='find amber demo_experiments tests/split/scenarios -type f \( -name "*.py" -o -name "*.toml" \) |
+    LC_ALL=C sort | xargs sha256sum;
     sha256sum demo_experiments/threehundred_seconds_stable.xlsx'
   (cd "$lib" && bash -c "$hash_cmd") > "$out/preflight/library.sha256"
   on "$reader_node" "$docker run --rm $(q "$image") sh -c $(q "cd /opt/amber && $hash_cmd")" > "$out/preflight/image-amber.sha256"
@@ -277,7 +281,7 @@ make_scenario() {
     file=$dir/scen/demo_experiments/split/$demo.py
     [ -f "$file" ] || die "Amber $scenario_sha has no demo_experiments/split/$demo.py"
     [ "$(grep -c '^SEED = [0-9_]*$' "$file")" = 1 ] || die "$demo.py must set SEED on exactly one line"
-    sed -i "s/^SEED = [0-9_]*\\$/SEED = $seed/" "$file"
+    sed -i "s/^SEED = [0-9_]*\$/SEED = $seed/" "$file"
   else
     git -C "$amber_src" archive "$scenario_sha" demo_experiments tests/split/scenarios |
       tar -C "$dir/scen" -xf -
@@ -509,7 +513,8 @@ finish_run() {
     --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
-    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg scenario_format "$scenario_format" --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
+    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg scenario_format "$scenario_format" \
+    --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
     --arg reader_node "$reader_node" --arg tag_node "$tag_node" --arg reader_addr "$reader_addr" --argjson port "$port" \
     --arg reader_cmd "amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode --rfsimulator.serverport $port" \
     --arg tag_cmd "amber-tag --rfsimulator.serveraddr $reader_addr --rfsimulator.options msgmode --rfsimulator.serverport $port" \

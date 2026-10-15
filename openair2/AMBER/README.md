@@ -20,10 +20,10 @@ process by `amber.split.hosts.build_one_process()`.
 
 ## Amber version
 
-Use Amber's `dev` branch at commit `554c619`, which has `amber.split`:
+Use Amber at commit `0bc99f1`, which has `amber.split`, TOML scenarios and the protocols:
 
 ```bash
-git clone -b dev https://github.com/nayreed/Amber && git -C Amber checkout 554c619
+git clone https://github.com/nayreed/Amber && git -C Amber checkout 0bc99f1
 pip install simpy numpy pandas openpyxl matplotlib
 ```
 
