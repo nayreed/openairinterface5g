@@ -7,6 +7,8 @@ name: oai-amber image
 on:
   push:
     branches: [aiot-rfsim, amber-toml-integration]
+  pull_request:
+    branches: [aiot-rfsim]
   workflow_dispatch:
 
 permissions:
@@ -77,6 +79,7 @@ jobs:
         run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/custom_protocol/custom_protocol.toml
 
       - name: Publish
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
