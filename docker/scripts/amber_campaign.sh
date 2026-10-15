@@ -22,7 +22,7 @@
 #                                         /opt/amber/amber must equal this commit's amber/
 #   --scenario-ref REF                    the Amber commit the scenario files come from (default HEAD)
 #   --scenario-format py|toml             legacy Python demos or seeded TOML scenarios (default py)
-#   --demos "NAMES"                       demo_experiments/split scenarios (default: all four demos)
+#   --demos "NAMES"                       scenario names; TOML mode also supports registration and adaptive_aloha
 #   --seeds "N ..."                       run seeds; each run sets the scenario's SEED to one of them
 #   --allocation ID                       the POS allocation both nodes must be in
 #   --pos-user USER                       allocation owner to require (default: id -un)
@@ -509,7 +509,7 @@ finish_run() {
     --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
-    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
+    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg scenario_format "$scenario_format" --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
     --arg reader_node "$reader_node" --arg tag_node "$tag_node" --arg reader_addr "$reader_addr" --argjson port "$port" \
     --arg reader_cmd "amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode --rfsimulator.serverport $port" \
     --arg tag_cmd "amber-tag --rfsimulator.serveraddr $reader_addr --rfsimulator.options msgmode --rfsimulator.serverport $port" \
@@ -519,7 +519,8 @@ finish_run() {
     '{campaign: $campaign, run: $run, demo: $demo, seed: $seed, attempt: $attempt,
       status: $status, reason: $reason, detail: $detail,
       missing_node_ids: ($missing | split(" ") | map(select(. != "") | tonumber)),
-      scenario: $scenario, comparison: "byte for byte against amber.split.reference from the same image and scenario files",
+      scenario: $scenario, scenario_format: $scenario_format,
+      comparison: "byte for byte against amber.split.reference from the same image and scenario files",
       image: $image, image_id: $image_id, amber_library: $library, amber_scenario_ref: $scenario_ref,
       runner_sha256: $runner, oai_commit: $oai_commit,
       reader_node: $reader_node, tag_node: $tag_node, reader_addr: $reader_addr, port: $port,
@@ -627,7 +628,7 @@ do_run() {
 
 mkdir -p "$out/preflight" "$out/runs"
 runner_sha=$(sha256sum "$0" | cut -d' ' -f1)
-oai_commit=$(git -C "$(dirname "$0")" rev-parse HEAD 2> /dev/null || echo unknown)
+oai_commit=${OAI_COMMIT:-$(git -C "$(dirname "$0")" rev-parse HEAD 2> /dev/null || echo unknown)}
 cp "$0" "$out/preflight/amber_campaign.sh"
 printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
 preflight
