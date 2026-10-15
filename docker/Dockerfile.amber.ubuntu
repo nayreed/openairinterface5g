@@ -46,7 +46,7 @@ RUN pip3 install --no-cache-dir --target /opt/oai-amber/python \
         matplotlib==3.11.2
 
 ARG AMBER_REPO=https://github.com/nayreed/Amber
-ARG AMBER_REF=bebfedf132374d976f1b36cf719f32b8f3fd876a
+ARG AMBER_REF=0bc99f13a55f27b5c16983b23b0e02017e9578af
 RUN git clone --quiet ${AMBER_REPO} /opt/amber && \
     git -C /opt/amber checkout --quiet ${AMBER_REF} && \
     rm -rf /opt/amber/.git
