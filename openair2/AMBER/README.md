@@ -129,9 +129,14 @@ script's header for its options; `--dry-run` checks the nodes, the image and the
 
 ```bash
 docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f1 address> \
-    --image ghcr.io/nayreed/oai-amber@sha256:<digest> --amber-src ~/Amber --scenario-ref <Amber commit> \
-    --allocation <id> --seeds 1
+    --image ghcr.io/nayreed/oai-amber@sha256:<digest> --amber-src ~/Amber --allocation <id> --seeds 1
 ```
+
+With `--scenario-format toml`, `--tags "25 50 100 250"` runs each demo with 25 Tags, then 50, and
+so on, and stops at the first run that does not pass. The demo's Tag groups keep their share of
+the Tags (broadcast: two thirds WPT, one third hybrid), on a ring 5 to 100 m around the Reader with
+a fixed layout seed per group; custom_protocol keeps its own ring. Every Tag is a container on the
+Tag node, of about 100 MB.
 
 ## Limitations
 
