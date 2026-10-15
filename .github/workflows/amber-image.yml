@@ -28,6 +28,11 @@ jobs:
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/oai-amber" >> "$GITHUB_ENV"
           echo "TAG=${GITHUB_SHA::8}" >> "$GITHUB_ENV"
 
+      - name: Validate AMBER campaign tooling
+        run: |
+          bash -n docker/scripts/amber_campaign.sh docker/scripts/amber_check_image.sh
+          python3 -m py_compile docker/scripts/amber_compose.py
+
       - name: Build
         run: |
           docker build -f docker/Dockerfile.amber.ubuntu \
