@@ -6,7 +6,7 @@ name: oai-amber image
 
 on:
   push:
-    branches: [aiot-rfsim]
+    branches: [aiot-rfsim, amber-toml-integration]
   workflow_dispatch:
 
 permissions:
@@ -52,6 +52,24 @@ jobs:
 
       - name: Run Amber's custom_protocol demo and compare with one process
         run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/split/custom_protocol.py
+
+      - name: Run seeded TOML registration scenario and compare with one process
+        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/registration.toml
+
+      - name: Run seeded 12-Tag TOML adaptive ALOHA scenario and compare with one process
+        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/adaptive_aloha.toml
+
+      - name: Run Amber TOML broadcast demo and compare with one process
+        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/broadcast/broadcast.toml
+
+      - name: Run Amber TOML broadcast SIC demo and compare with one process
+        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/broadcast_sic/broadcast_sic.toml
+
+      - name: Run Amber TOML unicast demo and compare with one process
+        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/unicast/unicast.toml
+
+      - name: Run Amber TOML custom protocol demo and compare with one process
+        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/custom_protocol/custom_protocol.toml
 
       - name: Publish
         env:
