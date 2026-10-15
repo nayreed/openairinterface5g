@@ -117,6 +117,22 @@ The demos' results (sent, decoded, DER, throughput) from the logs:
 docker run --rm -v "$PWD/out:/out" $IMAGE python3 -m amber.split.summary 20001 /out
 ```
 
+## Campaigns on two POS nodes
+
+`docker/scripts/amber_campaign.sh` runs the demos from the POS frontend on two nodes you have
+allocated: the Reader on one, one Tag per node id of the scenario on the other. For each demo and
+seed it copies the scenario files from an Amber clone with `SEED` set to the seed, runs
+`amber.split.reference` and then the containers from the image, and compares their logs byte for
+byte. It stops a run when a Tag has not connected in `--hello-timeout` and names the missing node
+ids, and uploads every run with `pos_upload` before the next. It only reads the allocation. See the
+script's header for its options; `--dry-run` checks the nodes, the image and the scenarios only.
+
+```bash
+docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f1 address> \
+    --image ghcr.io/nayreed/oai-amber@sha256:<digest> --amber-src ~/Amber --scenario-ref <Amber commit> \
+    --allocation <id> --seeds 1
+```
+
 ## Limitations
 
 * At most 250 Tags, the number of clients an rfsim server accepts.
