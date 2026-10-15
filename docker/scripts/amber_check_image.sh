@@ -21,7 +21,7 @@ scenario=${2:-/opt/amber/tests/split/scenarios/registration.py}
 work=$(mktemp -d)
 compose=(docker compose -f "$work/compose.yaml")
 scenario_for_compose=$scenario
-scenario_volume=()
+is_toml=0
 
 cleanup() {
   "${compose[@]}" down --remove-orphans > /dev/null 2>&1 || true
@@ -88,17 +88,21 @@ if trace:
 print(f"Prepared seeded TOML scenario: {destination} (seed={seed})")
 PY
   scenario_for_compose="/scenarios/$scenario_rel"
-  scenario_volume=(-v "$work/scenarios:/scenarios:ro")
+  is_toml=1
 fi
 
-docker run --rm "${scenario_volume[@]}" "$image" \
-  amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
+if [ "$is_toml" -eq 1 ]; then
+  docker run --rm -v "$work/scenarios:/scenarios:ro" "$image" \
+    amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
+else
+  docker run --rm "$image" amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
+fi
 
 # Compose waits until the Reader and all Tags have stopped.
 "${compose[@]}" up
 
 failed=0
-for id in $(" ${compose[@]}" ps --all --quiet); do
+for id in $("${compose[@]}" ps --all --quiet); do
   read -r name code <<< "$(docker inspect --format '{{.Name}} {{.State.ExitCode}}' "$id")"
   if [ "$code" != 0 ]; then
     echo "$name exited with $code" >&2
@@ -107,7 +111,12 @@ for id in $(" ${compose[@]}" ps --all --quiet); do
 done
 [ "$failed" = 0 ]
 
-docker run --rm -v "$work:/work" "${scenario_volume[@]}" "$image" \
-  python3 -m amber.split.reference "$scenario_for_compose" /work/ref
+if [ "$is_toml" -eq 1 ]; then
+  docker run --rm -v "$work:/work" -v "$work/scenarios:/scenarios:ro" "$image" \
+    python3 -m amber.split.reference "$scenario_for_compose" /work/ref
+else
+  docker run --rm -v "$work:/work" "$image" \
+    python3 -m amber.split.reference "$scenario_for_compose" /work/ref
+fi
 diff -r "$work/ref" "$work/out"
 echo "$scenario: split containers match one-process reference ($(find "$work/out" -type f | wc -l) files)"
