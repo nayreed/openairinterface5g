@@ -21,7 +21,8 @@
 #   --library-ref REF                     the Amber the image embeds (default 554c619): the image's
 #                                         /opt/amber/amber must equal this commit's amber/
 #   --scenario-ref REF                    the Amber commit the scenario files come from (default HEAD)
-#   --demos "NAMES"                       demo_experiments/split scenarios (default: all four demos)
+#   --scenario-format py|toml             legacy Python demos or seeded TOML scenarios (default py)
+#   --demos "NAMES"                       scenario names; TOML mode also supports registration and adaptive_aloha
 #   --seeds "N ..."                       run seeds; each run sets the scenario's SEED to one of them
 #   --allocation ID                       the POS allocation both nodes must be in
 #   --pos-user USER                       allocation owner to require (default: id -un)
@@ -70,7 +71,7 @@ elapsed() {
   awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", b - a }'
 }
 
-reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src="" library_ref=554c619 scenario_ref=HEAD
+reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src="" library_ref=554c619 scenario_ref=HEAD scenario_format=py
 demos="broadcast broadcast_sic unicast custom_protocol" seeds="" allocation="" pos_user=$(id -un)
 hello_timeout=120 calibration_ceiling=1800 stall_seconds=60 out="" campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
 pos_results_root=/srv/testbed/results docker=docker skip_tags="" dry_run=0 keep_going=0
@@ -87,6 +88,7 @@ while [ $# -gt 0 ]; do
     --amber-src) amber_src=$2; shift 2 ;;
     --library-ref) library_ref=$2; shift 2 ;;
     --scenario-ref) scenario_ref=$2; shift 2 ;;
+    --scenario-format) scenario_format=$2; shift 2 ;;
     --demos) demos=$2; shift 2 ;;
     --seeds) seeds=$2; shift 2 ;;
     --allocation) allocation=$2; shift 2 ;;
@@ -121,6 +123,7 @@ done
 for d in $demos; do
   [[ $d =~ ^[a-z_]+$ ]] || die "demo name $d"
 done
+case "$scenario_format" in py|toml) ;; *) die "--scenario-format must be py or toml" ;; esac
 for d in "${!sim_timeout[@]}"; do
   [[ " $demos " == *" $d "* ]] || die "--sim-timeout for $d, which is not in --demos"
 done
@@ -132,6 +135,9 @@ command -v pos > /dev/null || die "the pos command is needed: run this on the PO
 git -C "$amber_src" rev-parse --git-dir > /dev/null 2>&1 || die "--amber-src $amber_src is not a git clone"
 library_sha=$(git -C "$amber_src" rev-parse --verify "$library_ref^{commit}") || die "no commit $library_ref in $amber_src"
 scenario_sha=$(git -C "$amber_src" rev-parse --verify "$scenario_ref^{commit}") || die "no commit $scenario_ref in $amber_src"
+if [[ "$scenario_format" == toml && "$scenario_sha" != "$library_sha" ]]; then
+  die "TOML runs require --scenario-ref and --library-ref to resolve to the same Amber commit"
+fi
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -160,6 +166,24 @@ put_dir() {
 get_dir() {
   mkdir -p "$3"
   on "$1" "tar -C $(q "$2") -cf - ." | tar -C "$3" -xf -
+}
+
+# Resolve a demo name to its scenario path in the selected Amber commit.
+scenario_rel_path() {
+  local demo=$1
+  if [[ "$scenario_format" == py ]]; then
+    printf 'demo_experiments/split/%s.py\n' "$demo"
+    return 0
+  fi
+  case "$demo" in
+    broadcast) printf '%s\n' 'demo_experiments/broadcast/broadcast.toml' ;;
+    broadcast_sic) printf '%s\n' 'demo_experiments/broadcast_sic/broadcast_sic.toml' ;;
+    unicast) printf '%s\n' 'demo_experiments/unicast/unicast.toml' ;;
+    custom_protocol) printf '%s\n' 'demo_experiments/custom_protocol/custom_protocol.toml' ;;
+    registration) printf '%s\n' 'tests/split/scenarios/registration.toml' ;;
+    adaptive_aloha) printf '%s\n' 'tests/split/scenarios/adaptive_aloha.toml' ;;
+    *) die "no TOML scenario mapping for '$demo' (use broadcast, broadcast_sic, unicast, custom_protocol, registration, or adaptive_aloha)" ;;
+  esac
 }
 
 # --- preflight -----------------------------------------------------------------------------------
@@ -218,8 +242,8 @@ preflight() {
   # The image's Amber must be the library commit: same Python files and energy trace.
   local lib=$out/preflight/library
   mkdir -p "$lib"
-  git -C "$amber_src" archive "$library_sha" amber demo_experiments/threehundred_seconds_stable.xlsx | tar -C "$lib" -xf -
-  local hash_cmd='find amber -type f -name "*.py" | LC_ALL=C sort | xargs sha256sum;
+  git -C "$amber_src" archive "$library_sha" amber demo_experiments tests/split/scenarios | tar -C "$lib" -xf -
+  local hash_cmd='find amber demo_experiments tests/split/scenarios -type f \( -name "*.py" -o -name "*.toml" \) | LC_ALL=C sort | xargs sha256sum;
     sha256sum demo_experiments/threehundred_seconds_stable.xlsx'
   (cd "$lib" && bash -c "$hash_cmd") > "$out/preflight/library.sha256"
   on "$reader_node" "$docker run --rm $(q "$image") sh -c $(q "cd /opt/amber && $hash_cmd")" > "$out/preflight/image-amber.sha256"
@@ -245,14 +269,43 @@ print(json.dumps({"SEED": getattr(s, "SEED", None), "LAYOUT_SEED": getattr(s, "L
 
 # Writes the scenario files of one run into $1/scen, with SEED set to $3.
 make_scenario() {
-  local dir=$1 demo=$2 seed=$3 file
+  local dir=$1 demo=$2 seed=$3 file rel
   mkdir -p "$dir/scen"
-  git -C "$amber_src" archive "$scenario_sha" demo_experiments/split tests/split/scenarios/demo_common.py |
-    tar -C "$dir/scen" -xf -
-  file=$dir/scen/demo_experiments/split/$demo.py
-  [ -f "$file" ] || die "Amber $scenario_sha has no demo_experiments/split/$demo.py"
-  [ "$(grep -c '^SEED = [0-9_]*$' "$file")" = 1 ] || die "$demo.py must set SEED on exactly one line"
-  sed -i "s/^SEED = [0-9_]*\$/SEED = $seed/" "$file"
+  if [[ "$scenario_format" == py ]]; then
+    git -C "$amber_src" archive "$scenario_sha" demo_experiments/split tests/split/scenarios/demo_common.py |
+      tar -C "$dir/scen" -xf -
+    file=$dir/scen/demo_experiments/split/$demo.py
+    [ -f "$file" ] || die "Amber $scenario_sha has no demo_experiments/split/$demo.py"
+    [ "$(grep -c '^SEED = [0-9_]*$' "$file")" = 1 ] || die "$demo.py must set SEED on exactly one line"
+    sed -i "s/^SEED = [0-9_]*\\$/SEED = $seed/" "$file"
+  else
+    git -C "$amber_src" archive "$scenario_sha" demo_experiments tests/split/scenarios |
+      tar -C "$dir/scen" -xf -
+    rel=$(scenario_rel_path "$demo")
+    file=$dir/scen/$rel
+    [ -f "$file" ] || die "Amber $scenario_sha has no $rel"
+    python3 - "$file" "$seed" <<'PY'
+from pathlib import Path
+import re
+import sys
+path = Path(sys.argv[1])
+seed = int(sys.argv[2])
+lines = path.read_text().splitlines()
+start = next((i for i, line in enumerate(lines) if line.strip() == "[run]"), None)
+if start is None:
+    raise SystemExit(f"{path}: missing [run] table")
+end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[", lines[i])), len(lines))
+seed_line = next((i for i in range(start + 1, end) if re.match(r"^\s*seed\s*=", lines[i])), None)
+if seed_line is not None:
+    lines[seed_line] = re.sub(r"^(\s*seed\s*=\s*).*$", lambda m: m.group(1) + str(seed), lines[seed_line])
+else:
+    sim_line = next((i for i in range(start + 1, end) if re.match(r"^\s*sim_time_ms\s*=", lines[i])), None)
+    if sim_line is None:
+        raise SystemExit(f"{path}: [run] has no sim_time_ms")
+    lines.insert(sim_line + 1, f"seed = {seed}")
+path.write_text("\n".join(lines) + "\n")
+PY
+  fi
   (cd "$dir/scen" && find . -type f | LC_ALL=C sort | xargs sha256sum) > "$dir/scenario.sha256"
 }
 
@@ -288,7 +341,9 @@ reader_cpu() {
 
 # Starts the containers and waits for the Reader to end. Sets run_status on failure, and t_hello, t_sim.
 run_containers() {
-  local reader_dir=$1 tag_dir=$2 deadline=$3 scen_path="/scenarios/demo_experiments/split/$demo.py"
+  local reader_dir=$1 tag_dir=$2 deadline=$3 scen_rel scen_path
+  scen_rel=$(scenario_rel_path "$demo")
+  scen_path="/scenarios/$scen_rel"
   local common="--rfsimulator.options msgmode --rfsimulator.serverport $port --amber.scenario $scen_path --amber.output_dir /out"
   local t0 status code id line
 
@@ -454,7 +509,7 @@ finish_run() {
     --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
-    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
+    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg scenario_format "$scenario_format" --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
     --arg reader_node "$reader_node" --arg tag_node "$tag_node" --arg reader_addr "$reader_addr" --argjson port "$port" \
     --arg reader_cmd "amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode --rfsimulator.serverport $port" \
     --arg tag_cmd "amber-tag --rfsimulator.serveraddr $reader_addr --rfsimulator.options msgmode --rfsimulator.serverport $port" \
@@ -464,7 +519,8 @@ finish_run() {
     '{campaign: $campaign, run: $run, demo: $demo, seed: $seed, attempt: $attempt,
       status: $status, reason: $reason, detail: $detail,
       missing_node_ids: ($missing | split(" ") | map(select(. != "") | tonumber)),
-      scenario: $scenario, comparison: "byte for byte against amber.split.reference from the same image and scenario files",
+      scenario: $scenario, scenario_format: $scenario_format,
+      comparison: "byte for byte against amber.split.reference from the same image and scenario files",
       image: $image, image_id: $image_id, amber_library: $library, amber_scenario_ref: $scenario_ref,
       runner_sha256: $runner, oai_commit: $oai_commit,
       reader_node: $reader_node, tag_node: $tag_node, reader_addr: $reader_addr, port: $port,
@@ -493,7 +549,7 @@ upload() {
 }
 
 do_run() {
-  local run_dir reader_dir tag_dir line
+  local run_dir reader_dir tag_dir line scen_rel scen_path
   run_t0=$(now)
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   attempt=1
@@ -507,6 +563,8 @@ do_run() {
   local t0
   t0=$(now)
   make_scenario "$run_dir" "$demo" "$seed"
+  scen_rel=$(scenario_rel_path "$demo")
+  scen_path="/scenarios/$scen_rel"
   reader_dir=$reader_home/amber-campaign/$campaign/${run_dir##*/}
   tag_dir=$tag_home/amber-campaign/$campaign/${run_dir##*/}
   put_dir "$reader_node" "$run_dir/scen" "$reader_dir/scen"
@@ -514,7 +572,7 @@ do_run() {
   on "$reader_node" "mkdir -p $(q "$reader_dir/out") $(q "$reader_dir/ref")"
   on "$tag_node" "mkdir -p $(q "$tag_dir/out")"
   scenario_json=$(on "$reader_node" "$docker run --rm --name $run_name-inspect -v $(q "$reader_dir/scen"):/scenarios:ro \
-    $(q "$image") python3 -c $(q "$inspect_py") /scenarios/demo_experiments/split/$demo.py" | tail -n 1)
+    $(q "$image") python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1)
   jq -e --argjson seed "$seed" '.SEED == $seed and (.NODE_IDS | length > 0) and
       (.NODE_IDS | all(type == "number" and . >= 0 and floor == .)) and (.NODE_IDS | unique | length) == (.NODE_IDS | length)' \
     <<< "$scenario_json" > /dev/null || die "scenario $demo seed $seed: $scenario_json"
@@ -534,8 +592,9 @@ do_run() {
   t0=$(now)
   on "$reader_node" "$docker run --rm --name $run_name-ref -v $(q "$reader_dir/scen"):/scenarios:ro \
     -v $(q "$reader_dir/ref"):/ref $(q "$image") python3 -m amber.split.reference \
-    /scenarios/demo_experiments/split/$demo.py /ref" > "$run_dir/reference.log" 2>&1 ||
+    $(q "$scen_path") /ref" > "$run_dir/reference.log" 2>&1 ||
     die "the reference run failed (see $run_dir/reference.log)"
+
   t_reference=$(elapsed "$t0" "$(now)")
 
   deadline=${sim_timeout[$demo]:-$calibration_ceiling}
@@ -569,7 +628,7 @@ do_run() {
 
 mkdir -p "$out/preflight" "$out/runs"
 runner_sha=$(sha256sum "$0" | cut -d' ' -f1)
-oai_commit=$(git -C "$(dirname "$0")" rev-parse HEAD 2> /dev/null || echo unknown)
+oai_commit=${OAI_COMMIT:-$(git -C "$(dirname "$0")" rev-parse HEAD 2> /dev/null || echo unknown)}
 cp "$0" "$out/preflight/amber_campaign.sh"
 printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
 preflight
@@ -584,8 +643,10 @@ if [ "$dry_run" = 1 ]; then
       make_scenario "$dir" "$demo" "$seed"
       remote=$reader_home/amber-campaign/$campaign/dry-run/$demo-s$seed
       put_dir "$reader_node" "$dir/scen" "$remote/scen"
+      scen_rel=$(scenario_rel_path "$demo")
+      scen_path="/scenarios/$scen_rel"
       on "$reader_node" "$docker run --rm -v $(q "$remote/scen"):/scenarios:ro $(q "$image") \
-        python3 -c $(q "$inspect_py") /scenarios/demo_experiments/split/$demo.py" | tail -n 1 > "$dir/scenario.json"
+        python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1 > "$dir/scenario.json"
       jq -e --argjson seed "$seed" '.SEED == $seed and (.NODE_IDS | length > 0)' "$dir/scenario.json" > /dev/null ||
         die "scenario $demo seed $seed: $(cat "$dir/scenario.json")"
       layout=$(jq -c '{LAYOUT_SEED, layout}' "$dir/scenario.json")
