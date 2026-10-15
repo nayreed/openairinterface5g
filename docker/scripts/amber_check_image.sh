@@ -26,7 +26,7 @@ is_toml=0
 cleanup() {
   "${compose[@]}" down --remove-orphans > /dev/null 2>&1 || true
   # The containers write as root: remove generated data using the same image.
-  docker run --rm -v "$work:/work" "$image" rm -rf /work/out /work/ref || true
+  docker run --rm -v "$work:/work" "$image" rm -rf /work/out /work/ref /work/scenarios || true
   rm -rf "$work"
 }
 trap cleanup EXIT
