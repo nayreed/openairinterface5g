@@ -1,76 +1,108 @@
 name: oai-amber image
 
-# Builds the image with amber-reader, amber-tag and Amber (docker/Dockerfile.amber.ubuntu), runs
-# two seeded TOML test scenarios and Amber's four TOML demos from it in docker compose and compares
-# their logs with one-process Amber, then publishes it as ghcr.io/<owner>/oai-amber:<commit>, and
-# :latest for the aiot-rfsim branch.
+# Started by hand (Actions > oai-amber image > Run workflow). Builds the image with amber-reader,
+# amber-tag and Amber's current dev branch (docker/Dockerfile.amber.ubuntu), runs two seeded TOML
+# scenarios from it in docker compose on one runner and compares their logs with one-process
+# Amber, then, on aiot-rfsim only, publishes it as ghcr.io/<owner>/oai-amber:<commit> and :latest.
 
 on:
-  push:
-    branches: [aiot-rfsim, amber-toml-integration]
-  pull_request:
-    branches: [aiot-rfsim]
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: amber-image-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  image:
+  scripts:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Name the image
-        run: |
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/oai-amber" >> "$GITHUB_ENV"
-          echo "TAG=${GITHUB_SHA::8}" >> "$GITHUB_ENV"
-
-      - name: Validate AMBER campaign tooling
+      - name: Check the scripts
         run: |
           bash -n docker/scripts/amber_campaign.sh
           bash -n docker/scripts/amber_check_image.sh
+          shellcheck -S warning docker/scripts/amber_campaign.sh docker/scripts/amber_check_image.sh
           python3 -m py_compile docker/scripts/amber_compose.py
 
-      - name: Build
+  build:
+    needs: scripts
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Name the image and pick Amber's dev commit
+        id: name
         run: |
-          docker build -f docker/Dockerfile.amber.ubuntu \
-            --build-arg OAI_AMBER_IMAGE="$IMAGE:$TAG" \
-            --label org.opencontainers.image.revision="$GITHUB_SHA" \
-            -t "$IMAGE:$TAG" .
-          docker image ls "$IMAGE"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/oai-amber:${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+          amber=$(git ls-remote https://github.com/nayreed/Amber refs/heads/dev | cut -f1)
+          [ -n "$amber" ] || { echo "Amber has no dev branch" >&2; exit 1; }
+          echo "amber=$amber" >> "$GITHUB_OUTPUT"
+          echo "Amber dev is at $amber"
+      - uses: docker/setup-buildx-action@v3
+      # The dependency layers come from the GitHub Actions cache; only the Amber clone (when dev
+      # moved) and the OAI build run again.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.amber.ubuntu
+          build-args: |
+            AMBER_REF=${{ steps.name.outputs.amber }}
+            OAI_AMBER_IMAGE=${{ steps.name.outputs.image }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ steps.name.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=${{ runner.temp }}/oai-amber.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oai-amber
+          path: ${{ runner.temp }}/oai-amber.tar
+          retention-days: 1
 
-      - name: Run seeded TOML registration scenario and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/registration.toml
+  scenarios:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - /opt/amber/tests/split/scenarios/registration.toml
+          - /opt/amber/tests/split/scenarios/adaptive_aloha.toml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: oai-amber
+          path: ${{ runner.temp }}
+      - name: Load the image
+        run: docker load --input "$RUNNER_TEMP/oai-amber.tar"
+      - name: Run the scenario split and compare with one process
+        run: docker/scripts/amber_check_image.sh "${{ needs.build.outputs.image }}" "${{ matrix.scenario }}"
 
-      - name: Run seeded 12-Tag TOML adaptive ALOHA scenario and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/adaptive_aloha.toml
-
-      - name: Run Amber TOML broadcast demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/broadcast/broadcast.toml
-
-      - name: Run Amber TOML broadcast SIC demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/broadcast_sic/broadcast_sic.toml
-
-      - name: Run Amber TOML unicast demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/unicast/unicast.toml
-
-      - name: Run Amber TOML custom protocol demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/custom_protocol/custom_protocol.toml
-
-      - name: Publish
-        if: github.event_name != 'pull_request'
+  publish:
+    needs: [build, scenarios]
+    if: github.ref == 'refs/heads/aiot-rfsim'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: oai-amber
+          path: ${{ runner.temp }}
+      - name: Push to ghcr.io
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          docker load --input "$RUNNER_TEMP/oai-amber.tar"
+          image=${{ needs.build.outputs.image }}
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$IMAGE:$TAG"
-          if [ "$GITHUB_REF" = refs/heads/aiot-rfsim ]; then
-            docker tag "$IMAGE:$TAG" "$IMAGE:latest"
-            docker push "$IMAGE:latest"
-          fi
+          docker push "$image"
+          docker tag "$image" "${image%:*}:latest"
+          docker push "${image%:*}:latest"

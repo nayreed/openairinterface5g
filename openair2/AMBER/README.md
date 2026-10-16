@@ -20,10 +20,10 @@ process by `amber.split.hosts.build_one_process()`.
 
 ## Amber version
 
-Use Amber at commit `0bc99f1`, which has `amber.split`, TOML scenarios and the protocols:
+Use Amber's `dev` branch, which has `amber.split`, TOML scenarios and the protocols:
 
 ```bash
-git clone https://github.com/nayreed/Amber && git -C Amber checkout 0bc99f1
+git clone https://github.com/nayreed/Amber && git -C Amber checkout dev
 pip install simpy numpy pandas openpyxl matplotlib
 ```
 
@@ -79,20 +79,22 @@ diff -r ref out
 
 ## Docker
 
-`docker/Dockerfile.amber.ubuntu` builds one image with both programs and Amber at the commit
-above, so a Reader and its Tags always run the same code. To build it locally, from the
-repository root (`--build-arg AMBER_REF=<commit>` picks another Amber commit):
+`docker/Dockerfile.amber.ubuntu` builds one image with both programs and Amber's `dev` branch, so a
+Reader and its Tags always run the same code. The Amber commit it used is in
+`/opt/amber/AMBER_COMMIT`, and the OAI commit in the `org.opencontainers.image.revision` label when
+the workflow built it. To build it locally, from the repository root (`--build-arg AMBER_REF=<commit>`
+picks another Amber commit; Docker caches the clone, so add `--no-cache` to pick up a newer `dev`):
 
 ```bash
 docker build -f docker/Dockerfile.amber.ubuntu -t oai-amber .
 ```
 
-GitHub builds it on every push to `aiot-rfsim` (`.github/workflows/amber-image.yml`). It runs a
-4-Tag and a 12-Tag TOML scenario and Amber's four TOML demos (below) from the image with
-`docker/scripts/amber_check_image.sh`, which sets their seed to 12345 and compares their logs with
-one-process Amber, then publishes `ghcr.io/nayreed/oai-amber`, tagged with the first 8 characters
-of the commit and with `latest`. The image records the OAI commit it was built from in its
-`org.opencontainers.image.revision` label, and the Amber commit in `/opt/amber/AMBER_COMMIT`.
+The GitHub workflow `.github/workflows/amber-image.yml` runs only when started by hand (Actions >
+oai-amber image > Run workflow). Its jobs check the scripts, build the image against Amber's current
+`dev` commit (reusing cached dependency layers), run a 4-Tag and a 12-Tag TOML scenario from it on
+one runner with `docker/scripts/amber_check_image.sh`, which compares their logs with one-process
+Amber, and, on `aiot-rfsim` only, publish `ghcr.io/nayreed/oai-amber`, tagged with the first 8
+characters of the commit and with `latest`. Runs between two hosts are the campaign's job (below).
 
 `amber-compose` writes a compose file with one Reader and one Tag per node of a scenario:
 
