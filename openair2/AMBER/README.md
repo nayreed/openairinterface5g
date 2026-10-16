@@ -112,9 +112,9 @@ The compose file names the exact image that wrote it, by commit. Every program w
 path under `/scenarios`, with `-v "$PWD/scenarios:/scenarios"`; the compose file then mounts
 `./scenarios` too.
 
-Amber's four demos are in the image as TOML scenarios: `broadcast`, `broadcast_sic`, `unicast`
-and `custom_protocol`, each in `/opt/amber/demo_experiments/<name>/<name>.toml`. They have no
-`seed` in `[run]`, so copy one into `./scenarios` and add a seed before running it split;
+Amber's demos are in the image as TOML scenarios, one folder per protocol:
+`/opt/amber/demo_experiments/<protocol>/<name>.toml`, for example `broadcast/broadcast_sic.toml`.
+A demo is named by its TOML file. They have no `seed` in `[run]`, so copy one into `./scenarios` and add a seed before running it split;
 `amber_check_image.sh` does exactly that. The demos' results (sent, decoded, DER, throughput) from
 the logs:
 
@@ -124,15 +124,17 @@ docker run --rm -v "$PWD/out:/out" $IMAGE python3 -m amber.split.summary 20001 /
 
 ## Campaigns on two POS nodes
 
-`docker/scripts/amber_campaign.sh` runs the demos from the POS frontend on two nodes you have
+`docker/scripts/amber_campaign.sh` runs the demos (all of them unless `--demos` names some) from the POS frontend on two nodes you have
 allocated: the Reader on one, one Tag per node id of the scenario on the other. For each demo and
 seed it copies the TOML scenario files from an Amber clone, at the Amber commit the image embeds,
 with the `[run]` seed set to the seed, runs
 `amber.split.reference` and then the containers from the image, and compares their logs byte for
 byte. It stops a run when a Tag has not connected in `--hello-timeout` and names the missing node
 ids, and uploads every run with `pos_upload` before the next. It only reads the allocation. See the
-script's header for its options. Before the first run it checks every scenario of the campaign, so
-a bad one stops it before anything is run or uploaded.
+script's header for its options. It finds the demos in the Amber commit the image embeds, so a new
+protocol's demo folder needs no change here. Each run is kept under `runs/<protocol>/`. Before the
+first run it checks every scenario of the campaign, so a bad one stops it before anything is run or
+uploaded.
 
 ```bash
 docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f1 address> \
@@ -142,7 +144,7 @@ docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f
 `--tags "25 50 100 250"` runs each demo with 25 Tags, then 50, and
 so on, and stops at the first run that does not pass. The demo's Tag groups keep their share of
 the Tags (broadcast: two thirds WPT, one third hybrid), on a ring 5 to 100 m around the Reader with
-a fixed layout seed per group; custom_protocol keeps its own ring. Every Tag is a container on the
+a fixed layout seed per group; a group with its own layout keeps it. Every Tag is a container on the
 Tag node, of about 100 MB.
 
 ## Limitations

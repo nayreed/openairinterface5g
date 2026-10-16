@@ -21,8 +21,9 @@
 #   --image IMAGE@sha256:DIGEST           the image, by digest; it must already be pulled on both nodes
 #   --amber-src DIR                       a git clone of Amber holding the commit the image embeds
 #                                         (/opt/amber/AMBER_COMMIT in the image)
-#   --demos "NAMES"                       scenario names: broadcast, broadcast_sic, unicast, custom_protocol,
-#                                         registration, adaptive_aloha (default: the first four)
+#   --demos "NAMES"                       scenarios to run, by TOML name (default: all). A demo is any
+#                                         demo_experiments/<folder>/<name>.toml in the image's Amber, so a
+#                                         new protocol's demo is found without changing this script
 #   --seeds "N ..."                       run seeds; each run sets the scenario's [run] seed to one of them
 #   --tags "N ..."                        run each demo with N Tags, for each N in turn (at most 250).
 #                                         The demo's Tag groups keep their share of the Tags; a group placed
@@ -70,7 +71,7 @@ elapsed() {
 }
 
 reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src=""
-demos="broadcast broadcast_sic unicast custom_protocol" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
+demos="" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
 hello_timeout="" calibration_ceiling=1800 campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
 pos_results_root=/srv/testbed/results docker=docker keep_going=0
 declare -A sim_timeout=()
@@ -90,7 +91,7 @@ while [ $# -gt 0 ]; do
     --allocation) allocation=$2; shift 2 ;;
     --hello-timeout) hello_timeout=$2; shift 2 ;;
     --sim-timeout)
-      [[ $2 =~ ^([a-z_]+(-n[0-9]+)?)=([0-9]+)$ ]] || die "--sim-timeout takes DEMO=SECONDS or DEMO-nTAGS=SECONDS, got $2"
+      [[ $2 =~ ^([a-z0-9_]+(-n[0-9]+)?)=([0-9]+)$ ]] || die "--sim-timeout takes DEMO=SECONDS or DEMO-nTAGS=SECONDS, got $2"
       sim_timeout[${BASH_REMATCH[1]}]=${BASH_REMATCH[3]}
       shift 2 ;;
     --campaign) campaign=$2; shift 2 ;;
@@ -112,10 +113,7 @@ for n in $tag_counts; do
   if [ "$n" -lt 1 ] || [ "$n" -gt 250 ]; then die "--tags: $n is not between 1 and 250, the Tags an rfsim server accepts"; fi
 done
 for d in $demos; do
-  [[ $d =~ ^[a-z_]+$ ]] || die "demo name $d"
-done
-for d in "${!sim_timeout[@]}"; do
-  [[ " $demos " == *" ${d%-n*} "* ]] || die "--sim-timeout for $d, which is not in --demos"
+  [[ $d =~ ^[a-z0-9_]+$ ]] || die "demo name $d"
 done
 [ "$reader_node" != "$tag_node" ] || die "the Reader and the Tags must run on different nodes"
 out=./amber-campaigns/$campaign
@@ -153,19 +151,42 @@ get_dir() {
   on "$1" "tar -C $(q "$2") -cf - ." | tar -C "$3" -xf -
 }
 
-# Resolve a demo name to its TOML scenario path in Amber.
+# Demo name -> its TOML path, for every demo_experiments/<folder>/<name>.toml in the image's Amber.
+declare -A demo_path=()
+
+find_demos() {
+  local path name
+  while read -r path; do
+    name=${path##*/}
+    name=${name%.toml}
+    [[ $name =~ ^[a-z0-9_]+$ ]] || die "demo $path: name it with lowercase letters, digits and _"
+    [ -z "${demo_path[$name]:-}" ] || die "Amber $library_sha has two demos named $name: ${demo_path[$name]} and $path"
+    demo_path[$name]=$path
+  done < <(git -C "$amber_src" ls-tree -r --name-only "$library_sha" demo_experiments |
+    grep -E '^demo_experiments/[^/]+/[^/]+\.toml$')
+  [ ${#demo_path[@]} -gt 0 ] || die "Amber $library_sha has no demo_experiments/<folder>/<name>.toml"
+  local found
+  found=$(printf '%s\n' "${!demo_path[@]}" | LC_ALL=C sort | tr '\n' ' ')
+  found=${found% }
+  log "demos in Amber $library_sha: $found"
+  demos=${demos:-$found}
+  local d
+  for d in $demos; do
+    [ -n "${demo_path[$d]:-}" ] || die "no demo $d in Amber $library_sha (it has: $found)"
+  done
+  for d in "${!sim_timeout[@]}"; do
+    [[ " $demos " == *" ${d%-n*} "* ]] || die "--sim-timeout for $d, which is not in --demos"
+  done
+}
+
+# The TOML path of a demo in Amber, and the folder it is in (its protocol).
 scenario_rel_path() {
-  local demo=$1
-  case "$demo" in
-    broadcast) printf '%s\n' 'demo_experiments/broadcast/broadcast.toml' ;;
-    broadcast_sic) printf '%s\n' 'demo_experiments/broadcast_sic/broadcast_sic.toml' ;;
-    unicast) printf '%s\n' 'demo_experiments/unicast/unicast.toml' ;;
-    custom_protocol) printf '%s\n' 'demo_experiments/custom_protocol/custom_protocol.toml' ;;
-    registration) printf '%s\n' 'tests/split/scenarios/registration.toml' ;;
-    adaptive_aloha) printf '%s\n' 'tests/split/scenarios/adaptive_aloha.toml' ;;
-    *) die "no scenario '$demo' (use broadcast, broadcast_sic, unicast, custom_protocol," \
-      "registration, or adaptive_aloha)" ;;
-  esac
+  printf '%s\n' "${demo_path[$1]}"
+}
+
+demo_folder() {
+  local path=${demo_path[$1]#demo_experiments/}
+  printf '%s\n' "${path%%/*}"
 }
 
 # --- preflight -----------------------------------------------------------------------------------
@@ -575,13 +596,15 @@ upload() {
 }
 
 do_run() {
-  local run_dir reader_dir tag_dir line scen_rel scen_path
+  local run_dir reader_dir tag_dir line scen_rel scen_path folder
   run_t0=$(now)
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # Runs are kept by protocol, like Amber's demo_experiments/<protocol>/.
+  folder=$(demo_folder "$demo")
   attempt=1
-  while [ -e "$out/runs/$label-s$seed-a$attempt" ]; do attempt=$((attempt + 1)); done
+  while [ -e "$out/runs/$folder/$label-s$seed-a$attempt" ]; do attempt=$((attempt + 1)); done
   run_name=amb-$campaign-$label-s$seed-a$attempt
-  run_dir=$out/runs/$label-s$seed-a$attempt
+  run_dir=$out/runs/$folder/$label-s$seed-a$attempt
   mkdir -p "$run_dir"
   run_status="" run_reason="" missing_ids="" run_detail="" t_hello="" t_sim="" t_reference="" t_collect=""
   log "run $run_name"
@@ -649,7 +672,7 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
   log "$run_name: $run_status ($run_reason) $run_detail"
   counts[$run_status]=$((counts[$run_status] + 1))
   echo "$run_name $label $run_status $run_reason ${t_sim:-0}" >> "$out/runs.txt"
-  upload "$run_dir" "$campaign/runs/${run_dir##*/}"
+  upload "$run_dir" "$campaign/runs/$folder/${run_dir##*/}"
 }
 
 # --- campaign ------------------------------------------------------------------------------------
@@ -659,6 +682,7 @@ runner_sha=$(sha256sum "$0" | cut -d' ' -f1)
 cp "$0" "$out/preflight/amber_campaign.sh"
 printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
 preflight
+find_demos
 declare -A counts=([PASS]=0 [CHECK]=0 [FAIL]=0) demo_layout=()
 scenario_json="" t_scenario="" t_reference="" t_hello="" t_sim="" t_collect="" started="" deadline=0 attempt=0 run_t0=0
 ntags="" label=""
