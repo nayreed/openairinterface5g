@@ -35,7 +35,6 @@
 #   --campaign NAME                       default amber-<UTC time>; the campaign directory is
 #                                         ./amber-campaigns/NAME
 #   --keep-going                          go on after a run that does not pass (default: stop there)
-#   --dry-run                             preflight and scenario checks only
 #
 # Environment: AMBER_SSH (default "ssh -o BatchMode=yes -o ConnectTimeout=10") runs a command on a
 # node: $AMBER_SSH NODE COMMAND. The allocation must name the user running this script (id -un).
@@ -73,7 +72,7 @@ elapsed() {
 reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src=""
 demos="broadcast broadcast_sic unicast custom_protocol" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
 hello_timeout="" calibration_ceiling=1800 campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
-pos_results_root=/srv/testbed/results docker=docker dry_run=0 keep_going=0
+pos_results_root=/srv/testbed/results docker=docker keep_going=0
 declare -A sim_timeout=()
 ssh_cmd=${AMBER_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10}
 
@@ -96,7 +95,6 @@ while [ $# -gt 0 ]; do
       shift 2 ;;
     --campaign) campaign=$2; shift 2 ;;
     --keep-going) keep_going=1; shift ;;
-    --dry-run) dry_run=1; shift ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
@@ -671,35 +669,34 @@ set_label() {
   if [ "$1" = default ]; then ntags="" label=$demo; else ntags=$1 label=$demo-n$1; fi
 }
 
-if [ "$dry_run" = 1 ]; then
-  for n in $ntags_list; do
-  for demo in $demos; do
-    set_label "$n"
-    for seed in $seeds; do
-      dir=$out/dry-run/$label-s$seed
-      mkdir -p "$dir"
-      make_scenario "$dir" "$demo" "$seed" "$ntags"
-      remote=$reader_home/amber-campaign/$campaign/dry-run/$label-s$seed
-      put_dir "$reader_node" "$dir/scen" "$remote/scen"
-      scen_rel=$(scenario_rel_path "$demo")
-      scen_path="/scenarios/$scen_rel"
-      on "$reader_node" "$docker run --rm -v $(q "$remote/scen"):/scenarios:ro $(q "$image") \
-        python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1 > "$dir/scenario.json"
-      jq -e --argjson seed "$seed" --arg n "$ntags" '.SEED == $seed and (.NODE_IDS | length > 0)
-          and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' "$dir/scenario.json" > /dev/null ||
-        die "scenario $label seed $seed: $(cat "$dir/scenario.json")"
-      layout=$(jq -c '{LAYOUT_SEED, layout}' "$dir/scenario.json")
-      [ -z "${demo_layout[$label]:-}" ] || [ "${demo_layout[$label]}" = "$layout" ] ||
-        die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $dir/scenario.json)"
-      demo_layout[$label]=$layout
-      log "dry run: $label seed $seed: $(jq -c '{SEED, LAYOUT_SEED, SIM_TIME_MS, tags: (.NODE_IDS | length)}' \
-        "$dir/scenario.json")"
-    done
+# Check every scenario of the campaign before the first run, so that a bad one stops the campaign
+# before anything is run or uploaded.
+for n in $ntags_list; do
+for demo in $demos; do
+  set_label "$n"
+  for seed in $seeds; do
+    dir=$out/check/$label-s$seed
+    mkdir -p "$dir"
+    make_scenario "$dir" "$demo" "$seed" "$ntags"
+    remote=$reader_home/amber-campaign/$campaign/check/$label-s$seed
+    put_dir "$reader_node" "$dir/scen" "$remote/scen"
+    scen_rel=$(scenario_rel_path "$demo")
+    scen_path="/scenarios/$scen_rel"
+    on "$reader_node" "$docker run --rm -v $(q "$remote/scen"):/scenarios:ro $(q "$image") \
+      python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1 > "$dir/scenario.json"
+    jq -e --argjson seed "$seed" --arg n "$ntags" '.SEED == $seed and (.NODE_IDS | length > 0)
+        and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' "$dir/scenario.json" > /dev/null ||
+      die "scenario $label seed $seed: $(cat "$dir/scenario.json")"
+    layout=$(jq -c '{LAYOUT_SEED, layout}' "$dir/scenario.json")
+    [ -z "${demo_layout[$label]:-}" ] || [ "${demo_layout[$label]}" = "$layout" ] ||
+      die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $dir/scenario.json)"
+    demo_layout[$label]=$layout
+    log "checked $label seed $seed: $(jq -c '{SEED, LAYOUT_SEED, SIM_TIME_MS, tags: (.NODE_IDS | length)}' \
+      "$dir/scenario.json")"
   done
-  done
-  log "dry run passed; no container was started for a run and nothing was uploaded"
-  exit 0
-fi
+done
+done
+log "all scenarios checked; starting the runs"
 
 for n in $ntags_list; do
   for demo in $demos; do

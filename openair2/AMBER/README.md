@@ -129,7 +129,8 @@ with the `[run]` seed set to the seed, runs
 `amber.split.reference` and then the containers from the image, and compares their logs byte for
 byte. It stops a run when a Tag has not connected in `--hello-timeout` and names the missing node
 ids, and uploads every run with `pos_upload` before the next. It only reads the allocation. See the
-script's header for its options; `--dry-run` checks the nodes, the image and the scenarios only.
+script's header for its options. Before the first run it checks every scenario of the campaign, so
+a bad one stops it before anything is run or uploaded.
 
 ```bash
 docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f1 address> \
