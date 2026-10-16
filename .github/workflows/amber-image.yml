@@ -1,8 +1,9 @@
 name: oai-amber image
 
 # Builds the image with amber-reader, amber-tag and Amber (docker/Dockerfile.amber.ubuntu), runs
-# two test scenarios and Amber's four demos from it in docker compose and compares their logs with
-# one-process Amber, then publishes it as ghcr.io/<owner>/oai-amber:<commit>, and :latest for the aiot-rfsim branch.
+# two seeded TOML test scenarios and Amber's four TOML demos from it in docker compose and compares
+# their logs with one-process Amber, then publishes it as ghcr.io/<owner>/oai-amber:<commit>, and
+# :latest for the aiot-rfsim branch.
 
 on:
   push:
@@ -40,26 +41,9 @@ jobs:
         run: |
           docker build -f docker/Dockerfile.amber.ubuntu \
             --build-arg OAI_AMBER_IMAGE="$IMAGE:$TAG" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
             -t "$IMAGE:$TAG" .
           docker image ls "$IMAGE"
-
-      - name: Run 4 Tags and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/registration.py
-
-      - name: Run 12 Tags and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/adaptive_aloha.py
-
-      - name: Run Amber's broadcast demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/split/broadcast.py
-
-      - name: Run Amber's broadcast_sic demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/split/broadcast_sic.py
-
-      - name: Run Amber's unicast demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/split/unicast.py
-
-      - name: Run Amber's custom_protocol demo and compare with one process
-        run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/demo_experiments/split/custom_protocol.py
 
       - name: Run seeded TOML registration scenario and compare with one process
         run: docker/scripts/amber_check_image.sh "$IMAGE:$TAG" /opt/amber/tests/split/scenarios/registration.toml
