@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 #
-# Run a Python or TOML Amber scenario as one Reader and one Tag per node, then compare
+# Run a TOML Amber scenario as one Reader and one Tag per node, then compare
 # the split logs byte-for-byte with amber.split.reference from the same image.
 #
 #   amber_check_image.sh IMAGE [SCENARIO]
@@ -17,11 +17,9 @@ if [ $# -lt 1 ] || [ $# -gt 2 ]; then
   exit 2
 fi
 image=$1
-scenario=${2:-/opt/amber/tests/split/scenarios/registration.py}
+scenario=${2:-/opt/amber/tests/split/scenarios/registration.toml}
 work=$(mktemp -d)
 compose=(docker compose -f "$work/compose.yaml")
-scenario_for_compose=$scenario
-is_toml=0
 
 cleanup() {
   "${compose[@]}" down --remove-orphans > /dev/null 2>&1 || true
@@ -31,14 +29,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "$scenario" == *.toml ]]; then
-  case "$scenario" in
-    /opt/amber/*) scenario_rel=${scenario#/opt/amber/} ;;
-    *) echo "TOML scenario must be under /opt/amber: $scenario" >&2; exit 2 ;;
-  esac
-  mkdir -p "$work/scenarios"
-  docker run --rm -i -v "$work/scenarios:/scenario-stage" "$image" \
-    python3 - "$scenario" "$scenario_rel" 12345 <<'PY'
+case "$scenario" in
+  /opt/amber/*.toml) scenario_rel=${scenario#/opt/amber/} ;;
+  *) echo "the scenario must be a TOML file under /opt/amber: $scenario" >&2; exit 2 ;;
+esac
+mkdir -p "$work/scenarios"
+docker run --rm -i -v "$work/scenarios:/scenario-stage" "$image" \
+  python3 - "$scenario" "$scenario_rel" 12345 <<'PY'
 from pathlib import Path
 import re
 import shutil
@@ -87,16 +84,10 @@ if trace:
 
 print(f"Prepared seeded TOML scenario: {destination} (seed={seed})")
 PY
-  scenario_for_compose="/scenarios/$scenario_rel"
-  is_toml=1
-fi
+scenario_for_compose="/scenarios/$scenario_rel"
 
-if [ "$is_toml" -eq 1 ]; then
-  docker run --rm -v "$work/scenarios:/scenarios:ro" "$image" \
-    amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
-else
-  docker run --rm "$image" amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
-fi
+docker run --rm -v "$work/scenarios:/scenarios:ro" "$image" \
+  amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
 
 # Compose waits until the Reader and all Tags have stopped.
 "${compose[@]}" up
@@ -111,12 +102,7 @@ for id in $("${compose[@]}" ps --all --quiet); do
 done
 [ "$failed" = 0 ]
 
-if [ "$is_toml" -eq 1 ]; then
-  docker run --rm -v "$work:/work" -v "$work/scenarios:/scenarios:ro" "$image" \
-    python3 -m amber.split.reference "$scenario_for_compose" /work/ref
-else
-  docker run --rm -v "$work:/work" "$image" \
-    python3 -m amber.split.reference "$scenario_for_compose" /work/ref
-fi
+docker run --rm -v "$work:/work" -v "$work/scenarios:/scenarios:ro" "$image" \
+  python3 -m amber.split.reference "$scenario_for_compose" /work/ref
 diff -r "$work/ref" "$work/out"
 echo "$scenario: split containers match one-process reference ($(find "$work/out" -type f | wc -l) files)"

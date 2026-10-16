@@ -9,6 +9,8 @@
 #   amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr 10.0.0.1 \
 #     --image ghcr.io/nayreed/oai-amber@sha256:... --amber-src ~/Amber --allocation ID --seeds "1 2" [options]
 #
+# The scenarios are Amber's seeded TOML scenarios, taken from the Amber commit the image embeds.
+#
 # Run it on the POS frontend (duckburg) against nodes already allocated to you. It only reads the
 # allocation (pos allocations show): it never allocates, frees, resets or images a node.
 #
@@ -17,39 +19,30 @@
 #   --reader-addr ADDR                    address the Tags reach the Reader node at
 #   --port PORT                           rfsim server port (default 4043)
 #   --image IMAGE@sha256:DIGEST           the image, by digest; it must already be pulled on both nodes
-#   --amber-src DIR                       a git clone of Amber holding both refs below
-#   --library-ref REF                     the Amber the image embeds (default 0bc99f1, the AMBER_REF
-#                                         of Dockerfile.amber.ubuntu): the image's /opt/amber must equal it
-#   --scenario-ref REF                    the Amber commit the scenario files come from (default: --library-ref)
-#   --scenario-format py|toml             legacy Python demos or seeded TOML scenarios (default py)
-#   --demos "NAMES"                       scenario names; TOML mode also supports registration and adaptive_aloha
-#   --seeds "N ..."                       run seeds; each run sets the scenario's SEED to one of them
-#   --tags "N ..."                        TOML only: run each demo with N Tags, for each N in turn (at most 250).
+#   --amber-src DIR                       a git clone of Amber holding the commit the image embeds
+#                                         (/opt/amber/AMBER_COMMIT in the image)
+#   --demos "NAMES"                       scenario names: broadcast, broadcast_sic, unicast, custom_protocol,
+#                                         registration, adaptive_aloha (default: the first four)
+#   --seeds "N ..."                       run seeds; each run sets the scenario's [run] seed to one of them
+#   --tags "N ..."                        run each demo with N Tags, for each N in turn (at most 250).
 #                                         The demo's Tag groups keep their share of the Tags; a group placed
 #                                         by positions is placed on a ring 5 to 100 m around (0, 0) instead,
 #                                         with layout seed 7 for the first group, 8 for the second, ...
 #   --allocation ID                       the POS allocation both nodes must be in
-#   --pos-user USER                       allocation owner to require (default: id -un)
 #   --hello-timeout S                     seconds for every Tag to connect (default 120, or 2 s per Tag if more)
 #   --sim-timeout DEMO=S                  seconds for a demo's simulation (repeatable), or DEMO-nTAGS=S for
-#                                         one Tag count; a demo without one gets --calibration-ceiling and
-#                                         its time is reported
-#   --calibration-ceiling S               default 1800
-#   --stall-seconds S                     fail a run when the Reader uses no CPU for S seconds (default 60)
-#   --out DIR                             campaign directory here (default ./amber-campaigns/CAMPAIGN)
-#   --campaign NAME                       default amber-<UTC time>
-#   --pos-results-root DIR                default /srv/testbed/results
-#   --docker "CMD"                        docker command on the nodes (default docker)
-#   --skip-tags "IDS"                     do not start these Tags (to test the diagnostics)
+#                                         one Tag count; a demo without one gets 1800 s and its time is reported
+#   --campaign NAME                       default amber-<UTC time>; the campaign directory is
+#                                         ./amber-campaigns/NAME
 #   --keep-going                          go on after a run that does not pass (default: stop there)
-#   --dry-run                             preflight and scenario checks only
 #
 # Environment: AMBER_SSH (default "ssh -o BatchMode=yes -o ConnectTimeout=10") runs a command on a
-# node: $AMBER_SSH NODE COMMAND.
+# node: $AMBER_SSH NODE COMMAND. The allocation must name the user running this script (id -un).
+# The OAI commit is read from the image's org.opencontainers.image.revision label.
 #
 # Each run ends PASS (every program exited 0, said Bye. and wrote the reference's files exactly),
 # CHECK (programs ended well but the output is incomplete or differs) or FAIL (a program failed, a Tag
-# never connected, a timeout or a stall), with a reason in its result.json.
+# never connected or a timeout), with a reason in its result.json.
 
 set -euo pipefail
 args=("$@")
@@ -76,11 +69,10 @@ elapsed() {
   awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", b - a }'
 }
 
-reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src="" scenario_ref="" scenario_format=py
-library_ref=0bc99f13a55f27b5c16983b23b0e02017e9578af
+reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src=""
 demos="broadcast broadcast_sic unicast custom_protocol" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
-hello_timeout="" calibration_ceiling=1800 stall_seconds=60 out="" campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
-pos_results_root=/srv/testbed/results docker=docker skip_tags="" dry_run=0 keep_going=0
+hello_timeout="" calibration_ceiling=1800 campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
+pos_results_root=/srv/testbed/results docker=docker keep_going=0
 declare -A sim_timeout=()
 ssh_cmd=${AMBER_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10}
 
@@ -92,28 +84,17 @@ while [ $# -gt 0 ]; do
     --port) port=$2; shift 2 ;;
     --image) image=$2; shift 2 ;;
     --amber-src) amber_src=$2; shift 2 ;;
-    --library-ref) library_ref=$2; shift 2 ;;
-    --scenario-ref) scenario_ref=$2; shift 2 ;;
-    --scenario-format) scenario_format=$2; shift 2 ;;
     --demos) demos=$2; shift 2 ;;
     --seeds) seeds=$2; shift 2 ;;
     --tags) tag_counts=$2; shift 2 ;;
     --allocation) allocation=$2; shift 2 ;;
-    --pos-user) pos_user=$2; shift 2 ;;
     --hello-timeout) hello_timeout=$2; shift 2 ;;
     --sim-timeout)
       [[ $2 =~ ^([a-z_]+(-n[0-9]+)?)=([0-9]+)$ ]] || die "--sim-timeout takes DEMO=SECONDS or DEMO-nTAGS=SECONDS, got $2"
       sim_timeout[${BASH_REMATCH[1]}]=${BASH_REMATCH[3]}
       shift 2 ;;
-    --calibration-ceiling) calibration_ceiling=$2; shift 2 ;;
-    --stall-seconds) stall_seconds=$2; shift 2 ;;
-    --out) out=$2; shift 2 ;;
     --campaign) campaign=$2; shift 2 ;;
-    --pos-results-root) pos_results_root=$2; shift 2 ;;
-    --docker) docker=$2; shift 2 ;;
-    --skip-tags) skip_tags=$2; shift 2 ;;
     --keep-going) keep_going=1; shift ;;
-    --dry-run) dry_run=1; shift ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
@@ -124,7 +105,7 @@ for v in reader_node tag_node reader_addr image amber_src allocation seeds; do
 done
 [[ $campaign =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "campaign name $campaign: use letters, digits, _ . -"
 [[ $image =~ @sha256:[0-9a-f]{64}$ ]] || die "--image must name a digest (IMAGE@sha256:...), not a tag such as latest"
-for n in $port ${hello_timeout:-0} $calibration_ceiling $stall_seconds $seeds $skip_tags $tag_counts; do
+for n in $port ${hello_timeout:-0} $seeds $tag_counts; do
   [[ $n =~ ^[0-9]+$ ]] || die "expected a non-negative integer, got $n"
 done
 for n in $tag_counts; do
@@ -133,23 +114,15 @@ done
 for d in $demos; do
   [[ $d =~ ^[a-z_]+$ ]] || die "demo name $d"
 done
-case "$scenario_format" in py|toml) ;; *) die "--scenario-format must be py or toml" ;; esac
-[ -z "$tag_counts" ] || [ "$scenario_format" = toml ] || die "--tags needs --scenario-format toml"
 for d in "${!sim_timeout[@]}"; do
   [[ " $demos " == *" ${d%-n*} "* ]] || die "--sim-timeout for $d, which is not in --demos"
 done
 [ "$reader_node" != "$tag_node" ] || die "the Reader and the Tags must run on different nodes"
-out=${out:-./amber-campaigns/$campaign}
-[ ! -e "$out" ] || die "$out exists: give each campaign a new --campaign or --out"
+out=./amber-campaigns/$campaign
+[ ! -e "$out" ] || die "$out exists: give each campaign a new --campaign"
 command -v jq > /dev/null || die "jq is needed"
 command -v pos > /dev/null || die "the pos command is needed: run this on the POS frontend"
 git -C "$amber_src" rev-parse --git-dir > /dev/null 2>&1 || die "--amber-src $amber_src is not a git clone"
-library_sha=$(git -C "$amber_src" rev-parse --verify "$library_ref^{commit}") || die "no commit $library_ref in $amber_src"
-scenario_ref=${scenario_ref:-$library_ref}
-scenario_sha=$(git -C "$amber_src" rev-parse --verify "$scenario_ref^{commit}") || die "no commit $scenario_ref in $amber_src"
-if [[ "$scenario_format" == toml && "$scenario_sha" != "$library_sha" ]]; then
-  die "TOML runs require --scenario-ref and --library-ref to resolve to the same Amber commit"
-fi
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -180,13 +153,9 @@ get_dir() {
   on "$1" "tar -C $(q "$2") -cf - ." | tar -C "$3" -xf -
 }
 
-# Resolve a demo name to its scenario path in the selected Amber commit.
+# Resolve a demo name to its TOML scenario path in Amber.
 scenario_rel_path() {
   local demo=$1
-  if [[ "$scenario_format" == py ]]; then
-    printf 'demo_experiments/split/%s.py\n' "$demo"
-    return 0
-  fi
   case "$demo" in
     broadcast) printf '%s\n' 'demo_experiments/broadcast/broadcast.toml' ;;
     broadcast_sic) printf '%s\n' 'demo_experiments/broadcast_sic/broadcast_sic.toml' ;;
@@ -194,7 +163,7 @@ scenario_rel_path() {
     custom_protocol) printf '%s\n' 'demo_experiments/custom_protocol/custom_protocol.toml' ;;
     registration) printf '%s\n' 'tests/split/scenarios/registration.toml' ;;
     adaptive_aloha) printf '%s\n' 'tests/split/scenarios/adaptive_aloha.toml' ;;
-    *) die "no TOML scenario mapping for '$demo' (use broadcast, broadcast_sic, unicast, custom_protocol," \
+    *) die "no scenario '$demo' (use broadcast, broadcast_sic, unicast, custom_protocol," \
       "registration, or adaptive_aloha)" ;;
   esac
 }
@@ -251,8 +220,17 @@ preflight() {
   image_id=$(on "$reader_node" "$docker image inspect --format '{{.Id}}' $(q "$image")")
   [ "$image_id" = "$(on "$tag_node" "$docker image inspect --format '{{.Id}}' $(q "$image")")" ] ||
     die "$image is a different image on $reader_node and $tag_node"
+  oai_commit=$(on "$reader_node" "$docker image inspect --format '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}' $(q "$image")")
+  [ -n "$oai_commit" ] && [ "$oai_commit" != "<no value>" ] || oai_commit=unknown
 
-  # The image's Amber must be the library commit: same Python files and energy trace.
+  # The scenarios come from the Amber the image embeds, which must be in --amber-src.
+  local amber_commit
+  amber_commit=$(on "$reader_node" "$docker run --rm $(q "$image") cat /opt/amber/AMBER_COMMIT") ||
+    die "$image has no /opt/amber/AMBER_COMMIT: rebuild it from this branch"
+  library_sha=$(git -C "$amber_src" rev-parse --verify "$amber_commit^{commit}") ||
+    die "the image embeds Amber $amber_commit, which is not in $amber_src: git -C $amber_src fetch"
+
+  # The image's Amber must be that commit: same Python files and energy trace.
   local lib=$out/preflight/library
   mkdir -p "$lib"
   git -C "$amber_src" archive "$library_sha" amber demo_experiments tests/split/scenarios | tar -C "$lib" -xf -
@@ -264,7 +242,7 @@ preflight() {
   diff "$out/preflight/library.sha256" "$out/preflight/image-amber.sha256" > /dev/null ||
     die "the image's /opt/amber differs from Amber $library_sha (see preflight/*.sha256)"
   rm -rf "$lib"
-  log "preflight passed: image $image_id embeds Amber $library_sha"
+  log "preflight passed: image $image_id (OAI $oai_commit) embeds Amber $library_sha"
 }
 
 # --- scenarios -----------------------------------------------------------------------------------
@@ -285,20 +263,12 @@ print(json.dumps({"SEED": getattr(s, "SEED", None), "LAYOUT_SEED": getattr(s, "L
 make_scenario() {
   local dir=$1 demo=$2 seed=$3 ntags=${4:-} file rel
   mkdir -p "$dir/scen"
-  if [[ "$scenario_format" == py ]]; then
-    git -C "$amber_src" archive "$scenario_sha" demo_experiments/split tests/split/scenarios/demo_common.py |
-      tar -C "$dir/scen" -xf -
-    file=$dir/scen/demo_experiments/split/$demo.py
-    [ -f "$file" ] || die "Amber $scenario_sha has no demo_experiments/split/$demo.py"
-    [ "$(grep -c '^SEED = [0-9_]*$' "$file")" = 1 ] || die "$demo.py must set SEED on exactly one line"
-    sed -i "s/^SEED = [0-9_]*\$/SEED = $seed/" "$file"
-  else
-    git -C "$amber_src" archive "$scenario_sha" demo_experiments tests/split/scenarios |
-      tar -C "$dir/scen" -xf -
-    rel=$(scenario_rel_path "$demo")
-    file=$dir/scen/$rel
-    [ -f "$file" ] || die "Amber $scenario_sha has no $rel"
-    python3 - "$file" "$seed" "$ntags" <<'PY'
+  git -C "$amber_src" archive "$library_sha" demo_experiments tests/split/scenarios |
+    tar -C "$dir/scen" -xf -
+  rel=$(scenario_rel_path "$demo")
+  file=$dir/scen/$rel
+  [ -f "$file" ] || die "Amber $library_sha has no $rel"
+  python3 - "$file" "$seed" "$ntags" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -352,7 +322,6 @@ if ntags is not None:
     lines = out
 path.write_text("\n".join(lines) + "\n")
 PY
-  fi
   (cd "$dir/scen" && find . -type f | LC_ALL=C sort | xargs sha256sum) > "$dir/scenario.sha256"
 }
 
@@ -389,12 +358,6 @@ reader_state() {
   on "$reader_node" "$docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' $run_name-reader"
 }
 
-# CPU time of the Reader container's processes, in clock ticks.
-reader_cpu() {
-  on "$reader_node" "for p in \$($docker top $run_name-reader -eo pid | tail -n +2); do cat /proc/\$p/stat; done 2>/dev/null |
-    awk '{ t += \$14 + \$15 } END { print t + 0 }'"
-}
-
 # Starts the containers and waits for the Reader to end. Sets run_status on failure, and t_hello, t_sim.
 run_containers() {
   local reader_dir=$1 tag_dir=$2 deadline=$3 scen_rel scen_path
@@ -418,10 +381,6 @@ run_containers() {
   # All Tags from one shell on the node, 16 docker run at a time; one that fails to start shows as missing.
   local starts="n=0" started_ids=()
   for id in "${tag_ids[@]}"; do
-    if [[ " $skip_tags " == *" $id "* ]]; then
-      log "not starting Tag $id (--skip-tags)"
-      continue
-    fi
     started_ids+=("$id")
     starts+="
 $docker run -d --name $run_name-tag$id --network host --init \
@@ -477,10 +436,8 @@ wait"
   t_hello=$(elapsed "$t0" "$(now)")
   log "all ${#tag_ids[@]} Tags connected in $t_hello s; simulation deadline $deadline s"
 
-  # Simulation: until the Reader ends; fail on a Tag ending first, the deadline, or a stall.
+  # Simulation: until the Reader ends; fail on a Tag ending first or the deadline.
   t0=$(now)
-  local cpu last_cpu=-1 last_change
-  last_change=$(now)
   while true; do
     read -r status code <<< "$(reader_state)"
     [ "$status" = running ] || break
@@ -497,13 +454,6 @@ wait"
         [ "$status" = running ] || [ "$code" = 0 ] || exited+=("$id:$code")
       done < <(tag_states)
       fail tag_exited_during_run "Tags ended with errors while the Reader ran (node id:exit code): ${exited[*]}"
-      return
-    fi
-    cpu=$(reader_cpu)
-    if [ "$cpu" != "$last_cpu" ]; then
-      last_cpu=$cpu last_change=$(now)
-    elif [ "$(elapsed "$last_change" "$(now)" | cut -d. -f1)" -ge "$stall_seconds" ]; then
-      fail sim_stalled "the Reader used no CPU for $stall_seconds s"
       return
     fi
     if [ "$(elapsed "$t0" "$(now)" | cut -d. -f1)" -ge "$deadline" ]; then
@@ -583,7 +533,7 @@ finish_run() {
     --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" --arg ntags "$ntags" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
-    --arg library "$library_sha" --arg scenario_ref "$scenario_sha" --arg scenario_format "$scenario_format" \
+    --arg library "$library_sha" \
     --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
     --arg reader_node "$reader_node" --arg tag_node "$tag_node" --arg reader_addr "$reader_addr" --argjson port "$port" \
     --arg reader_cmd "amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode --rfsimulator.serverport $port" \
@@ -595,9 +545,9 @@ finish_run() {
       tags_option: (if $ntags == "" then null else ($ntags | tonumber) end),
       status: $status, reason: $reason, detail: $detail,
       missing_node_ids: ($missing | split(" ") | map(select(. != "") | tonumber)),
-      scenario: $scenario, scenario_format: $scenario_format,
+      scenario: $scenario,
       comparison: "byte for byte against amber.split.reference from the same image and scenario files",
-      image: $image, image_id: $image_id, amber_library: $library, amber_scenario_ref: $scenario_ref,
+      image: $image, image_id: $image_id, amber_library: $library,
       runner_sha256: $runner, oai_commit: $oai_commit,
       reader_node: $reader_node, tag_node: $tag_node, reader_addr: $reader_addr, port: $port,
       reader_command: $reader_cmd, tag_command: $tag_cmd, sim_deadline_s: $deadline, started_utc: $started,
@@ -706,7 +656,6 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
 
 mkdir -p "$out/preflight" "$out/runs"
 runner_sha=$(sha256sum "$0" | cut -d' ' -f1)
-oai_commit=${OAI_COMMIT:-$(git -C "$(dirname "$0")" rev-parse HEAD 2> /dev/null || echo unknown)}
 cp "$0" "$out/preflight/amber_campaign.sh"
 printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
 preflight
@@ -720,35 +669,34 @@ set_label() {
   if [ "$1" = default ]; then ntags="" label=$demo; else ntags=$1 label=$demo-n$1; fi
 }
 
-if [ "$dry_run" = 1 ]; then
-  for n in $ntags_list; do
-  for demo in $demos; do
-    set_label "$n"
-    for seed in $seeds; do
-      dir=$out/dry-run/$label-s$seed
-      mkdir -p "$dir"
-      make_scenario "$dir" "$demo" "$seed" "$ntags"
-      remote=$reader_home/amber-campaign/$campaign/dry-run/$label-s$seed
-      put_dir "$reader_node" "$dir/scen" "$remote/scen"
-      scen_rel=$(scenario_rel_path "$demo")
-      scen_path="/scenarios/$scen_rel"
-      on "$reader_node" "$docker run --rm -v $(q "$remote/scen"):/scenarios:ro $(q "$image") \
-        python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1 > "$dir/scenario.json"
-      jq -e --argjson seed "$seed" --arg n "$ntags" '.SEED == $seed and (.NODE_IDS | length > 0)
-          and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' "$dir/scenario.json" > /dev/null ||
-        die "scenario $label seed $seed: $(cat "$dir/scenario.json")"
-      layout=$(jq -c '{LAYOUT_SEED, layout}' "$dir/scenario.json")
-      [ -z "${demo_layout[$label]:-}" ] || [ "${demo_layout[$label]}" = "$layout" ] ||
-        die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $dir/scenario.json)"
-      demo_layout[$label]=$layout
-      log "dry run: $label seed $seed: $(jq -c '{SEED, LAYOUT_SEED, SIM_TIME_MS, tags: (.NODE_IDS | length)}' \
-        "$dir/scenario.json")"
-    done
+# Check every scenario of the campaign before the first run, so that a bad one stops the campaign
+# before anything is run or uploaded.
+for n in $ntags_list; do
+for demo in $demos; do
+  set_label "$n"
+  for seed in $seeds; do
+    dir=$out/check/$label-s$seed
+    mkdir -p "$dir"
+    make_scenario "$dir" "$demo" "$seed" "$ntags"
+    remote=$reader_home/amber-campaign/$campaign/check/$label-s$seed
+    put_dir "$reader_node" "$dir/scen" "$remote/scen"
+    scen_rel=$(scenario_rel_path "$demo")
+    scen_path="/scenarios/$scen_rel"
+    on "$reader_node" "$docker run --rm -v $(q "$remote/scen"):/scenarios:ro $(q "$image") \
+      python3 -c $(q "$inspect_py") $(q "$scen_path")" | tail -n 1 > "$dir/scenario.json"
+    jq -e --argjson seed "$seed" --arg n "$ntags" '.SEED == $seed and (.NODE_IDS | length > 0)
+        and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' "$dir/scenario.json" > /dev/null ||
+      die "scenario $label seed $seed: $(cat "$dir/scenario.json")"
+    layout=$(jq -c '{LAYOUT_SEED, layout}' "$dir/scenario.json")
+    [ -z "${demo_layout[$label]:-}" ] || [ "${demo_layout[$label]}" = "$layout" ] ||
+      die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $dir/scenario.json)"
+    demo_layout[$label]=$layout
+    log "checked $label seed $seed: $(jq -c '{SEED, LAYOUT_SEED, SIM_TIME_MS, tags: (.NODE_IDS | length)}' \
+      "$dir/scenario.json")"
   done
-  done
-  log "dry run passed; no container was started for a run and nothing was uploaded"
-  exit 0
-fi
+done
+done
+log "all scenarios checked; starting the runs"
 
 for n in $ntags_list; do
   for demo in $demos; do

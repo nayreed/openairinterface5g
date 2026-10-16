@@ -20,10 +20,10 @@ process by `amber.split.hosts.build_one_process()`.
 
 ## Amber version
 
-Use Amber at commit `0bc99f1`, which has `amber.split`, TOML scenarios and the protocols:
+Use Amber's `dev` branch, which has `amber.split`, TOML scenarios and the protocols:
 
 ```bash
-git clone https://github.com/nayreed/Amber && git -C Amber checkout 0bc99f1
+git clone https://github.com/nayreed/Amber && git -C Amber checkout dev
 pip install simpy numpy pandas openpyxl matplotlib
 ```
 
@@ -42,11 +42,11 @@ ninja amber-reader amber-tag rfsimulator
 
 All programs need Amber on `PYTHONPATH`, the same scenario file and rfsim's `msgmode`. Start
 the Reader, then one Tag per node of the scenario's `NODE_IDS`; the Reader starts millisecond 0
-once every node has connected. For `registration.py`, whose nodes are 0 to 3:
+once every node has connected. For `registration.toml`, whose nodes are 0 to 3:
 
 ```bash
 export PYTHONPATH=<Amber checkout>
-SCENARIO=<Amber checkout>/tests/split/scenarios/registration.py
+SCENARIO=<Amber checkout>/tests/split/scenarios/registration.toml
 mkdir -p out
 ./amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode \
     --amber.scenario $SCENARIO --amber.output_dir out/ &
@@ -58,16 +58,17 @@ wait
 ```
 
 Options of the `amber` section: `scenario` (required), `node_id` (required for `amber-tag`),
-`output_dir` (default `.`), `block_bytes` (default 8192). A scenario module defines what
-`amber/split/hosts.py` lists. Every program prints `Bye.` when the run ends and writes its logs
+`output_dir` (default `.`), `block_bytes` (default 8192). A scenario is an Amber TOML file, and a
+split run needs a fixed `seed` in its `[run]` table, so that the Reader and every Tag draw the same
+numbers. Every program prints `Bye.` when the run ends and writes its logs
 as CSV: `reader_bs<id>_rx.csv` and `reader_bs<id>_tx.csv` from the Reader, `tag<id>_tx.csv` and
 `tag<id>_rx.csv` from each Tag.
 
 `amber-reader` refuses to start unless it is the rfsim server in `msgmode`. `amber-tag` runs
 without it, but rfsim then sends each block in several writes without `TCP_NODELAY`, and every
 simulated millisecond waits on TCP's delayed acknowledgement, about 40 ms on loopback. With
-`msgmode` on all programs, on one machine over loopback, `registration.py` (4 Tags, 8001 ms) ran
-in 5.5 s and `adaptive_aloha.py` (12 Tags, 6001 ms) in 11 s.
+`msgmode` on all programs, on one machine over loopback, the Python version of the registration
+scenario (4 Tags, 8001 ms) ran in 5.5 s and of the adaptive ALOHA scenario (12 Tags, 6001 ms) in 11 s.
 
 To check a run, write the logs of the same scenario run in one process and compare:
 
@@ -78,28 +79,31 @@ diff -r ref out
 
 ## Docker
 
-`docker/Dockerfile.amber.ubuntu` builds one image with both programs and Amber at the commit
-above, so a Reader and its Tags always run the same code. To build it locally, from the
-repository root (`--build-arg AMBER_REF=<commit>` picks another Amber commit):
+`docker/Dockerfile.amber.ubuntu` builds one image with both programs and Amber's `dev` branch, so a
+Reader and its Tags always run the same code. The Amber commit it used is in
+`/opt/amber/AMBER_COMMIT`, and the OAI commit in the `org.opencontainers.image.revision` label when
+the workflow built it. To build it locally, from the repository root (`--build-arg AMBER_REF=<commit>`
+picks another Amber commit; Docker caches the clone, so add `--no-cache` to pick up a newer `dev`):
 
 ```bash
 docker build -f docker/Dockerfile.amber.ubuntu -t oai-amber .
 ```
 
-GitHub builds it on every push to `aiot-rfsim` (`.github/workflows/amber-image.yml`). It runs a
-4-Tag and a 12-Tag scenario and Amber's four demos (below) from the image with
-`docker/scripts/amber_check_image.sh`, which compares their logs with one-process Amber, then
-publishes `ghcr.io/nayreed/oai-amber`, tagged with the first 8 characters of the commit and with
-`latest`.
+The GitHub workflow `.github/workflows/amber-image.yml` runs only when started by hand (Actions >
+oai-amber image > Run workflow). Its jobs check the scripts, build the image against Amber's current
+`dev` commit (reusing cached dependency layers), run a 4-Tag and a 12-Tag TOML scenario from it on
+one runner with `docker/scripts/amber_check_image.sh`, which compares their logs with one-process
+Amber, and, on `aiot-rfsim` only, publish `ghcr.io/nayreed/oai-amber`, tagged with the first 8
+characters of the commit and with `latest`. Runs between two hosts are the campaign's job (below).
 
 `amber-compose` writes a compose file with one Reader and one Tag per node of a scenario:
 
 ```bash
 IMAGE=ghcr.io/nayreed/oai-amber:latest
-docker run --rm $IMAGE amber-compose /opt/amber/tests/split/scenarios/registration.py > compose.yaml
+docker run --rm $IMAGE amber-compose /opt/amber/tests/split/scenarios/registration.toml > compose.yaml
 docker compose up
 docker run --rm -v "$PWD/ref:/ref" $IMAGE \
-    python3 -m amber.split.reference /opt/amber/tests/split/scenarios/registration.py /ref
+    python3 -m amber.split.reference /opt/amber/tests/split/scenarios/registration.toml /ref
 diff -r ref out
 ```
 
@@ -108,10 +112,11 @@ The compose file names the exact image that wrote it, by commit. Every program w
 path under `/scenarios`, with `-v "$PWD/scenarios:/scenarios"`; the compose file then mounts
 `./scenarios` too.
 
-Amber's four demos are in the image as scenarios, in `/opt/amber/demo_experiments/split`:
-`broadcast.py`, `broadcast_sic.py`, `unicast.py` (3 Tags, 20001 ms) and `custom_protocol.py`
-(12 Tags, 15001 ms). They keep the demos' settings; each node draws from its own random generator.
-The demos' results (sent, decoded, DER, throughput) from the logs:
+Amber's four demos are in the image as TOML scenarios: `broadcast`, `broadcast_sic`, `unicast`
+and `custom_protocol`, each in `/opt/amber/demo_experiments/<name>/<name>.toml`. They have no
+`seed` in `[run]`, so copy one into `./scenarios` and add a seed before running it split;
+`amber_check_image.sh` does exactly that. The demos' results (sent, decoded, DER, throughput) from
+the logs:
 
 ```bash
 docker run --rm -v "$PWD/out:/out" $IMAGE python3 -m amber.split.summary 20001 /out
@@ -121,18 +126,20 @@ docker run --rm -v "$PWD/out:/out" $IMAGE python3 -m amber.split.summary 20001 /
 
 `docker/scripts/amber_campaign.sh` runs the demos from the POS frontend on two nodes you have
 allocated: the Reader on one, one Tag per node id of the scenario on the other. For each demo and
-seed it copies the scenario files from an Amber clone with `SEED` set to the seed, runs
+seed it copies the TOML scenario files from an Amber clone, at the Amber commit the image embeds,
+with the `[run]` seed set to the seed, runs
 `amber.split.reference` and then the containers from the image, and compares their logs byte for
 byte. It stops a run when a Tag has not connected in `--hello-timeout` and names the missing node
 ids, and uploads every run with `pos_upload` before the next. It only reads the allocation. See the
-script's header for its options; `--dry-run` checks the nodes, the image and the scenarios only.
+script's header for its options. Before the first run it checks every scenario of the campaign, so
+a bad one stops it before anything is run or uploaded.
 
 ```bash
 docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f1 address> \
     --image ghcr.io/nayreed/oai-amber@sha256:<digest> --amber-src ~/Amber --allocation <id> --seeds 1
 ```
 
-With `--scenario-format toml`, `--tags "25 50 100 250"` runs each demo with 25 Tags, then 50, and
+`--tags "25 50 100 250"` runs each demo with 25 Tags, then 50, and
 so on, and stops at the first run that does not pass. The demo's Tag groups keep their share of
 the Tags (broadcast: two thirds WPT, one third hybrid), on a ring 5 to 100 m around the Reader with
 a fixed layout seed per group; custom_protocol keeps its own ring. Every Tag is a container on the
