@@ -131,9 +131,25 @@ containers from the image, and compares their CSV files byte for byte (images wi
 use its `amber.split.reference`). It stops a run when a Tag has not connected in `--hello-timeout`
 and names the missing node ids, and uploads every run with `pos_upload` before the next. It only
 reads the allocation. See the script's header for its options. It finds the demos in the Amber
-commit the image embeds, so a new protocol's demo folder needs no change here. Each run is kept
-under `runs/<protocol>/`. Before the first run it checks every scenario of the campaign, so a bad
-one stops it before anything is run or uploaded.
+commit the image embeds, so a new protocol's demo folder needs no change here. Before the first
+run it checks every scenario of the campaign, so a bad one stops it before anything is run or
+uploaded.
+
+Runs are kept as Amber keeps a demo's output, one folder per run:
+
+```
+amber-campaigns/<campaign>/
+  campaign.log, summary.txt
+  broadcast/output/broadcast-s1/              seed 1
+    reader_bs0_rx.csv, reader_bs0_tx.csv, tag0_rx.csv, tag0_tx.csv, ...
+    run/                                      result.json, logs, the scenario used, SHA256SUMS
+  adaptive_aloha/output/adaptive_aloha-n50-s1/  50 Tags, seed 1
+    reader_bs0_*.csv, tag*_*.csv, adaptation.csv
+    run/
+```
+
+The reference is only for the check: it is kept, under `run/ref/` with `run/diff.txt`, only when the
+check fails. The POS result folder has the same layout.
 
 ```bash
 docker/scripts/amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr <f1 address> \

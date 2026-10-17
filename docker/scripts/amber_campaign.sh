@@ -44,6 +44,11 @@
 # Each run ends PASS (every program exited 0, said Bye. and wrote the reference's files exactly),
 # CHECK (programs ended well but the output is incomplete or differs) or FAIL (a program failed, a Tag
 # never connected or a timeout), with a reason in its result.json.
+#
+# Output, in ./amber-campaigns/NAME and in the POS result folder, laid out as Amber lays out a demo's:
+#   <protocol>/output/<demo>[-n<tags>]-s<seed>/   the containers' CSV files
+#     run/                                        result.json, logs, the scenario used, SHA256SUMS,
+#                                                 and ref/ with diff.txt when the check fails
 
 set -euo pipefail
 args=("$@")
@@ -526,34 +531,35 @@ collect_containers() {
     done"
 }
 
-# Compares the run's logs with the reference and sets PASS or CHECK.
+# Compares the containers' CSV files in the run folder with the reference and sets PASS or CHECK.
 check_output() {
-  local run_dir=$1
-  if ! grep -q "^Bye\.$" "$run_dir/reader/logs/$run_name-reader.log"; then
+  local run_dir=$1 ref=$1/run/ref
+  if ! grep -q "^Bye\.$" "$run_dir/run/logs/$run_name-reader.log"; then
     run_status=CHECK run_reason=no_bye run_detail="the Reader exited 0 without Bye."
     return
   fi
-  if ! awk 'FNR > 1 { found = 1; exit } END { exit !found }' "$run_dir/ref"/reader_bs*_rx.csv 2> /dev/null; then
+  if ! awk 'FNR > 1 { found = 1; exit } END { exit !found }' "$ref"/reader_bs*_rx.csv 2> /dev/null; then
     run_status=CHECK run_reason=empty_reference run_detail="the reference received no packet"
     return
   fi
-  mkdir -p "$run_dir/containers"
-  cp "$run_dir/reader/out"/* "$run_dir/containers/" 2> /dev/null || true
-  cp "$run_dir/tags/out"/* "$run_dir/containers/" 2> /dev/null || true
-  local ref_files run_files
-  ref_files=$(find "$run_dir/ref" -type f -printf '%f\n' | LC_ALL=C sort)
-  run_files=$(find "$run_dir/containers" -type f -printf '%f\n' | LC_ALL=C sort)
+  local ref_files run_files f differ=""
+  ref_files=$(find "$ref" -type f -printf '%f\n' | LC_ALL=C sort)
+  run_files=$(find "$run_dir" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
   if [ "$ref_files" != "$run_files" ]; then
     run_status=CHECK run_reason=file_set_differs
     run_detail="files only in the reference or the run: \
 $(comm -3 <(echo "$ref_files") <(echo "$run_files") | tr -d '\t' | tr '\n' ' ')"
     return
   fi
-  if ! diff -r "$run_dir/ref" "$run_dir/containers" > "$run_dir/diff.txt"; then
-    run_status=CHECK run_reason=content_differs run_detail="$(diff -rq "$run_dir/ref" "$run_dir/containers" | tr '\n' ' ')"
+  for f in $ref_files; do
+    diff "$ref/$f" "$run_dir/$f" >> "$run_dir/run/diff.txt" || differ+="$f "
+  done
+  if [ -n "$differ" ]; then
+    run_status=CHECK run_reason=content_differs run_detail="files that differ: ${differ% }"
     return
   fi
-  rm "$run_dir/diff.txt"
+  # The reference is kept only when the check fails.
+  rm -r "$ref" "$run_dir/run/diff.txt"
   run_status=PASS run_reason=identical_to_reference run_detail="$(echo "$ref_files" | wc -l) files identical"
 }
 
@@ -583,24 +589,24 @@ finish_run() {
       reader_command: $reader_cmd, tag_command: $tag_cmd, sim_deadline_s: $deadline, started_utc: $started,
       seconds: {scenario: $t_scenario, reference: $t_reference, hello: $t_hello, simulation_and_logs: $t_sim,
                 collect: $t_collect, run: $t_run} | map_values(if . == "" then null else tonumber end)}' \
-    > "$run_dir/result.json"
+    > "$run_dir/run/result.json"
   jq -e '(.status | IN("PASS", "CHECK", "FAIL")) and (.reason | length > 0) and (.scenario.SEED == .seed)
-         and (.scenario.NODE_IDS | length > 0)' "$run_dir/result.json" > /dev/null ||
-    die "$run_dir/result.json is not valid"
-  (cd "$run_dir" && find . -type f ! -name SHA256SUMS | LC_ALL=C sort | xargs sha256sum) > "$run_dir/SHA256SUMS"
+         and (.scenario.NODE_IDS | length > 0)' "$run_dir/run/result.json" > /dev/null ||
+    die "$run_dir/run/result.json is not valid"
+  (cd "$run_dir" && find . -type f ! -path ./run/SHA256SUMS | LC_ALL=C sort | xargs sha256sum) > "$run_dir/run/SHA256SUMS"
 }
 
 # Copies a directory into the Reader node's results/, uploads it with pos_upload and checks the copy
-# in the POS result folder against SHA256SUMS.
+# in the POS result folder against its checksum file $3 (default SHA256SUMS).
 upload() {
-  local src=$1 rel=$2 stored
+  local src=$1 rel=$2 sums=${3:-SHA256SUMS} stored
   log "uploading $rel"
   put_dir "$reader_node" "$src" "results/$rel"
   on "$reader_node" "pos_upload --force-upload -r results" > "$out/upload.log" 2>&1 ||
     die "pos_upload failed on $reader_node for $rel (upload.log); no further runs"
   stored=$pos_result_dir/$reader_node/results/$rel
-  [ -f "$stored/SHA256SUMS" ] || die "$stored/SHA256SUMS not found after pos_upload; no further runs"
-  (cd "$stored" && sha256sum --quiet -c SHA256SUMS) || die "the uploaded copy at $stored does not match; no further runs"
+  [ -f "$stored/$sums" ] || die "$stored/$sums not found after pos_upload; no further runs"
+  (cd "$stored" && sha256sum --quiet -c "$sums") || die "the uploaded copy at $stored does not match; no further runs"
   log "stored and checked: $stored"
 }
 
@@ -608,25 +614,25 @@ do_run() {
   local run_dir reader_dir tag_dir line scen_rel scen_path folder
   run_t0=$(now)
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  # Runs are kept by protocol, like Amber's demo_experiments/<protocol>/.
+  # Runs are kept as Amber keeps a demo's output: <protocol>/output/<run>/. The run folder holds the
+  # containers' CSV files; run/ holds the rest. A repeated run gets -a2, -a3, ...
   folder=$(demo_folder "$demo")
-  attempt=1
-  while [ -e "$out/runs/$folder/$label-s$seed-a$attempt" ]; do attempt=$((attempt + 1)); done
+  attempt=1 run_dir=$out/$folder/output/$label-s$seed
+  while [ -e "$run_dir" ]; do attempt=$((attempt + 1)) run_dir=$out/$folder/output/$label-s$seed-a$attempt; done
   run_name=amb-$campaign-$label-s$seed-a$attempt
-  run_dir=$out/runs/$folder/$label-s$seed-a$attempt
-  mkdir -p "$run_dir"
+  mkdir -p "$run_dir/run"
   run_status="" run_reason="" missing_ids="" run_detail="" t_hello="" t_sim="" t_reference="" t_collect=""
   log "run $run_name"
 
   local t0
   t0=$(now)
-  make_scenario "$run_dir" "$demo" "$seed" "$ntags"
+  make_scenario "$run_dir/run" "$demo" "$seed" "$ntags"
   scen_rel=$(scenario_rel_path "$demo")
   scen_path="/scenarios/$scen_rel"
   reader_dir=$reader_home/amber-campaign/$campaign/${run_dir##*/}
   tag_dir=$tag_home/amber-campaign/$campaign/${run_dir##*/}
-  put_dir "$reader_node" "$run_dir/scen" "$reader_dir/scen"
-  put_dir "$tag_node" "$run_dir/scen" "$tag_dir/scen"
+  put_dir "$reader_node" "$run_dir/run/scen" "$reader_dir/scen"
+  put_dir "$tag_node" "$run_dir/run/scen" "$tag_dir/scen"
   on "$reader_node" "mkdir -p $(q "$reader_dir/out") $(q "$reader_dir/ref")"
   on "$tag_node" "mkdir -p $(q "$tag_dir/out")"
   scenario_json=$(on "$reader_node" "$docker run --rm --name $run_name-inspect -v $(q "$reader_dir/scen"):/scenarios:ro \
@@ -635,7 +641,7 @@ do_run() {
       (.NODE_IDS | all(type == "number" and . >= 0 and floor == .)) and (.NODE_IDS | unique | length) == (.NODE_IDS | length)
       and ($n == "" or (.NODE_IDS | length) == ($n | tonumber))' \
     <<< "$scenario_json" > /dev/null || die "scenario $label seed $seed: $scenario_json"
-  printf '%s\n' "$scenario_json" > "$run_dir/scenario.json"
+  printf '%s\n' "$scenario_json" > "$run_dir/run/scenario.json"
   mapfile -t tag_ids < <(jq -r '.NODE_IDS[]' <<< "$scenario_json")
   # Only SEED may change between runs of a demo: where the nodes stand must not.
   local layout
@@ -643,7 +649,7 @@ do_run() {
   if [ -z "${demo_layout[$label]:-}" ]; then
     demo_layout[$label]=$layout
   elif [ "${demo_layout[$label]}" != "$layout" ]; then
-    die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $run_dir/scenario.json)"
+    die "$label seed $seed moved the nodes: the layout must not depend on SEED (see $run_dir/run/scenario.json)"
   fi
   t_scenario=$(elapsed "$t0" "$(now)")
   log "$label seed $seed: ${#tag_ids[@]} Tags (${tag_ids[0]} to ${tag_ids[-1]}), SIM_TIME_MS \
@@ -652,8 +658,8 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
   t0=$(now)
   on "$reader_node" "$docker run --rm --name $run_name-ref -v $(q "$reader_dir/scen"):/scenarios:ro \
     -v $(q "$reader_dir/ref"):/ref $(q "$image") python3 -m $reference \
-    $(q "$scen_path") /ref" > "$run_dir/reference.log" 2>&1 ||
-    die "the reference run failed (see $run_dir/reference.log)"
+    $(q "$scen_path") /ref" > "$run_dir/run/reference.log" 2>&1 ||
+    die "the reference run failed (see $run_dir/run/reference.log)"
 
   t_reference=$(elapsed "$t0" "$(now)")
 
@@ -664,15 +670,15 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
   t0=$(now)
   collect_containers "$reader_node" "$reader_dir" "^$run_name-reader\$"
   collect_containers "$tag_node" "$tag_dir" "^$run_name-tag[0-9]+\$"
-  get_dir "$reader_node" "$reader_dir/out" "$run_dir/reader/out"
-  get_dir "$reader_node" "$reader_dir/logs" "$run_dir/reader/logs"
-  get_dir "$reader_node" "$reader_dir/ref" "$run_dir/ref"
-  get_dir "$tag_node" "$tag_dir/out" "$run_dir/tags/out"
-  get_dir "$tag_node" "$tag_dir/logs" "$run_dir/tags/logs"
+  get_dir "$reader_node" "$reader_dir/out" "$run_dir"
+  get_dir "$tag_node" "$tag_dir/out" "$run_dir"
+  get_dir "$reader_node" "$reader_dir/logs" "$run_dir/run/logs"
+  get_dir "$tag_node" "$tag_dir/logs" "$run_dir/run/logs"
+  get_dir "$reader_node" "$reader_dir/ref" "$run_dir/run/ref"
   t_collect=$(elapsed "$t0" "$(now)")
   if [ -n "$run_status" ]; then
     # The Reader's own account, such as "no answer from nodes [5] at 6448 ms".
-    line=$(grep -h "Error" "$run_dir/reader/logs/$run_name-reader.log" 2> /dev/null | tail -n 1 || true)
+    line=$(grep -h "Error" "$run_dir/run/logs/$run_name-reader.log" 2> /dev/null | tail -n 1 || true)
     [ -z "$line" ] || run_detail+="; Reader: $line"
   else
     check_output "$run_dir"
@@ -681,12 +687,12 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
   log "$run_name: $run_status ($run_reason) $run_detail"
   counts[$run_status]=$((counts[$run_status] + 1))
   echo "$run_name $label $run_status $run_reason ${t_sim:-0}" >> "$out/runs.txt"
-  upload "$run_dir" "$campaign/runs/$folder/${run_dir##*/}"
+  upload "$run_dir" "$campaign/$folder/output/${run_dir##*/}" run/SHA256SUMS
 }
 
 # --- campaign ------------------------------------------------------------------------------------
 
-mkdir -p "$out/preflight" "$out/runs"
+mkdir -p "$out/preflight"
 runner_sha=$(sha256sum "$0" | cut -d' ' -f1)
 cp "$0" "$out/preflight/amber_campaign.sh"
 printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
