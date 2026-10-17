@@ -53,7 +53,7 @@ void amber_read_params(amber_params_t *params, bool with_node_id)
   }
 }
 
-void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader)
+void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader, bool by_tag)
 {
   memset(radio, 0, sizeof(*radio));
   radio->block_samples = block_bytes / sizeof(c16_t);
@@ -73,7 +73,7 @@ void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader)
     LOG_E(HW, "cannot start the rfsimulator device\n");
     exit(EXIT_FAILURE);
   }
-  if (reader) {
+  if (reader && by_tag) {
     if (radio->device.trx_read_peers_func == NULL) {
       LOG_E(HW,
             "amber-reader must be the rfsim server in msgmode: --rfsimulator.serveraddr server --rfsimulator.options msgmode\n");
@@ -176,6 +176,18 @@ static void copy_block(const amber_session_t *session, PyObject *bytes, const ch
     exit(EXIT_FAILURE);
   }
   memcpy(out, PyBytes_AS_STRING(bytes), session->block_bytes);
+}
+
+bool amber_session_reads_sum(amber_session_t *session)
+{
+  PyObject *ret = PyObject_GetAttrString(session->obj, "reads_sum");
+  if (ret == NULL)
+    python_failed("ReaderSession.reads_sum");
+  int sum = PyObject_IsTrue(ret);
+  Py_DECREF(ret);
+  if (sum < 0)
+    python_failed("ReaderSession.reads_sum");
+  return sum;
 }
 
 void amber_session_next_block(amber_session_t *session, uint8_t *out)

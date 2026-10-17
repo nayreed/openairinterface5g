@@ -198,7 +198,7 @@ typedef struct {
   double rx_freq;
   double tx_bw;
   int channelmod;
-  bool msgmode;
+  bool msgmode; // Amber message mode: to be removed once IQ mode has been checked against it side by side.
   double chan_pathloss;
   double chan_forgetfact;
   uint64_t chan_offset;
@@ -335,10 +335,11 @@ static buffer_t *allocCirBuf(rfsimulator_state_t *bridge, int sock)
     LOG_E(HW, "setsockopt(SO_SNDBUF) failed\n");
     return NULL;
   }
-  // A message exchange sends one block and waits for the answer: without this, every block's
-  // last segment waits for the peer's delayed acknowledgement.
+  // A peer that sends one block and waits for the answer (Amber, in msgmode or not) would
+  // otherwise wait for the other side's delayed acknowledgement on every block's last segment.
+  // Blocks are large, so sending small segments at once costs nothing in other uses.
   const int nodelay = 1;
-  if (bridge->msgmode && setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay)) != 0) {
+  if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay)) != 0) {
     LOG_E(HW, "setsockopt(TCP_NODELAY) failed\n");
     return NULL;
   }
@@ -1490,7 +1491,8 @@ static void copy_peer_block(const buffer_t *b, openair0_timestamp_t start, int n
   }
 }
 
-/* msgmode server only: read one block per connected client, each exactly as that client wrote it. */
+/* msgmode server only: read one block per connected client, each exactly as that client wrote it.
+ * Amber message mode: to be removed once IQ mode has been checked against it side by side. */
 static int rfsimulator_read_peers(openair0_device_t *device,
                                   openair0_timestamp_t *ptimestamp,
                                   void **buff,

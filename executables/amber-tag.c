@@ -38,7 +38,7 @@ int main(int argc, char **argv)
   amber_read_params(&params, true);
   amber_session_t *session = amber_session_create_tag(&params);
   amber_radio_t radio;
-  amber_radio_start(&radio, params.block_bytes, false);
+  amber_radio_start(&radio, params.block_bytes, false, false);
   config_check_unknown_cmdlineopt(uniqCfg, CONFIG_CHECKALLSECTIONS);
 
   // rfsim starts a client one sample before the server's write position: read up to the next

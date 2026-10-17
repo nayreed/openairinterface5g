@@ -757,18 +757,16 @@ TEST(RFSimulatorSlotTest, ShortLivedClientsDoNotReplaceAConnectedOne)
   const int verify_reads = 6;
   // More than rfsim's MAX_FD_RFSIMU (250) connection slots.
   const int short_lived_clients = 300;
-  // msgmode only for TCP_NODELAY, which keeps each connect fast.
-  const std::vector<std::string> msgmode = {"--rfsimulator.options", "msgmode"};
 
   openair0_device_t server_device = {0};
   openair0_config_t server_config = {0};
   configmodule_interface_t *server_cfg =
-      StartDevice(server_device, server_config, "test_rfsimulator_slots", "server", port, 1, 1, msgmode);
+      StartDevice(server_device, server_config, "test_rfsimulator_slots", "server", port, 1, 1);
   ASSERT_EQ(server_device.trx_start_func(&server_device), 0);
   openair0_device_t client_device = {0};
   openair0_config_t client_config = {0};
   configmodule_interface_t *client_cfg =
-      StartDevice(client_device, client_config, "test_rfsimulator_slots", "127.0.0.1", port, 1, 1, msgmode);
+      StartDevice(client_device, client_config, "test_rfsimulator_slots", "127.0.0.1", port, 1, 1);
 
   std::atomic<bool> client_connected{false};
   std::atomic<bool> churn_done{false};
@@ -821,9 +819,7 @@ TEST(RFSimulatorSlotTest, ShortLivedClientsDoNotReplaceAConnectedOne)
                               "--rfsimulator.serveraddr",
                               "127.0.0.1",
                               "--rfsimulator.serverport",
-                              port_str.c_str(),
-                              "--rfsimulator.options",
-                              "msgmode"};
+                              port_str.c_str()};
   configmodule_interface_t *churn_cfg = load_configmodule(sizeofArray(churn_argv), (char **)churn_argv, CONFIG_ENABLECMDLINEONLY);
   std::atomic<bool> server_running{true};
   bool churn_ok = true;

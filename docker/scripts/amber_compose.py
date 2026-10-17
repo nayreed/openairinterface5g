@@ -32,11 +32,14 @@ def service(name, image, command, volumes, depends_on=None):
     return lines
 
 
-def compose(scenario_path, node_ids, image):
+def compose(scenario_path, node_ids, image, iq=False):
     volumes = ["./out:/out"]
     if scenario_path.startswith(OWN_SCENARIOS + "/"):
         volumes.append(f"./scenarios:{OWN_SCENARIOS}:ro")
-    common = ["--rfsimulator.options", "msgmode", "--amber.scenario", scenario_path, "--amber.output_dir", "/out"]
+    # Amber message mode: to be removed once IQ mode has been checked against it side by side.
+    # Messages need msgmode; a scenario in IQ mode runs on normal rfsim, which adds the Tags' signals up.
+    common = ([] if iq else ["--rfsimulator.options", "msgmode"]) + \
+        ["--amber.scenario", scenario_path, "--amber.output_dir", "/out"]
     lines = [f"# Written by amber-compose for {json.dumps(scenario_path)}", "services:"]
     lines += service("reader", image, ["amber-reader", "--rfsimulator.serveraddr", "server"] + common, volumes)
     for node_id in node_ids:
@@ -55,11 +58,13 @@ def main():
         parser.error("the scenario must be an absolute path inside the image")
     # Whatever loading the scenario prints must not end up in the compose file.
     with contextlib.redirect_stdout(sys.stderr):
-        node_ids = list(load_scenario(args.scenario).NODE_IDS)
+        scenario = load_scenario(args.scenario)
+        node_ids = list(scenario.NODE_IDS)
+        iq = getattr(scenario, "phy", None) is not None
     for node_id in node_ids:
         if not isinstance(node_id, int) or node_id < 0:
             parser.error(f"node ids must be non-negative integers, the scenario has {node_id!r}")
-    sys.stdout.write(compose(args.scenario, node_ids, args.image))
+    sys.stdout.write(compose(args.scenario, node_ids, args.image, iq))
 
 
 if __name__ == "__main__":
