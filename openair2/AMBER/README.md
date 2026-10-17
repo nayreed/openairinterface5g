@@ -23,7 +23,7 @@ Use Amber's `dev` branch, which has `amber.session`, TOML scenarios and the prot
 
 ```bash
 git clone https://github.com/nayreed/Amber && git -C Amber checkout dev
-pip install simpy numpy pandas openpyxl matplotlib
+pip install simpy numpy pandas openpyxl
 ```
 
 ## Build
