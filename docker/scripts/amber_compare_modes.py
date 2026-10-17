@@ -6,8 +6,8 @@
 
 A demo NAME and its IQ copy NAME_iq, run with the same Tag count and seeds, form a pair. For each
 side the table gives the mean over its seeds of: packets the Tags sent, packets the Reader decoded,
-collisions it saw, DER (1 - decoded / sent), decoded packets per simulated second, and commands
-each Tag heard. Runs that did not PASS are counted in the "bad" column and left out of the means.
+collisions it saw, DER (1 - decoded / sent), decoded packets per simulated second, commands each
+Tag heard, and the wall-clock seconds the simulation took. Runs that did not PASS are counted in the "bad" column and left out of the means.
 Amber message mode: to be removed once IQ mode has been checked against it side by side.
 """
 
@@ -43,12 +43,12 @@ def run_metrics(run_dir):
             "thr": decoded / (sim_ms / 1000.0), "heard": heard}
 
 
-def status(run_dir):
+def result(run_dir):
     try:
         with open(os.path.join(run_dir, "run", "result.json")) as f:
-            return json.load(f).get("status", "?")
+            return json.load(f)
     except (OSError, ValueError):
-        return "?"
+        return {}
 
 
 def main(argv):
@@ -65,12 +65,15 @@ def main(argv):
         mode = "iq" if label.endswith("_iq") else "msg"
         demo = label[:-3] if mode == "iq" else label
         key = (demo, m["tags"] or "-", mode)
-        if status(run_dir) == "PASS":
-            groups[key]["ok"].append(run_metrics(run_dir))
+        res = result(run_dir)
+        if res.get("status") == "PASS":
+            metrics = run_metrics(run_dir)
+            metrics["wall_s"] = (res.get("seconds") or {}).get("simulation_and_logs") or float("nan")
+            groups[key]["ok"].append(metrics)
         else:
             groups[key]["bad"] += 1
 
-    cols = ["sent", "decoded", "collided", "der", "thr", "heard"]
+    cols = ["sent", "decoded", "collided", "der", "thr", "heard", "wall_s"]
     header = ["demo", "tags", "mode", "runs", "bad"] + cols
     table = []
     for (demo, tags, mode) in sorted(groups, key=lambda k: (k[0], int(k[1]) if k[1].isdigit() else 0, k[2] != "msg")):
