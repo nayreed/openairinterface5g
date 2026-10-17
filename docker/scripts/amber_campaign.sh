@@ -37,7 +37,7 @@
 #                                         ./amber-campaigns/NAME
 #   --keep-going                          go on after a run that does not pass (default: stop there)
 #
-# Environment: AMBER_SSH (default "ssh -o BatchMode=yes -o ConnectTimeout=10") runs a command on a
+# Environment: AMBER_SSH (default "ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR") runs a command on a
 # node: $AMBER_SSH NODE COMMAND. The allocation must name the user running this script (id -un).
 # The OAI commit is read from the image's org.opencontainers.image.revision label.
 #
@@ -80,7 +80,7 @@ demos="" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
 hello_timeout="" calibration_ceiling=1800 campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
 pos_results_root=/srv/testbed/results docker=docker keep_going=0
 declare -A sim_timeout=()
-ssh_cmd=${AMBER_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10}
+ssh_cmd=${AMBER_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR}
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -401,7 +401,8 @@ run_containers() {
   # Amber message mode: to be removed once IQ mode has been checked against it side by side.
   # Messages need msgmode; a scenario in IQ mode ([phy]) runs on normal rfsim, which adds the Tags' signals up.
   rfsim_opts="--rfsimulator.options msgmode "
-  if grep -q '^\[phy\]' "$reader_dir/scen/$scen_rel"; then rfsim_opts=""; fi
+  # The local copy of the scenario: reader_dir is on the Reader node.
+  if grep -q '^\[phy\]' "$run_dir/run/scen/$scen_rel"; then rfsim_opts=""; fi
   local common="${rfsim_opts}--rfsimulator.serverport $port --amber.scenario $scen_path --amber.output_dir /out"
   local t0 status code id line
 
@@ -668,7 +669,16 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
   t_reference=$(elapsed "$t0" "$(now)")
 
   deadline=${sim_timeout[$label]:-${sim_timeout[$demo]:-$calibration_ceiling}}
-  on "$reader_node" "! ss -Htln 'sport = :$port' | grep -q ." || die "port $port is already in use on $reader_node"
+  # The last run's Reader can take a moment to release the port after its container is removed.
+  local waited=0
+  while on "$reader_node" "ss -Htln 'sport = :$port' | grep -q ."; do
+    if [ "$waited" -ge 60 ]; then
+      on "$reader_node" "ss -Htlnp 'sport = :$port'" > "$run_dir/run/port-$port.txt" 2>&1 || true
+      die "port $port is still in use on $reader_node after 60 s (see $run_dir/run/port-$port.txt)"
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
   run_containers "$reader_dir" "$tag_dir" "$deadline"
 
   t0=$(now)
