@@ -42,8 +42,7 @@ RUN pip3 install --no-cache-dir --target /opt/oai-amber/python \
         simpy==4.1.2 \
         numpy==2.5.3 \
         pandas==3.0.5 \
-        openpyxl==3.1.5 \
-        matplotlib==3.11.2
+        openpyxl==3.1.5
 
 # Amber's dev branch by default. Docker caches this step by its text, so a rebuild with the same
 # AMBER_REF does not fetch newer commits: pass a commit (as the workflow does) or use --no-cache.
@@ -68,7 +67,6 @@ FROM ${UBUNTU_IMAGE} AS oai-amber
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/opt/oai-amber/bin:$PATH"
 ENV PYTHONPATH="/opt/amber:/opt/oai-amber/python"
-ENV MPLCONFIGDIR="/opt/oai-amber/matplotlib"
 
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends \
@@ -86,14 +84,12 @@ COPY --from=amber-build \
     ./
 COPY docker/scripts/amber_compose.py ./amber-compose
 
-# Fail here rather than at run time if a library is missing. Importing matplotlib.pyplot, as
-# Amber's propagation module does, builds matplotlib's font cache once, so that containers do not
-# each build it.
+# Fail here rather than at run time if a library is missing.
 RUN ldconfig && \
     echo "---- ldd on amber-reader, amber-tag and librfsimulator.so ----" && \
     ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so && \
     ! ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so | grep "not found" && \
-    python3 -c "import amber.session, matplotlib.pyplot"
+    python3 -c "import amber.session"
 
 WORKDIR /opt/oai-amber
 # The image amber-compose names in the compose files it writes
