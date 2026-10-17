@@ -1303,11 +1303,17 @@ static void rfsimulator_read_internal(rfsimulator_state_t *t,
               H_awgn_mimo_coeff[aatx] = (ant_diff ? (0.2 / ant_diff) : 1.0) * gain_linear;
             }
 
+            // Summed in float and saturated once at the end, so the result does not depend on the
+            // order the senders are added in
+            if (!channel_modelling) {
+              memset(temp_array, 0, sizeof(temp_array));
+              channel_modelling = true;
+            }
             for (uint aatx = 0; aatx < pkt->header.nbAnt; aatx++) {
               c16_t *tx_ant_buffer_in = &buffer[aatx * pkt->header.size + read_start_idx];
               for (int i = write_start_idx; i < write_end_idx; i++) {
-                samples[aarx][i].r += tx_ant_buffer_in->r * H_awgn_mimo_coeff[aatx];
-                samples[aarx][i].i += tx_ant_buffer_in->i * H_awgn_mimo_coeff[aatx];
+                temp_array[aarx][i].r += tx_ant_buffer_in->r * H_awgn_mimo_coeff[aatx];
+                temp_array[aarx][i].i += tx_ant_buffer_in->i * H_awgn_mimo_coeff[aatx];
                 tx_ant_buffer_in++;
               }
             }
@@ -1336,8 +1342,8 @@ static void rfsimulator_read_internal(rfsimulator_state_t *t,
   if (channel_modelling) {
     for (int a = 0; a < nbAnt; a++) {
       for (int i = 0; i < nsamps; i++) {
-        samples[a][i].r += lroundf(temp_array[a][i].r);
-        samples[a][i].i += lroundf(temp_array[a][i].i);
+        samples[a][i].r = saturate_int16(samples[a][i].r + lroundf(temp_array[a][i].r));
+        samples[a][i].i = saturate_int16(samples[a][i].i + lroundf(temp_array[a][i].i));
       }
     }
   }
