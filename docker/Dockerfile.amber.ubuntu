@@ -37,7 +37,7 @@ RUN /bin/sh oaienv && \
     ./build_oai -I && \
     rm -rf /var/lib/apt/lists/*
 
-# Amber's Python dependencies, at the versions amber.split was tested with
+# Amber's Python dependencies, at the versions Amber was tested with
 RUN pip3 install --no-cache-dir --target /opt/oai-amber/python \
         simpy==4.1.2 \
         numpy==2.5.3 \
@@ -90,7 +90,7 @@ RUN ldconfig && \
     echo "---- ldd on amber-reader, amber-tag and librfsimulator.so ----" && \
     ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so && \
     ! ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so | grep "not found" && \
-    python3 -c "import amber.split.session, matplotlib.pyplot"
+    python3 -c "import amber.session, matplotlib.pyplot"
 
 WORKDIR /opt/oai-amber
 # The image amber-compose names in the compose files it writes

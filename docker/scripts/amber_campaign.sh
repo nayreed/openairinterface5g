@@ -1,9 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 #
-# Run Amber's split demos from an oai-amber image on two POS nodes: amber-reader on one node, one
+# Run Amber's demos from an oai-amber image on two POS nodes: amber-reader on one node, one
 # amber-tag per scenario node id on the other. Each run is compared byte for byte with
-# amber.split.reference run from the same image on the same scenario files, then uploaded with
+# Amber's own run of the same scenario files in the same image, then uploaded with
 # pos_upload and checked in the POS result folder.
 #
 #   amber_campaign.sh --reader-node f1 --tag-node f2 --reader-addr 10.0.0.1 \
@@ -250,12 +250,18 @@ preflight() {
     die "$image has no /opt/amber/AMBER_COMMIT: rebuild it from this branch"
   library_sha=$(git -C "$amber_src" rev-parse --verify "$amber_commit^{commit}") ||
     die "the image embeds Amber $amber_commit, which is not in $amber_src: git -C $amber_src fetch"
+  # Amber's run of a scenario on one machine, which writes the files the containers write.
+  if git -C "$amber_src" cat-file -e "$library_sha:amber/session.py" 2> /dev/null; then
+    reference=amber.run
+  else
+    reference=amber.split.reference  # images with Amber before amber.split was merged into amber
+  fi
 
   # The image's Amber must be that commit: same Python files and energy trace.
   local lib=$out/preflight/library
   mkdir -p "$lib"
-  git -C "$amber_src" archive "$library_sha" amber demo_experiments tests/split/scenarios | tar -C "$lib" -xf -
-  local hash_cmd='find amber demo_experiments tests/split/scenarios -type f \( -name "*.py" -o -name "*.toml" \) |
+  git -C "$amber_src" archive "$library_sha" amber demo_experiments | tar -C "$lib" -xf -
+  local hash_cmd='find amber demo_experiments -type f \( -name "*.py" -o -name "*.toml" \) |
     LC_ALL=C sort | xargs sha256sum;
     sha256sum demo_experiments/threehundred_seconds_stable.xlsx'
   (cd "$lib" && bash -c "$hash_cmd") > "$out/preflight/library.sha256"
@@ -272,9 +278,12 @@ preflight() {
 # shellcheck disable=SC2016
 inspect_py='
 import json, sys
-from amber.split.hosts import build_one_process, load_scenario
+try:
+    from amber.hosts import build, load_scenario
+except ImportError:  # images with Amber before amber.split was merged into amber
+    from amber.split.hosts import build_one_process as build, load_scenario
 s = load_scenario(sys.argv[1])
-env, bss, bsms = build_one_process(s)
+env, bss, bsms = build(s)
 print(json.dumps({"SEED": getattr(s, "SEED", None), "LAYOUT_SEED": getattr(s, "LAYOUT_SEED", None),
                   "SIM_TIME_MS": s.SIM_TIME_MS, "NODE_IDS": list(s.NODE_IDS), "BS_IDS": list(s.BS_IDS),
                   "layout": [[b.node.id, b.node.x, b.node.y] for b in bsms]}))
@@ -284,7 +293,7 @@ print(json.dumps({"SEED": getattr(s, "SEED", None), "LAYOUT_SEED": getattr(s, "L
 make_scenario() {
   local dir=$1 demo=$2 seed=$3 ntags=${4:-} file rel
   mkdir -p "$dir/scen"
-  git -C "$amber_src" archive "$library_sha" demo_experiments tests/split/scenarios |
+  git -C "$amber_src" archive "$library_sha" demo_experiments |
     tar -C "$dir/scen" -xf -
   rel=$(scenario_rel_path "$demo")
   file=$dir/scen/$rel
@@ -524,24 +533,24 @@ check_output() {
     run_status=CHECK run_reason=no_bye run_detail="the Reader exited 0 without Bye."
     return
   fi
-  if ! ls "$run_dir/ref"/reader_bs*_rx.csv > /dev/null 2>&1; then
+  if ! awk 'FNR > 1 { found = 1; exit } END { exit !found }' "$run_dir/ref"/reader_bs*_rx.csv 2> /dev/null; then
     run_status=CHECK run_reason=empty_reference run_detail="the reference received no packet"
     return
   fi
-  mkdir -p "$run_dir/split"
-  cp "$run_dir/reader/out"/* "$run_dir/split/" 2> /dev/null || true
-  cp "$run_dir/tags/out"/* "$run_dir/split/" 2> /dev/null || true
-  local ref_files split_files
+  mkdir -p "$run_dir/containers"
+  cp "$run_dir/reader/out"/* "$run_dir/containers/" 2> /dev/null || true
+  cp "$run_dir/tags/out"/* "$run_dir/containers/" 2> /dev/null || true
+  local ref_files run_files
   ref_files=$(find "$run_dir/ref" -type f -printf '%f\n' | LC_ALL=C sort)
-  split_files=$(find "$run_dir/split" -type f -printf '%f\n' | LC_ALL=C sort)
-  if [ "$ref_files" != "$split_files" ]; then
+  run_files=$(find "$run_dir/containers" -type f -printf '%f\n' | LC_ALL=C sort)
+  if [ "$ref_files" != "$run_files" ]; then
     run_status=CHECK run_reason=file_set_differs
     run_detail="files only in the reference or the run: \
-$(comm -3 <(echo "$ref_files") <(echo "$split_files") | tr -d '\t' | tr '\n' ' ')"
+$(comm -3 <(echo "$ref_files") <(echo "$run_files") | tr -d '\t' | tr '\n' ' ')"
     return
   fi
-  if ! diff -r "$run_dir/ref" "$run_dir/split" > "$run_dir/diff.txt"; then
-    run_status=CHECK run_reason=content_differs run_detail="$(diff -rq "$run_dir/ref" "$run_dir/split" | tr '\n' ' ')"
+  if ! diff -r "$run_dir/ref" "$run_dir/containers" > "$run_dir/diff.txt"; then
+    run_status=CHECK run_reason=content_differs run_detail="$(diff -rq "$run_dir/ref" "$run_dir/containers" | tr '\n' ' ')"
     return
   fi
   rm "$run_dir/diff.txt"
@@ -554,7 +563,7 @@ finish_run() {
     --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" --arg ntags "$ntags" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
-    --arg library "$library_sha" \
+    --arg library "$library_sha" --arg reference "$reference" \
     --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
     --arg reader_node "$reader_node" --arg tag_node "$tag_node" --arg reader_addr "$reader_addr" --argjson port "$port" \
     --arg reader_cmd "amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode --rfsimulator.serverport $port" \
@@ -567,7 +576,7 @@ finish_run() {
       status: $status, reason: $reason, detail: $detail,
       missing_node_ids: ($missing | split(" ") | map(select(. != "") | tonumber)),
       scenario: $scenario,
-      comparison: "byte for byte against amber.split.reference from the same image and scenario files",
+      comparison: ("byte for byte against " + $reference + " from the same image and scenario files"),
       image: $image, image_id: $image_id, amber_library: $library,
       runner_sha256: $runner, oai_commit: $oai_commit,
       reader_node: $reader_node, tag_node: $tag_node, reader_addr: $reader_addr, port: $port,
@@ -642,7 +651,7 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
 
   t0=$(now)
   on "$reader_node" "$docker run --rm --name $run_name-ref -v $(q "$reader_dir/scen"):/scenarios:ro \
-    -v $(q "$reader_dir/ref"):/ref $(q "$image") python3 -m amber.split.reference \
+    -v $(q "$reader_dir/ref"):/ref $(q "$image") python3 -m $reference \
     $(q "$scen_path") /ref" > "$run_dir/reference.log" 2>&1 ||
     die "the reference run failed (see $run_dir/reference.log)"
 

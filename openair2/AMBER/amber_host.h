@@ -57,10 +57,10 @@ void amber_radio_write(amber_radio_t *radio, openair0_timestamp_t ts, int flags)
 
 void amber_radio_stop(amber_radio_t *radio);
 
-/*! \brief Start Python and create the Reader's session (amber.split.session.ReaderSession) */
+/*! \brief Start Python and create the Reader's session (amber.session.ReaderSession) */
 amber_session_t *amber_session_create_reader(const amber_params_t *params);
 
-/*! \brief Start Python and create a Tag's session (amber.split.session.TagSession) */
+/*! \brief Start Python and create a Tag's session (amber.session.TagSession) */
 amber_session_t *amber_session_create_tag(const amber_params_t *params);
 
 /*! \brief Reader: the block to send to the Tags for the next millisecond */
