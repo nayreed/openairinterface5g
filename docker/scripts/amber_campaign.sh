@@ -429,8 +429,9 @@ $docker run -d --name $run_name-tag$id --network host --init \
 n=\$((n + 1)); [ \$((n % 16)) != 0 ] || wait"
   done
   t0=$(now)
-  on "$tag_node" "$starts
-wait"
+  # On stdin: for a few hundred Tags the script is longer than ssh can take as an argument.
+  # shellcheck disable=SC2086 # ssh_cmd is a command with its options
+  printf '%s\nwait\n' "$starts" | $ssh_cmd "$tag_node" sh
   log "started ${#started_ids[@]} Tags in $(elapsed "$t0" "$(now)") s"
 
   # Hello: every Tag connected, before the simulation deadline starts.
