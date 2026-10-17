@@ -57,7 +57,10 @@ RUN git clone --quiet ${AMBER_REPO} /opt/amber && \
 
 WORKDIR /oai-ran
 COPY . .
-RUN cmake -B build -GNinja -DENABLE_AMBER=ON && \
+# Build for a CPU level every x86 runner and node has (AVX2, no AVX-512), not for the build machine:
+# OAI otherwise targets the build CPU, and a container on another CPU dies on an illegal instruction.
+RUN cmake -B build -GNinja -DENABLE_AMBER=ON -DAVX512=OFF \
+        -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3 && \
     ninja -C build amber-reader amber-tag rfsimulator
 
 
