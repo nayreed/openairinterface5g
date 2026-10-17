@@ -2,8 +2,8 @@ name: oai-amber image
 
 # Started by hand (Actions > oai-amber image > Run workflow). Builds the image with amber-reader,
 # amber-tag and Amber's current dev branch (docker/Dockerfile.amber.ubuntu), runs two seeded TOML
-# scenarios from it in docker compose on one runner and compares their logs with one-process
-# Amber, then, on aiot-rfsim only, publishes it as ghcr.io/<owner>/oai-amber:<commit> and :latest.
+# scenarios from it in docker compose on one runner and compares their CSV files with amber.run,
+# then, on aiot-rfsim only, publishes it as ghcr.io/<owner>/oai-amber:<commit> and :latest.
 
 on:
   workflow_dispatch:
@@ -71,8 +71,8 @@ jobs:
       fail-fast: false
       matrix:
         scenario:
-          - /opt/amber/tests/split/scenarios/registration.toml
-          - /opt/amber/tests/split/scenarios/adaptive_aloha.toml
+          - /opt/amber/tests/scenarios/registration.toml
+          - /opt/amber/tests/scenarios/adaptive_aloha.toml
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -81,7 +81,7 @@ jobs:
           path: ${{ runner.temp }}
       - name: Load the image
         run: docker load --input "$RUNNER_TEMP/oai-amber.tar"
-      - name: Run the scenario split and compare with one process
+      - name: Run the scenario in containers and compare with amber.run
         run: docker/scripts/amber_check_image.sh "${{ needs.build.outputs.image }}" "${{ matrix.scenario }}"
 
   publish:

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 #
 # Run a TOML Amber scenario as one Reader and one Tag per node, then compare
-# the split logs byte-for-byte with amber.split.reference from the same image.
+# the containers' CSV files byte for byte with amber.run from the same image.
 #
 #   amber_check_image.sh IMAGE [SCENARIO]
 #
@@ -17,7 +17,7 @@ if [ $# -lt 1 ] || [ $# -gt 2 ]; then
   exit 2
 fi
 image=$1
-scenario=${2:-/opt/amber/tests/split/scenarios/registration.toml}
+scenario=${2:-/opt/amber/tests/scenarios/registration.toml}
 work=$(mktemp -d)
 compose=(docker compose -f "$work/compose.yaml")
 
@@ -103,6 +103,6 @@ done
 [ "$failed" = 0 ]
 
 docker run --rm -v "$work:/work" -v "$work/scenarios:/scenarios:ro" "$image" \
-  python3 -m amber.split.reference "$scenario_for_compose" /work/ref
+  python3 -m amber.run "$scenario_for_compose" /work/ref
 diff -r "$work/ref" "$work/out"
-echo "$scenario: split containers match one-process reference ($(find "$work/out" -type f | wc -l) files)"
+echo "$scenario: the containers match amber.run ($(find "$work/out" -type f | wc -l) files)"

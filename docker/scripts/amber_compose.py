@@ -6,7 +6,7 @@ amber-reader and one amber-tag per node of the scenario's NODE_IDS.
     docker run --rm IMAGE amber-compose SCENARIO > compose.yaml
     docker compose up
 
-SCENARIO is a path inside the image, such as /opt/amber/tests/split/scenarios/registration.toml.
+SCENARIO is a path inside the image, such as /opt/amber/tests/scenarios/registration.toml.
 For your own scenarios, put them in ./scenarios and mount it at /scenarios when running this
 script; the compose file then mounts ./scenarios too. Every program writes its CSV logs to ./out.
 """
@@ -17,7 +17,7 @@ import json
 import os
 import sys
 
-from amber.split.hosts import load_scenario
+from amber.hosts import load_scenario
 
 OWN_SCENARIOS = "/scenarios"
 

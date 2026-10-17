@@ -15,7 +15,7 @@
 #include "common/utils/utils.h"
 
 #define AMBER_SECTION "amber"
-#define AMBER_SESSION_MODULE "amber.split.session"
+#define AMBER_SESSION_MODULE "amber.session"
 #define MS_PER_SECOND 1000
 #define NOT_SET (-1)
 
