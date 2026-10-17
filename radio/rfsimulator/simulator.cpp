@@ -1086,6 +1086,13 @@ static void process_recv_header(buffer_t *b, bool first_time)
   return;
 }
 
+// The sum of the senders' samples clips at the 16-bit limits, as a receiver's ADC saturates, instead of
+// wrapping around (a float out of int16 range does not convert to a defined value).
+static inline int16_t saturate_int16(float v)
+{
+  return (int16_t)std::max(-32768.0f, std::min(32767.0f, v));
+}
+
 /**
  * @brief Combines samples from received packets into a single buffer for the rx beam
  *
@@ -1140,8 +1147,8 @@ static void combine_received_beams(rfsimulator_state_t *t,
       float gain_linear = powf(10, (own_gain_dB + sender_gain_db[aatx]) / 20.0);
       c16_t *tx_ant_buffer_in = &buffer[aatx * pkt->header.size + read_start_idx];
       for (int s = write_start_idx; s < write_end_idx; s++) {
-        samples[aatx][s].r += tx_ant_buffer_in->r * gain_linear;
-        samples[aatx][s].i += tx_ant_buffer_in->i * gain_linear;
+        samples[aatx][s].r = saturate_int16(samples[aatx][s].r + tx_ant_buffer_in->r * gain_linear);
+        samples[aatx][s].i = saturate_int16(samples[aatx][s].i + tx_ant_buffer_in->i * gain_linear);
         tx_ant_buffer_in++;
       }
     }
