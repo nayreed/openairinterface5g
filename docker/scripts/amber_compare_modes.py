@@ -7,7 +7,8 @@
 A demo NAME and its IQ copy NAME_iq, run with the same Tag count and seeds, form a pair. For each
 side the table gives the mean over its seeds of: packets the Tags sent, packets the Reader decoded,
 collisions it saw, DER (1 - decoded / sent), decoded packets per simulated second, commands each
-Tag heard, and the wall-clock seconds the simulation took. Runs that did not PASS are counted in the "bad" column and left out of the means.
+Tag heard, and the wall-clock seconds the simulation took. Runs that did not PASS are counted in
+the "bad" column and left out of the means.
 Amber message mode: to be removed once IQ mode has been checked against it side by side.
 """
 
