@@ -398,6 +398,7 @@ run_containers() {
   local reader_dir=$1 tag_dir=$2 deadline=$3 scen_rel scen_path
   scen_rel=$(scenario_rel_path "$demo")
   scen_path="/scenarios/$scen_rel"
+  # Amber message mode: to be removed once IQ mode has been checked against it side by side.
   # Messages need msgmode; a scenario in IQ mode ([phy]) runs on normal rfsim, which adds the Tags' signals up.
   rfsim_opts="--rfsimulator.options msgmode "
   if grep -q '^\[phy\]' "$reader_dir/scen/$scen_rel"; then rfsim_opts=""; fi

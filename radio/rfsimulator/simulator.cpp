@@ -198,7 +198,7 @@ typedef struct {
   double rx_freq;
   double tx_bw;
   int channelmod;
-  bool msgmode;
+  bool msgmode; // Amber message mode: to be removed once IQ mode has been checked against it side by side.
   double chan_pathloss;
   double chan_forgetfact;
   uint64_t chan_offset;
@@ -1491,7 +1491,8 @@ static void copy_peer_block(const buffer_t *b, openair0_timestamp_t start, int n
   }
 }
 
-/* msgmode server only: read one block per connected client, each exactly as that client wrote it. */
+/* msgmode server only: read one block per connected client, each exactly as that client wrote it.
+ * Amber message mode: to be removed once IQ mode has been checked against it side by side. */
 static int rfsimulator_read_peers(openair0_device_t *device,
                                   openair0_timestamp_t *ptimestamp,
                                   void **buff,

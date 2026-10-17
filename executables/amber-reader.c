@@ -9,6 +9,7 @@
  * rfsim must run in msgmode, which hands the Reader every Tag's block as written instead of their
  * sum. In IQ mode (a scenario with [phy]) the blocks are signals, and the Reader reads their sum
  * as normal rfsim gives it.
+ * Amber message mode: to be removed once IQ mode has been checked against it side by side.
  */
 
 #include <stdio.h>

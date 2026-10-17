@@ -36,6 +36,7 @@ def compose(scenario_path, node_ids, image, iq=False):
     volumes = ["./out:/out"]
     if scenario_path.startswith(OWN_SCENARIOS + "/"):
         volumes.append(f"./scenarios:{OWN_SCENARIOS}:ro")
+    # Amber message mode: to be removed once IQ mode has been checked against it side by side.
     # Messages need msgmode; a scenario in IQ mode runs on normal rfsim, which adds the Tags' signals up.
     common = ([] if iq else ["--rfsimulator.options", "msgmode"]) + \
         ["--amber.scenario", scenario_path, "--amber.output_dir", "/out"]
