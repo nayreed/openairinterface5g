@@ -8,10 +8,19 @@ stations (`BSBehavior`, the Reader MAC and PHY). Each `amber-tag` is one UE: it 
 (`BackscatterModule`, `Controller`, `Capacitor`, the Tag MAC and PHY). Amber runs in embedded Python
 through its `amber.session` module; only configuration, logging and the rfsim device come from OAI.
 
-No waveform is generated. Each rfsim block is one simulated millisecond and carries one message:
-the Reader's commands for that millisecond, then each Tag's answer (see `amber/session.py`
-in Amber). rfsim is both the link and the clock. Its `msgmode` option carries the blocks unchanged
-and hands the Reader each Tag's block separately instead of their sum.
+Each rfsim block is one simulated millisecond, and rfsim is both the link and the clock. A block
+carries one of two things:
+
+* **Messages** (the default): the Reader's commands for that millisecond, then each Tag's answer
+  (see `amber/session.py` in Amber), and Amber's formulas decide what is received. rfsim's
+  `msgmode` option carries the blocks unchanged and hands the Reader each Tag's block separately
+  instead of their sum.
+* **IQ samples** (a scenario with a `[phy]` table, see `amber/iq.py` in Amber): the Reader's
+  carrier and commands as a real waveform, and each Tag's backscatter reflection of it, following
+  3GPP Rel-19 Ambient IoT. This runs on normal rfsim, without `msgmode`: rfsim adds the Tags'
+  signals up as a real antenna would, and the Reader demodulates the sum. A Tag only harvests,
+  hears commands and reflects while the Reader's carrier is on, and two Tags reflecting at once
+  really collide.
 
 In each millisecond the Reader's events run first, then each Tag's, in the order of the scenario's
 `NODE_IDS` (see `amber/hosts.py`). Together the programs write the same files as `amber.run`,
@@ -39,7 +48,8 @@ ninja amber-reader amber-tag rfsimulator
 
 ## Run
 
-All programs need Amber on `PYTHONPATH`, the same scenario file and rfsim's `msgmode`. Start
+All programs need Amber on `PYTHONPATH`, the same scenario file and, with messages, rfsim's
+`msgmode` (leave `--rfsimulator.options msgmode` out for a scenario in IQ mode). Start
 the Reader, then one Tag per node of the scenario's `NODE_IDS`; the Reader starts millisecond 0
 once every node has connected. For `registration.toml`, whose nodes are 0 to 3:
 
@@ -64,11 +74,11 @@ prints `Bye.` when the run ends and writes its CSV files with Amber's one writer
 files (such as `adaptation.csv`) from the Reader, `tag<id>_rx.csv` and `tag<id>_tx.csv` from each
 Tag. Every file is written, with only its header when it has no rows.
 
-`amber-reader` refuses to start unless it is the rfsim server in `msgmode`. `amber-tag` runs
-without it, but rfsim then sends each block in several writes without `TCP_NODELAY`, and every
-simulated millisecond waits on TCP's delayed acknowledgement, about 40 ms on loopback. With
-`msgmode` on all programs, on one machine over loopback, the Python version of the registration
-scenario (4 Tags, 8001 ms) ran in 5.5 s and of the adaptive ALOHA scenario (12 Tags, 6001 ms) in 11 s.
+With messages, `amber-reader` refuses to start unless it is the rfsim server in `msgmode`. rfsim
+sets `TCP_NODELAY` on every connection, so no simulated millisecond waits on TCP's delayed
+acknowledgement (about 40 ms on loopback). On one machine over loopback, the registration scenario
+(4 Tags, 8001 ms) ran in 5.5 s and the adaptive ALOHA scenario (12 Tags, 6001 ms) in 11 s; in IQ
+mode, `gen2_q_iq.toml` (12 Tags, 1501 ms) ran in 7 s, with the same files as `amber.run`.
 
 To check a run, run the same scenario with `amber.run` and compare:
 
@@ -165,6 +175,8 @@ Tag node, of about 100 MB.
 ## Limitations
 
 * At most 250 Tags, the number of clients an rfsim server accepts.
+* IQ mode needs one base station and `amber.block_bytes` at its default (8192), and is about ten
+  times slower than messages.
 * A Tag that stops ends the run: the Reader exits with `no answer from nodes [...]`, and rfsim
   makes the other Tags exit when they lose the Reader.
 * Amber's demos run on plain SimPy, which orders the events of one millisecond by when they were

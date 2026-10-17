@@ -41,9 +41,9 @@ typedef struct amber_session_s amber_session_t;
 void amber_read_params(amber_params_t *params, bool with_node_id);
 
 /*! \brief Load the rfsimulator device for one antenna, sized so one block is one millisecond,
- * and start it as server or client, as rfsimulator.serveraddr says. The Reader must be an rfsim
- * server in msgmode, so it can read each Tag's block separately. */
-void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader);
+ * and start it as server or client, as rfsimulator.serveraddr says. A Reader that reads each Tag's
+ * block separately (by_tag) must be an rfsim server in msgmode. */
+void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader, bool by_tag);
 
 /*! \brief Read nsamps samples into radio->block; returns the timestamp of the first one */
 openair0_timestamp_t amber_radio_read(amber_radio_t *radio, int nsamps);
@@ -62,6 +62,10 @@ amber_session_t *amber_session_create_reader(const amber_params_t *params);
 
 /*! \brief Start Python and create a Tag's session (amber.session.TagSession) */
 amber_session_t *amber_session_create_tag(const amber_params_t *params);
+
+/*! \brief Reader: true when the session wants the Tags' blocks added up, as normal rfsim reads
+ * them (IQ mode, where the blocks are signals), rather than each Tag's block (msgmode) */
+bool amber_session_reads_sum(amber_session_t *session);
 
 /*! \brief Reader: the block to send to the Tags for the next millisecond */
 void amber_session_next_block(amber_session_t *session, uint8_t *out);
