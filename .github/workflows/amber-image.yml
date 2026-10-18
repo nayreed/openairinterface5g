@@ -19,7 +19,7 @@ jobs:
   scripts:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the scripts
         run: |
           bash -n docker/scripts/amber_campaign.sh
@@ -33,7 +33,7 @@ jobs:
     outputs:
       image: ${{ steps.name.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Name the image and pick Amber's dev commit
         id: name
         run: |
@@ -42,11 +42,11 @@ jobs:
           [ -n "$amber" ] || { echo "Amber has no dev branch" >&2; exit 1; }
           echo "amber=$amber" >> "$GITHUB_OUTPUT"
           echo "Amber dev is at $amber"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       # The dependency layers come from the GitHub Actions cache; only the Amber clone (when dev
       # moved) and the OAI build run again.
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.amber.ubuntu
@@ -58,7 +58,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           outputs: type=docker,dest=${{ runner.temp }}/oai-amber.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: oai-amber
           path: ${{ runner.temp }}/oai-amber.tar
@@ -75,8 +75,8 @@ jobs:
           - /opt/amber/tests/scenarios/adaptive_aloha.toml
           - /opt/amber/tests/scenarios/gen2_q_iq.toml
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: oai-amber
           path: ${{ runner.temp }}
@@ -93,7 +93,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: oai-amber
           path: ${{ runner.temp }}
