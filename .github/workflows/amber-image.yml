@@ -24,7 +24,8 @@ jobs:
         run: |
           bash -n docker/scripts/amber_campaign.sh
           bash -n docker/scripts/amber_check_image.sh
-          shellcheck -S warning docker/scripts/amber_campaign.sh docker/scripts/amber_check_image.sh
+          sh -n docker/scripts/amber_usage.sh
+          shellcheck -S warning docker/scripts/amber_campaign.sh docker/scripts/amber_check_image.sh docker/scripts/amber_usage.sh
           python3 -m py_compile docker/scripts/amber_compose.py
 
   build:

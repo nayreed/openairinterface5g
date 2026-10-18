@@ -36,14 +36,23 @@
 #   --campaign NAME                       default amber-<UTC time>; the campaign directory is
 #                                         ./amber-campaigns/NAME
 #   --keep-going                          go on after a run that does not pass (default: stop there)
+#   --reference-seeds "N ..."             compare with Amber's own run only for these seeds (default: every
+#                                         seed). A run of another seed is not compared: it ends UNCHECKED
+#                                         when the Reader said Bye. and wrote its files. In IQ mode Amber's own
+#                                         run takes most of a campaign's time.
 #
 # Environment: AMBER_SSH (default "ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR") runs a command on a
 # node: $AMBER_SSH NODE COMMAND. The allocation must name the user running this script (id -un).
 # The OAI commit is read from the image's org.opencontainers.image.revision label.
 #
 # Each run ends PASS (every program exited 0, said Bye. and wrote the reference's files exactly),
-# CHECK (programs ended well but the output is incomplete or differs) or FAIL (a program failed, a Tag
-# never connected or a timeout), with a reason in its result.json.
+# UNCHECKED (as PASS, for a seed not in --reference-seeds, so not compared), CHECK (programs ended well
+# but the output is incomplete or differs) or FAIL (a program failed, a Tag never connected or a
+# timeout), with a reason in its result.json.
+#
+# Each run also records every container's CPU time and peak memory (run/usage-<node>.tsv, read from its
+# cgroup by amber_usage.sh) and when its containers started and ended (containers in result.json). The
+# preflight records both nodes' CPUs, memory and the link between them (preflight/machine-*.txt, link.txt).
 #
 # Output, in ./amber-campaigns/NAME and in the POS result folder, laid out as Amber lays out a demo's:
 #   <protocol>/output/<demo>[-n<tags>]-s<seed>/   the containers' CSV files
@@ -78,7 +87,7 @@ elapsed() {
 reader_node="" tag_node="" reader_addr="" port=4043 image="" amber_src=""
 demos="" seeds="" tag_counts="" allocation="" pos_user=$(id -un)
 hello_timeout="" calibration_ceiling=1800 campaign="amber-$(date -u +%Y%m%dT%H%M%SZ)"
-pos_results_root=/srv/testbed/results docker=docker keep_going=0
+pos_results_root=/srv/testbed/results docker=docker keep_going=0 reference_seeds="" reference_seeds_set=0
 declare -A sim_timeout=()
 ssh_cmd=${AMBER_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR}
 
@@ -101,6 +110,7 @@ while [ $# -gt 0 ]; do
       shift 2 ;;
     --campaign) campaign=$2; shift 2 ;;
     --keep-going) keep_going=1; shift ;;
+    --reference-seeds) reference_seeds=$2 reference_seeds_set=1; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
@@ -111,7 +121,7 @@ for v in reader_node tag_node reader_addr image amber_src allocation seeds; do
 done
 [[ $campaign =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "campaign name $campaign: use letters, digits, _ . -"
 [[ $image =~ @sha256:[0-9a-f]{64}$ ]] || die "--image must name a digest (IMAGE@sha256:...), not a tag such as latest"
-for n in $port ${hello_timeout:-0} $seeds $tag_counts; do
+for n in $port ${hello_timeout:-0} $seeds $tag_counts $reference_seeds; do
   [[ $n =~ ^[0-9]+$ ]] || die "expected a non-negative integer, got $n"
 done
 for n in $tag_counts; do
@@ -120,6 +130,11 @@ done
 for d in $demos; do
   [[ $d =~ ^[a-z0-9_]+$ ]] || die "demo name $d"
 done
+for n in $reference_seeds; do
+  [[ " $seeds " == *" $n "* ]] || die "--reference-seeds: $n is not one of --seeds"
+done
+usage_sh=$(dirname "$0")/amber_usage.sh
+[ -f "$usage_sh" ] || die "$usage_sh not found: it sits next to this script"
 [ "$reader_node" != "$tag_node" ] || die "the Reader and the Tags must run on different nodes"
 out=./amber-campaigns/$campaign
 [ ! -e "$out" ] || die "$out exists: give each campaign a new --campaign"
@@ -194,7 +209,35 @@ demo_folder() {
   printf '%s\n' "${path%%/*}"
 }
 
+# Is this seed compared with Amber's own run?
+compared_seed() {
+  [ "$reference_seeds_set" = 0 ] || [[ " $reference_seeds " == *" $1 "* ]]
+}
+
 # --- preflight -----------------------------------------------------------------------------------
+
+# What both nodes are: CPUs, memory, kernel, Docker's cgroups, and the link between them. For the record
+# only: nothing here stops the campaign.
+machine_facts() {
+  local node dev speed
+  for node in "$reader_node" "$tag_node"; do
+    on "$node" "echo '# nproc'; nproc; echo '# lscpu'; lscpu; echo '# free -b'; free -b; echo '# uname -r';
+      uname -r; echo '# docker: cgroup driver, cgroup version, CPUs, memory';
+      $docker info --format '{{.CgroupDriver}} {{.CgroupVersion}} {{.NCPU}} {{.MemTotal}}'" \
+      > "$out/preflight/machine-$node.txt" 2>&1 || true
+  done
+  {
+    # The interface each node reaches the other through, and its speed in Mb/s (-1 or empty: unknown).
+    dev=$(on "$tag_node" "ip -o route get $(q "$reader_addr")" 2> /dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p') || true
+    speed=$(on "$tag_node" "cat /sys/class/net/$(q "${dev:-none}")/speed" 2> /dev/null || true)
+    echo "$tag_node dev=${dev:-unknown} speed_mbps=${speed:-unknown}"
+    dev=$(on "$reader_node" "ip -o addr show to $(q "$reader_addr")" 2> /dev/null | awk '{ print $2; exit }') || true
+    speed=$(on "$reader_node" "cat /sys/class/net/$(q "${dev:-none}")/speed" 2> /dev/null || true)
+    echo "$reader_node dev=${dev:-unknown} speed_mbps=${speed:-unknown}"
+  } > "$out/preflight/link.txt"
+  log "machines: $reader_node $(sed -n '2p' "$out/preflight/machine-$reader_node.txt") CPUs, \
+$tag_node $(sed -n '2p' "$out/preflight/machine-$tag_node.txt") CPUs; link: $(tr '\n' ' ' < "$out/preflight/link.txt")"
+}
 
 alloc_json() {
   pos allocations show "$1"
@@ -274,6 +317,7 @@ preflight() {
   diff "$out/preflight/library.sha256" "$out/preflight/image-amber.sha256" > /dev/null ||
     die "the image's /opt/amber differs from Amber $library_sha (see preflight/*.sha256)"
   rm -rf "$lib"
+  machine_facts
   log "preflight passed: image $image_id (OAI $oai_commit) embeds Amber $library_sha"
 }
 
@@ -476,6 +520,8 @@ n=\$((n + 1)); [ \$((n % 16)) != 0 ] || wait"
   done
   t_hello=$(elapsed "$t0" "$(now)")
   log "all ${#tag_ids[@]} Tags connected in $t_hello s; simulation deadline $deadline s"
+  usage_start "$reader_node" "$reader_dir" "^$run_name-reader\$"
+  usage_start "$tag_node" "$tag_dir" "^$run_name-tag[0-9]+\$"
 
   # Simulation: until the Reader ends; fail on a Tag ending first or the deadline.
   t0=$(now)
@@ -528,6 +574,30 @@ n=\$((n + 1)); [ \$((n % 16)) != 0 ] || wait"
   [ ${#exited[@]} = 0 ] || fail tag_exit_nonzero "Tags exited with errors: ${exited[*]}"
 }
 
+# Starts amber_usage.sh on a node for the run's containers whose names match $3; it ends by itself
+# once they have all ended, writing $2/usage.tsv.
+usage_start() {
+  local node=$1 dir=$2
+  if on "$node" "cat > $(q "$dir/amber_usage.sh")" < "$usage_sh" &&
+    on "$node" "rm -f $(q "$dir/usage.tsv"); nohup sh $(q "$dir/amber_usage.sh") $(q "$dir/usage.tsv") $(q "$3") $docker \
+      < /dev/null > $(q "$dir/usage.log") 2>&1 &"; then
+    usage_nodes+=("$node:$dir")
+  else
+    log "could not start the CPU and memory record on $node for this run"
+  fi
+}
+
+# Waits up to 30 s for each usage.tsv of the run, then copies it to run/usage-<node>.tsv.
+usage_collect() {
+  local run_dir=$1 nd node dir
+  for nd in ${usage_nodes[@]+"${usage_nodes[@]}"}; do
+    node=${nd%%:*} dir=${nd#*:}
+    on "$node" "i=0; while [ ! -f $(q "$dir/usage.tsv") ] && [ \$i -lt 60 ]; do sleep 0.5; i=\$((i + 1)); done;
+      cat $(q "$dir/usage.tsv")" > "$run_dir/run/usage-$node.tsv" 2> /dev/null ||
+      log "no CPU and memory record from $node for this run"
+  done
+}
+
 # Keeps the log and state of the run's containers on a node whose names match $3, then removes them.
 collect_containers() {
   local node=$1 dir=$2
@@ -542,6 +612,16 @@ check_output() {
   local run_dir=$1 ref=$1/run/ref
   if ! grep -q "^Bye\.$" "$run_dir/run/logs/$run_name-reader.log"; then
     run_status=CHECK run_reason=no_bye run_detail="the Reader exited 0 without Bye."
+    return
+  fi
+  if ! compared_seed "$seed"; then
+    rm -rf "$ref"
+    if ! compgen -G "$run_dir/reader_bs*_rx.csv" > /dev/null; then
+      run_status=CHECK run_reason=no_reader_files run_detail="the Reader wrote no reader_bs*_rx.csv"
+      return
+    fi
+    run_status=UNCHECKED run_reason=no_reference
+    run_detail="seed $seed is not in --reference-seeds; $(find "$run_dir" -maxdepth 1 -type f | wc -l) files"
     return
   fi
   if ! awk 'FNR > 1 { found = 1; exit } END { exit !found }' "$ref"/reader_bs*_rx.csv 2> /dev/null; then
@@ -569,9 +649,36 @@ $(comm -3 <(echo "$ref_files") <(echo "$run_files") | tr -d '\t' | tr '\n' ' ')"
   run_status=PASS run_reason=identical_to_reference run_detail="$(echo "$ref_files" | wc -l) files identical"
 }
 
+# The run's containers from their docker inspect files: when they started and ended (each node's clock).
+containers_json() {
+  local logs=$1/run/logs
+  {
+    cat "$logs/$run_name-reader.inspect.json" 2> /dev/null || echo '[]'
+    cat "$logs/$run_name"-tag*.inspect.json 2> /dev/null || true
+  } | jq -s '(.[0][0].State // {}) as $r | [.[1:][][]?.State] as $t |
+    {reader_started: $r.StartedAt, reader_finished: $r.FinishedAt,
+     tags_last_started: ($t | map(.StartedAt) | max), tags_first_finished: ($t | map(.FinishedAt) | min),
+     tags_last_finished: ($t | map(.FinishedAt) | max)}' 2> /dev/null || echo null
+}
+
+# The run's CPU time and peak memory, from run/usage-*.tsv: the Reader, and the mean and largest of its Tags.
+usage_json() {
+  { cat "$1"/run/usage-*.tsv 2> /dev/null || true; } | jq -R -s --arg r "$run_name-reader" '
+    [split("\n")[] | select(length > 0) | split("\t") | {name: .[0], cpu: (.[1] | tonumber), mem: (.[2] | tonumber)}] |
+    (map(select(.name == $r)) | first) as $reader | map(select(.name != $r)) as $tags |
+    if length == 0 then null else
+    {reader_cpu_s: $reader.cpu, reader_mem_peak_mib: $reader.mem, tags_recorded: ($tags | length),
+     tag_cpu_s_mean: (if ($tags | length) > 0 then ($tags | map(.cpu) | add / length) else null end),
+     tag_cpu_s_max: ($tags | map(.cpu) | max), tag_mem_peak_mib_mean: (if ($tags | length) > 0 then ($tags | map(.mem) | add / length) else null end),
+     tag_mem_peak_mib_max: ($tags | map(.mem) | max)} end' 2> /dev/null || echo null
+}
+
 finish_run() {
-  local run_dir=$1
+  local run_dir=$1 usage containers
+  usage=$(usage_json "$run_dir")
+  containers=$(containers_json "$run_dir")
   jq -n \
+    --argjson usage "${usage:-null}" --argjson containers "${containers:-null}" \
     --arg campaign "$campaign" --arg run "$run_name" --arg demo "$demo" --argjson seed "$seed" --arg ntags "$ntags" \
     --argjson attempt "$attempt" --arg status "$run_status" --arg reason "$run_reason" --arg detail "$run_detail" \
     --arg missing "$missing_ids" --argjson scenario "$scenario_json" --arg image "$image" --arg image_id "$image_id" \
@@ -588,7 +695,9 @@ finish_run() {
       status: $status, reason: $reason, detail: $detail,
       missing_node_ids: ($missing | split(" ") | map(select(. != "") | tonumber)),
       scenario: $scenario,
-      comparison: ("byte for byte against " + $reference + " from the same image and scenario files"),
+      comparison: (if $status == "UNCHECKED" then "none: seed not in --reference-seeds"
+                   else "byte for byte against " + $reference + " from the same image and scenario files" end),
+      usage: $usage, containers: $containers,
       image: $image, image_id: $image_id, amber_library: $library,
       runner_sha256: $runner, oai_commit: $oai_commit,
       reader_node: $reader_node, tag_node: $tag_node, reader_addr: $reader_addr, port: $port,
@@ -596,7 +705,7 @@ finish_run() {
       seconds: {scenario: $t_scenario, reference: $t_reference, hello: $t_hello, simulation_and_logs: $t_sim,
                 collect: $t_collect, run: $t_run} | map_values(if . == "" then null else tonumber end)}' \
     > "$run_dir/run/result.json"
-  jq -e '(.status | IN("PASS", "CHECK", "FAIL")) and (.reason | length > 0) and (.scenario.SEED == .seed)
+  jq -e '(.status | IN("PASS", "UNCHECKED", "CHECK", "FAIL")) and (.reason | length > 0) and (.scenario.SEED == .seed)
          and (.scenario.NODE_IDS | length > 0)' "$run_dir/run/result.json" > /dev/null ||
     die "$run_dir/run/result.json is not valid"
   (cd "$run_dir" && find . -type f ! -path ./run/SHA256SUMS | LC_ALL=C sort | xargs sha256sum) > "$run_dir/run/SHA256SUMS"
@@ -628,6 +737,7 @@ do_run() {
   run_name=amb-$campaign-$label-s$seed-a$attempt
   mkdir -p "$run_dir/run"
   run_status="" run_reason="" missing_ids="" run_detail="" t_hello="" t_sim="" t_reference="" t_collect=""
+  usage_nodes=()
   log "run $run_name"
 
   local t0
@@ -661,13 +771,14 @@ do_run() {
   log "$label seed $seed: ${#tag_ids[@]} Tags (${tag_ids[0]} to ${tag_ids[-1]}), SIM_TIME_MS \
 $(jq .SIM_TIME_MS <<< "$scenario_json")"
 
-  t0=$(now)
-  on "$reader_node" "$docker run --rm --name $run_name-ref -v $(q "$reader_dir/scen"):/scenarios:ro \
-    -v $(q "$reader_dir/ref"):/ref $(q "$image") python3 -m $reference \
-    $(q "$scen_path") /ref" > "$run_dir/run/reference.log" 2>&1 ||
-    die "the reference run failed (see $run_dir/run/reference.log)"
-
-  t_reference=$(elapsed "$t0" "$(now)")
+  if compared_seed "$seed"; then
+    t0=$(now)
+    on "$reader_node" "$docker run --rm --name $run_name-ref -v $(q "$reader_dir/scen"):/scenarios:ro \
+      -v $(q "$reader_dir/ref"):/ref $(q "$image") python3 -m $reference \
+      $(q "$scen_path") /ref" > "$run_dir/run/reference.log" 2>&1 ||
+      die "the reference run failed (see $run_dir/run/reference.log)"
+    t_reference=$(elapsed "$t0" "$(now)")
+  fi
 
   deadline=${sim_timeout[$label]:-${sim_timeout[$demo]:-$calibration_ceiling}}
   # The last run's Reader can take a moment to release the port after its container is removed.
@@ -683,6 +794,7 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
   run_containers "$reader_dir" "$tag_dir" "$deadline"
 
   t0=$(now)
+  usage_collect "$run_dir"
   collect_containers "$reader_node" "$reader_dir" "^$run_name-reader\$"
   collect_containers "$tag_node" "$tag_dir" "^$run_name-tag[0-9]+\$"
   get_dir "$reader_node" "$reader_dir/out" "$run_dir"
@@ -710,10 +822,12 @@ $(jq .SIM_TIME_MS <<< "$scenario_json")"
 mkdir -p "$out/preflight"
 runner_sha=$(sha256sum "$0" | cut -d' ' -f1)
 cp "$0" "$out/preflight/amber_campaign.sh"
+cp "$usage_sh" "$out/preflight/amber_usage.sh"
 printf '%q ' "$0" "${args[@]}" > "$out/preflight/command.txt"
 preflight
 find_demos
-declare -A counts=([PASS]=0 [CHECK]=0 [FAIL]=0) demo_layout=()
+declare -A counts=([PASS]=0 [UNCHECKED]=0 [CHECK]=0 [FAIL]=0) demo_layout=()
+usage_nodes=()
 scenario_json="" t_scenario="" t_reference="" t_hello="" t_sim="" t_collect="" started="" deadline=0 attempt=0 run_t0=0
 ntags="" label=""
 
@@ -757,7 +871,7 @@ for n in $ntags_list; do
     set_label "$n"
     for seed in $seeds; do
       do_run
-      if [ "$run_status" != PASS ] && [ "$keep_going" = 0 ]; then
+      if [ "$run_status" != PASS ] && [ "$run_status" != UNCHECKED ] && [ "$keep_going" = 0 ]; then
         log "stopping after $run_name ($run_status: $run_reason); --keep-going runs the rest anyway"
         break 3
       fi
@@ -766,9 +880,9 @@ for n in $ntags_list; do
 done
 
 {
-  echo "campaign $campaign: ${counts[PASS]} PASS, ${counts[CHECK]} CHECK, ${counts[FAIL]} FAIL"
+  echo "campaign $campaign: ${counts[PASS]} PASS, ${counts[UNCHECKED]} UNCHECKED, ${counts[CHECK]} CHECK, ${counts[FAIL]} FAIL"
   # Per demo, the slowest simulation of its PASS runs, and a deadline of three times that plus 30 s.
-  awk '$3 == "PASS" && $5 > m[$2] { m[$2] = $5 }
+  awk '($3 == "PASS" || $3 == "UNCHECKED") && $5 > m[$2] { m[$2] = $5 }
     END { for (d in m) printf "%s: slowest simulation %.1f s, suggested --sim-timeout %s=%d\n", d, m[d], d, m[d] * 3 + 30 }' \
     "$out/runs.txt"
 } | tee "$out/summary.txt" >&2
