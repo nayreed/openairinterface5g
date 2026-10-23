@@ -19,6 +19,7 @@
 
 #define AIOT_PROTOCOL_MAX_PARAMS 8
 #define AIOT_PROTOCOL_STATE_BYTES 8192
+#define AIOT_PROTOCOL_WAIT 2
 
 typedef struct {
   aiot_mac_r2d_msg_t msg;
@@ -49,8 +50,9 @@ typedef struct {
   const char *columns[8];
   /* checks the parameters beyond their types: 0, or AIOT_EINVAL with why in err */
   int (*check)(const double *p, char *err, int err_len);
-  /* the next message, given what the last brought (h1 and h2 NULL at the start): 1, or 0 when the
-   * protocol has ended. state is AIOT_PROTOCOL_STATE_BYTES of zeros at the start. */
+  /* the next message, given what the last brought (h1 and h2 NULL at the start): 1, 0 when the
+   * protocol has ended, or AIOT_PROTOCOL_WAIT when it sends only what the caller pushes
+   * (aiot_reader_push). state is AIOT_PROTOCOL_STATE_BYTES of zeros at the start. */
   int (*step)(void *state,
               const double *p,
               aiot_policy_ctx_t *ctx,

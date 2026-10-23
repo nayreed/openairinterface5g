@@ -374,6 +374,22 @@ static int adaptive_aloha_step(void *state,
   return 1;
 }
 
+/* -- manual: the caller decides every message --------------------------------------------------
+ * Nothing of its own: the Reader sends what its caller pushes (aiot_reader_push), the way a core
+ * network's A-IoT function asks a gNB for a paging or a command, and still answers the Msg1s of a
+ * pushed access message with a Random ID Response. */
+
+static int manual_step(void *state,
+                       const double *p,
+                       aiot_policy_ctx_t *ctx,
+                       const aiot_reader_heard_t *h1,
+                       const aiot_reader_heard_t *h2,
+                       aiot_policy_msg_t *next)
+{
+  (void)state, (void)p, (void)ctx, (void)h1, (void)h2, (void)next;
+  return AIOT_PROTOCOL_WAIT;
+}
+
 /* -- the list --------------------------------------------------------------------------------- */
 
 static const aiot_protocol_t PROTOCOLS[] = {
@@ -404,6 +420,7 @@ static const aiot_protocol_t PROTOCOLS[] = {
      .columns = {"time_ms", "q", "decoded", "collided"},
      .check = gen2_q_check,
      .step = gen2_q_step},
+    {.name = "manual", .n_params = 0, .step = manual_step},
     {.name = "registration",
      .n_params = 1,
      .param_names = {"occasions_exp"},

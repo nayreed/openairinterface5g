@@ -492,6 +492,16 @@ int aiot_mac_r2d_natural_bytes(const aiot_mac_r2d_msg_t *m)
   return r2d_natural(m);
 }
 
+int aiot_mac_r2d_body_bits(const aiot_mac_r2d_msg_t *m)
+{
+  if (!m)
+    return AIOT_EINVAL;
+  if (m->kind == AIOT_R2D_ACCESS_TRIGGER)
+    return 3;
+  uint8_t scratch[SCRATCH_BITS];
+  return r2d_body(m, 0, scratch);
+}
+
 int aiot_mac_pack_r2d(const aiot_mac_r2d_msg_t *m, uint8_t *bits, int cap)
 {
   if (!m || (cap > 0 && !bits))

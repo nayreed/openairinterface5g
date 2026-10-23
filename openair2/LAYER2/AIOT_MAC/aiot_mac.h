@@ -18,7 +18,8 @@
  *
  * 38.391 says what the device does. What the Reader does (whom to page, how many access occasions,
  * when to trigger, which AS ID to give, when to NACK) is left to the Reader: that is a protocol. The
- * protocols are part of this library, named as a scenario names them.
+ * protocols are part of this library, named as a scenario names them; "manual" sends only what the
+ * caller pushes (an A-IoT function in the core network, or a test).
  *
  * The readings of the spec where 38.391 leaves room:
  * - Access occasion numbering (5.3.1.1 selects "the (counter+1)th of the m = X * N_SFS occasions"
@@ -144,6 +145,14 @@ int aiot_reader_d2r_outcome(aiot_reader_t *r, const aiot_d2r_outcome_t *o, int64
 /* 1 once the protocol has nothing more to send. */
 int aiot_reader_done(const aiot_reader_t *r);
 
+/* The caller's own message, sent next (with the protocol "manual", every message is the
+ * caller's): when access is 1 (a CBRA paging or an Access Trigger), the Reader answers its Msg1s
+ * with a Random ID Response, as for a protocol's. Only while the Reader is idle; returns 0, or
+ * AIOT_EINVAL when it is not idle or msg does not pack. */
+int aiot_reader_push(aiot_reader_t *r, const aiot_mac_r2d_msg_t *msg, int access);
+/* 1 when the Reader has nothing to send and no answers to wait for (aiot_reader_push). */
+int aiot_reader_idle(const aiot_reader_t *r);
+
 /* What followed one R2D: every answer decoded, and the collisions (preambles whose frame did not
  * decode, or decoded bits that are not a valid PDU). */
 typedef enum { AIOT_ANSWER_MSG1 = 0, AIOT_ANSWER_DATA = 1 } aiot_answer_kind_t;
@@ -242,6 +251,10 @@ typedef struct {
 } aiot_device_state_t;
 
 void aiot_device_state(const aiot_device_t *d, aiot_device_state_t *out);
+
+/* sizeof the named type of this API ("aiot_reader_heard_t" ...), or AIOT_EINVAL: lets a binding
+ * from another language check its copies of these structures when it loads the library. */
+int aiot_mac_struct_size(const char *type);
 
 #ifdef __cplusplus
 }

@@ -94,7 +94,12 @@ static int step(aiot_reader_t *r, int64_t now, const aiot_reader_heard_t *h1, co
                            .tid = &r->tid,
                            .add_row = add_row,
                            .reader = r};
-  if (!r->proto->step(r->state, r->params, &ctx, h1, h2, &r->next)) {
+  const int rc = r->proto->step(r->state, r->params, &ctx, h1, h2, &r->next);
+  if (rc == AIOT_PROTOCOL_WAIT) {
+    r->ready = 0; /* until the caller pushes a message */
+    return 0;
+  }
+  if (!rc) {
     r->done = 1;
     r->ready = 0;
     return 0;
@@ -163,6 +168,12 @@ aiot_reader_t *aiot_reader_new(const aiot_link_config_t *cfg,
     return NULL;
   }
   r->cfg = *cfg;
+  for (int i = 1; i < r->cfg.n_r_sfs; i++) /* ascending, as a paging's bitmap lists them */
+    for (int j = i; j > 0 && r->cfg.r_sfs[j - 1] > r->cfg.r_sfs[j]; j--) {
+      const int t = r->cfg.r_sfs[j];
+      r->cfg.r_sfs[j] = r->cfg.r_sfs[j - 1];
+      r->cfg.r_sfs[j - 1] = t;
+    }
   r->proto = proto;
   memcpy(r->params, p, sizeof(p));
   r->open = open;
@@ -192,6 +203,26 @@ void aiot_reader_free(aiot_reader_t *r)
 int aiot_reader_done(const aiot_reader_t *r)
 {
   return r->done;
+}
+
+int aiot_reader_push(aiot_reader_t *r, const aiot_mac_r2d_msg_t *msg, int access)
+{
+  if (r->done || r->ready || r->waiting || !msg)
+    return AIOT_EINVAL; /* the Reader is sending, or waiting for answers */
+  uint8_t bits[AIOT_MAC_MAX_PDU_BITS];
+  if (aiot_mac_pack_r2d(msg, bits, AIOT_MAC_MAX_PDU_BITS) < 0)
+    return AIOT_EINVAL;
+  if (access && msg->kind != AIOT_R2D_PAGING_CBRA && msg->kind != AIOT_R2D_ACCESS_TRIGGER)
+    return AIOT_EINVAL;
+  r->next = (aiot_policy_msg_t){.msg = *msg, .access = access};
+  r->ready = 1;
+  r->next_is_ridr = 0;
+  return 0;
+}
+
+int aiot_reader_idle(const aiot_reader_t *r)
+{
+  return !r->done && !r->ready && !r->waiting;
 }
 
 int aiot_reader_next_r2d(aiot_reader_t *r, int64_t now, aiot_reader_r2d_t *out)
@@ -438,4 +469,31 @@ int aiot_reader_pop_rows(aiot_reader_t *r, double *rows, int max_rows)
   memmove(r->rows, r->rows + (size_t)n * nc, (size_t)(r->n_rows - n) * nc * sizeof(double));
   r->n_rows -= n;
   return n;
+}
+
+int aiot_mac_struct_size(const char *type)
+{
+  static const struct {
+    const char *name;
+    int size;
+  } sizes[] = {
+      {"aiot_d2r_params_t", sizeof(aiot_d2r_params_t)},
+      {"aiot_sched_info_t", sizeof(aiot_sched_info_t)},
+      {"aiot_mac_r2d_msg_t", sizeof(aiot_mac_r2d_msg_t)},
+      {"aiot_mac_d2r_msg_t", sizeof(aiot_mac_d2r_msg_t)},
+      {"aiot_link_config_t", sizeof(aiot_link_config_t)},
+      {"aiot_param_t", sizeof(aiot_param_t)},
+      {"aiot_reader_r2d_t", sizeof(aiot_reader_r2d_t)},
+      {"aiot_reader_answer_t", sizeof(aiot_reader_answer_t)},
+      {"aiot_reader_heard_t", sizeof(aiot_reader_heard_t)},
+      {"aiot_d2r_expect_t", sizeof(aiot_d2r_expect_t)},
+      {"aiot_d2r_outcome_t", sizeof(aiot_d2r_outcome_t)},
+      {"aiot_device_upper_t", sizeof(aiot_device_upper_t)},
+      {"aiot_device_send_t", sizeof(aiot_device_send_t)},
+      {"aiot_device_state_t", sizeof(aiot_device_state_t)},
+  };
+  for (size_t i = 0; type && i < sizeof(sizes) / sizeof(sizes[0]); i++)
+    if (!strcmp(sizes[i].name, type))
+      return sizes[i].size;
+  return AIOT_EINVAL;
 }

@@ -139,6 +139,8 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *msg);
 /* The natural length in bytes of the message without extra Fill Bits (the TBS computed when
  * r2d_tbs is 0), or AIOT_EINVAL if the message is invalid. 0 for Access Trigger (3 bits). */
 int aiot_mac_r2d_natural_bytes(const aiot_mac_r2d_msg_t *msg);
+/* Bits of the message before any Fill Bits (3 for Access Trigger), or AIOT_EINVAL. */
+int aiot_mac_r2d_body_bits(const aiot_mac_r2d_msg_t *msg);
 
 /* ---------------------------------------------------------------------------------------------
  * D2R messages (6.2.2)

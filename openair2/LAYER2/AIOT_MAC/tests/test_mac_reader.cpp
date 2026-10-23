@@ -205,12 +205,12 @@ struct Air {
 
 } // namespace
 
-TEST(ReaderProtocols, ListsAllFive)
+TEST(ReaderProtocols, ListsThemAll)
 {
   std::set<std::string> names;
   for (int i = 0; i < aiot_protocol_count(); i++)
     names.insert(aiot_protocol_name(i));
-  EXPECT_EQ(names, (std::set<std::string>{"adaptive_aloha", "broadcast", "gen2_q", "registration", "unicast"}));
+  EXPECT_EQ(names, (std::set<std::string>{"adaptive_aloha", "broadcast", "gen2_q", "manual", "registration", "unicast"}));
   const char *pn[8];
   double def[8];
   int is_int[8];
@@ -382,4 +382,43 @@ TEST(Reader, RejectsAnOutcomeItDidNotExpect)
   EXPECT_LT(aiot_reader_d2r_outcome(air.reader, o.get(), 2000), 0); /* already in */
   ASSERT_EQ(aiot_reader_next_r2d(air.reader, 0, &r2d), 1);
   EXPECT_GT(r2d.earliest_start, 1000); /* after the D2R that never came, and T_D2R_min */
+}
+
+// "manual" sends only what the caller pushes; a pushed access message still gets its Random ID
+// Response from the Reader.
+TEST(Reader, ManualSendsWhatIsPushed)
+{
+  Air air("manual", {}, 2);
+  aiot_reader_r2d_t r2d;
+  EXPECT_EQ(aiot_reader_next_r2d(air.reader, 0, &r2d), 0);
+  EXPECT_EQ(aiot_reader_idle(air.reader), 1);
+  EXPECT_EQ(aiot_reader_done(air.reader), 0);
+
+  aiot_link_config_t c = default_link();
+  aiot_mac_r2d_msg_t cfa = {};
+  cfa.kind = AIOT_R2D_PAGING_CFA;
+  ASSERT_EQ(aiot_link_cfa(&c, 0, 0, &cfa.sched), 0);
+  cfa.has_paging_id = 1;
+  cfa.paging_id_len = 16;
+  aiot_paging_id_of_node(0x101, cfa.paging_id);
+  EXPECT_LT(aiot_reader_push(air.reader, &cfa, 1), 0) << "a CFA paging is not an access message";
+  ASSERT_EQ(aiot_reader_push(air.reader, &cfa, 0), 0);
+  EXPECT_LT(aiot_reader_push(air.reader, &cfa, 0), 0) << "one at a time";
+  EXPECT_EQ(air.run(5), 1);
+  ASSERT_EQ(air.heard.size(), 1u);
+  EXPECT_EQ(air.data_from(), (std::vector<int>{0x101}));
+  EXPECT_EQ(aiot_reader_idle(air.reader), 1);
+
+  aiot_mac_r2d_msg_t page = {};
+  page.kind = AIOT_R2D_PAGING_CBRA;
+  ASSERT_EQ(aiot_link_cbra(&c, nullptr, 0, 0, &page.sched), 0);
+  page.transaction_id = 1;
+  page.num_access_occasions_code = 3;
+  ASSERT_EQ(aiot_reader_push(air.reader, &page, 1), 0);
+  air.run(5);
+  EXPECT_EQ(air.unmatched, 0);
+  ASSERT_GE(air.heard.size(), 2u);
+  EXPECT_EQ(air.heard[1]->sent.kind, AIOT_R2D_PAGING_CBRA);
+  if (air.heard.size() > 2)
+    EXPECT_EQ(air.heard[2]->sent.kind, AIOT_R2D_RANDOM_ID_RESPONSE);
 }
