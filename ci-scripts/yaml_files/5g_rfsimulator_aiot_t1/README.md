@@ -95,8 +95,10 @@ millisecond. Over the same run the cell had no DL or UL errors and a ping went t
 ## Limits
 
 * The carrier is in the DL band and the D2R in the UL band: the hub's shifts carry the Tags'
-  reflection from one to the other, where a real Tag's reflection stays next to the carrier. The
-  carrier options of the UL band (`cw = "gnb-ul"`, `"ue-ul"`, `"cw-node-ul"`) are not built yet.
+  reflection from one to the other, where a real Tag's reflection stays next to the carrier. A CW
+  node in the UL band (`cw = "cw-node-ul"`) is
+  [5g_rfsimulator_aiot_t1_cw_ul](../5g_rfsimulator_aiot_t1_cw_ul/README.md); the other carrier
+  options of the UL band (`cw = "gnb-ul"`, `"ue-ul"`) are not built yet.
 * The gNB's carrier does not leak into its own UL receiver, as Amber's Reader's does
   (`cw_leak_dbm`).
 * With an nFAPI split the gNB's L1 has no Reader.

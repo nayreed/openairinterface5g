@@ -143,7 +143,9 @@ Tag is a container of its own. `git checkout -- .` brings back the checked-in ro
 `[network]` also names who sends R2D, who receives D2R and who sends the carrier: the four
 topologies of the Rel-19 study. As checked in, a standalone Reader does all three. With
 `r2d = d2r = "gnb"` and `cw = "gnb-dl"` the gNB is the Reader (topology 1):
-[5g_rfsimulator_aiot_t1](../5g_rfsimulator_aiot_t1/README.md) is that room. A UE as the Reader is not
+[5g_rfsimulator_aiot_t1](../5g_rfsimulator_aiot_t1/README.md) is that room. With `cw = "cw-node-ul"`
+instead, a CW node sends the carrier in the UL band:
+[5g_rfsimulator_aiot_t1_cw_ul](../5g_rfsimulator_aiot_t1_cw_ul/README.md). A UE as the Reader is not
 built yet, and `amber-compose` refuses those scenarios with that reason.
 
 ## Timing
