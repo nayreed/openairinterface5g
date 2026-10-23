@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 #
-# The Rel-19 Ambient IoT PHY (TS 38.291) and MAC PDU codec (TS 38.391) as a plain C library.
+# The Rel-19 Ambient IoT PHY (TS 38.291), and the MAC (TS 38.391: its PDUs here, its procedures and
+# the Reader's protocols in openair2/LAYER2/AIOT_MAC) as a plain C library.
 # It builds inside OAI (openair1/PHY) or on its own:
 #   cmake -S openair1/PHY/AIOT -B build-aiot -G Ninja && ninja -C build-aiot && ctest --test-dir build-aiot
 # -DAIOT_BUILD_TESTS=OFF builds the library alone, without C++ or GTest.
@@ -27,11 +28,15 @@ add_library(aiot_phy STATIC
   aiot_r2d.c
   aiot_d2r.c
   aiot_mac_pdu.c
+  ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_mac_link.c
+  ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_mac_reader.c
+  ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_mac_device.c
+  ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_protocols.c
   ${OAI_ROOT}/openair1/PHY/CODING/crc_byte.c
   ${OAI_ROOT}/openair1/PHY/CODING/ccoding_byte_lte.c
   ${OAI_ROOT}/openair1/PHY/CODING/viterbi_lte.c
 )
-target_include_directories(aiot_phy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${OAI_ROOT})
+target_include_directories(aiot_phy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC ${OAI_ROOT})
 target_include_directories(aiot_phy PRIVATE ${OAI_ROOT}/openair1 ${OAI_ROOT}/common/utils ${OAI_ROOT}/common
                                             ${OAI_ROOT}/openair2/COMMON)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
@@ -55,4 +60,5 @@ target_link_libraries(aiot_phy_shared PRIVATE m Threads::Threads)
 
 if((AIOT_STANDALONE AND AIOT_BUILD_TESTS) OR (NOT AIOT_STANDALONE AND ENABLE_TESTS))
   add_subdirectory(tests)
+  add_subdirectory(${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/tests ${CMAKE_CURRENT_BINARY_DIR}/mac_tests)
 endif()
