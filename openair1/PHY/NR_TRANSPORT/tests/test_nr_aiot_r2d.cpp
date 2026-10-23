@@ -70,6 +70,23 @@ void Modulate(Grid &g, std::vector<std::complex<double>> &out)
   }
 }
 
+// The resource elements a transmission must put on the grid: the R2D's, at TX_AMP sqrt(K) times
+// 10^(offset/20), rounded. re[l * K + q] is subcarrier q of R2D symbol l.
+std::vector<c16_t> Expected(const std::vector<uint8_t> &tb, int m, int n_rb, double offset_db = 0)
+{
+  std::vector<uint8_t> chips(4 * (tb.size() + 16) + 64);
+  const int n_chips = aiot_r2d_chips(tb.data(), tb.size(), m, chips.data(), chips.size());
+  EXPECT_GT(n_chips, 0);
+  const int n_sym = aiot_r2d_n_symbols(n_chips, m), K = n_rb * 12;
+  std::vector<cd_t> re(n_sym * K);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips.data(), n_chips, m, n_rb, re.data(), re.size()), n_sym * K);
+  const double s = kAmp * pow(10.0, offset_db / 20) * sqrt((double)K);
+  std::vector<c16_t> out(re.size());
+  for (size_t i = 0; i < re.size(); i++)
+    out[i] = c16_t{(int16_t)lround(s * re[i].r), (int16_t)lround(s * re[i].i)};
+  return out;
+}
+
 } // namespace
 
 // The resource elements land on the configured PRBs, on the symbols from the start symbol on, and
@@ -83,6 +100,8 @@ TEST(NrAiotR2D, WritesItsPrbsAndSymbolsOnly)
       std::vector<uint8_t> tb = RandomBits(gen, 96);
       const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 5, 3, symbol, tb.data(), 96, 6, 3);
       ASSERT_GT(n_sym, kSym) << "a 96-bit R2D with M = 6 spans more than one slot";
+      const std::vector<c16_t> want = Expected(tb, 6, 3);
+      ASSERT_EQ((int)want.size(), n_sym * 36);
       int seen = 0;
       for (int slot = 3; seen < n_sym; slot++) {
         Grid g;
@@ -92,10 +111,9 @@ TEST(NrAiotR2D, WritesItsPrbsAndSymbolsOnly)
           const bool r2d = l >= 0 && l < n_sym;
           for (int k = 0; k < kFft; k++) {
             const bool in = r2d && k >= prb_start * 12 && k < (prb_start + 3) * 12;
-            if (!in) {
-              EXPECT_EQ(g.at(s, k).r, 0) << "slot " << slot << ", symbol " << s << ", subcarrier " << k;
-              EXPECT_EQ(g.at(s, k).i, 0);
-            }
+            const c16_t v = in ? want[l * 36 + k - prb_start * 12] : c16_t{0, 0};
+            EXPECT_EQ(g.at(s, k).r, v.r) << "slot " << slot << ", symbol " << s << ", subcarrier " << k;
+            EXPECT_EQ(g.at(s, k).i, v.i);
           }
         }
         seen += w;
@@ -146,34 +164,35 @@ TEST(NrAiotR2D, DeviceDecodesWhatTheGnbSends)
     }
 }
 
-// With half its chips on, the R2D's EPRE is the PDSCH's (TX_AMP^2 / 2) plus the configured offset.
+// With half its chips on, the R2D's EPRE is the PDSCH's (TX_AMP^2 / 2) plus the configured offset,
+// over the R2D's own symbols and PRBs, for every M.
 TEST(NrAiotR2D, EpreFollowsTheOffset)
 {
   std::mt19937 gen(3);
-  for (double offset : {0.0, -6.0, 3.0}) {
-    Cell cell(4, 3, offset);
-    double sum = 0;
-    int n = 0;
-    for (int t = 0; t < 20; t++) {
-      std::vector<uint8_t> tb = RandomBits(gen, 200);
-      const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 200, 6, 1);
-      ASSERT_GT(n_sym, 0);
-      for (int slot = 0; cell.r2d.n_pending; slot++) {
-        Grid g;
-        nr_aiot_r2d_map(&cell.r2d, 0, slot, g.re.data(), nullptr);
-        for (int s = 0; s < kSym; s++)
-          for (int k = 48; k < 60; k++) {
-            sum += (double)g.at(s, k).r * g.at(s, k).r + (double)g.at(s, k).i * g.at(s, k).i;
-            n++;
-          }
+  for (int m : {2, 6, 12, 24})
+    for (double offset : {0.0, -6.0, 3.0}) {
+      const int n_rb = aiot_n_rb_min(m), K = n_rb * 12;
+      Cell cell(4, 3, offset);
+      double sum = 0;
+      int n = 0;
+      for (int t = 0; t < 10; t++) {
+        std::vector<uint8_t> tb = RandomBits(gen, 200);
+        const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 200, m, n_rb);
+        ASSERT_GT(n_sym, 0);
+        for (int slot = 0; cell.r2d.n_pending; slot++) {
+          Grid g;
+          nr_aiot_r2d_map(&cell.r2d, 0, slot, g.re.data(), nullptr);
+          for (int s = 0; s < kSym && slot * kSym + s < n_sym; s++)
+            for (int k = 48; k < 48 + K; k++) {
+              sum += (double)g.at(s, k).r * g.at(s, k).r + (double)g.at(s, k).i * g.at(s, k).i;
+              n++;
+            }
+        }
       }
+      const double epre_db = 10 * log10(sum / n);
+      const double pdsch_db = 10 * log10(kAmp * kAmp / 2.0);
+      EXPECT_NEAR(epre_db, pdsch_db + offset, 0.5) << "M = " << m << ", offset " << offset;
     }
-    // the last slot of each transmission has empty symbols after the R2D: count only the R2D's
-    double epre_db = 10 * log10(sum / n);
-    const double pdsch_db = 10 * log10(kAmp * kAmp / 2.0);
-    EXPECT_LE(epre_db, pdsch_db + offset + 1.0) << offset;
-    EXPECT_GE(epre_db, pdsch_db + offset - 4.0) << offset;
-  }
 }
 
 // The phase rotation of the slot's symbols is applied as to the NR channels.
@@ -191,10 +210,11 @@ TEST(NrAiotR2D, AppliesTheSymbolRotation)
   nr_aiot_r2d_map(&plain.r2d, 0, 0, a.re.data(), nullptr);
   nr_aiot_r2d_map(&rotated.r2d, 0, 0, b.re.data(), rot.data());
   for (int s = 0; s < kSym; s++)
-    for (int k = 0; k < 12; k++) {
-      std::complex<double> want = std::complex<double>(a.at(s, k).r, a.at(s, k).i) * std::polar(1.0, 0.3 * s);
-      EXPECT_NEAR(b.at(s, k).r, want.real(), 1.5);
-      EXPECT_NEAR(b.at(s, k).i, want.imag(), 1.5);
+    for (int k = 0; k < kFft; k++) {
+      const std::complex<double> want =
+          std::complex<double>(a.at(s, k).r, a.at(s, k).i) * std::complex<double>(rot[s].r, rot[s].i) / 32768.0;
+      EXPECT_NEAR(b.at(s, k).r, want.real(), 0.5) << s << " " << k;
+      EXPECT_NEAR(b.at(s, k).i, want.imag(), 0.5) << s << " " << k;
     }
 }
 
@@ -298,6 +318,63 @@ TEST(NrAiotR2D, CountsCollisionsWithNrChannels)
   EXPECT_EQ(cell.r2d.sent, 1u);
   EXPECT_EQ(cell.r2d.collisions, 2u);
   EXPECT_EQ(g.at(1, 12).r, 7);
+}
+
+// The same slot mapped again (a repeated TX of it) leaves the transmission as it is.
+TEST(NrAiotR2D, MappingASlotAgainChangesNothing)
+{
+  std::mt19937 gen(9);
+  std::vector<uint8_t> tb = RandomBits(gen, 96);
+  Cell cell(0, 3);
+  const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 2, 0, 0, tb.data(), 96, 6, 1);
+  ASSERT_GT(n_sym, kSym);
+  Grid g;
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 2, 0, g.re.data(), nullptr), kSym);
+  Grid again;
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 2, 0, again.re.data(), nullptr), 0);
+  int seen = kSym;
+  for (int slot = 1; cell.r2d.n_pending; slot++) {
+    Grid h;
+    seen += nr_aiot_r2d_map(&cell.r2d, 2, slot, h.re.data(), nullptr);
+  }
+  EXPECT_EQ(seen, n_sym);
+  EXPECT_EQ(cell.r2d.sent, 1u);
+  EXPECT_EQ(cell.r2d.dropped, 0u);
+}
+
+// With a TDD pattern, an R2D that spans an uplink or mixed slot is refused.
+int DlSlots(const void *, int, int slot)
+{
+  return slot % 5 < 3; // DDDSU DDDSU
+}
+
+TEST(NrAiotR2D, GoesOnlyInDownlinkSlots)
+{
+  std::mt19937 gen(10);
+  std::vector<uint8_t> tb = RandomBits(gen, 40);
+  Cell cell(0, 3);
+  nr_aiot_r2d_set_dl_slots(&cell.r2d, DlSlots, nullptr);
+  const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 40, 6, 1);
+  ASSERT_GT(n_sym, kSym);
+  ASSERT_LE(n_sym, 3 * kSym);
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 1, 2, 0, tb.data(), 40, 6, 1), AIOT_EINVAL) << "runs into slot 3";
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 1, 4, 0, tb.data(), 40, 6, 1), AIOT_EINVAL) << "an uplink slot";
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 1023, 9, 0, tb.data(), 40, 6, 1), AIOT_EINVAL);
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 1, 5, 0, tb.data(), 40, 6, 1), n_sym);
+}
+
+// An EPRE whose resource elements would not fit 16 bits is refused at init, so nothing is clipped.
+TEST(NrAiotR2D, RefusesAPowerThatWouldClip)
+{
+  nr_aiot_r2d_t r2d;
+  nr_aiot_r2d_config_t cfg = {0, 3, 0};
+  // peak = 519 sqrt(36) 10^(x/20) <= 32767: x <= 20.4 dB
+  cfg.power_offset_db = 20.0;
+  EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), 0);
+  nr_aiot_r2d_free(&r2d);
+  cfg.power_offset_db = 21.0;
+  EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), -1);
+  nr_aiot_r2d_free(&r2d);
 }
 
 int main(int argc, char **argv)

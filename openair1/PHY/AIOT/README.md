@@ -46,9 +46,19 @@ L1s = ({ ...
 gNBs = ({ ... dl_prbblacklist = "0,1,2"; ... });  # must hold the R2D's PRBs
 ```
 
-The R2D starts at symbol 0 or 7 (a half-subframe) and runs over the next slots without a gap; a
-transmission that misses a slot, or overwrites an NR channel, is logged. `ctest -R test_nr_aiot_r2d`
+The R2D starts at symbol 0 or 7 (a half-subframe) and runs over the next slots without a gap, in
+downlink slots only: with TDD, an R2D that would span an uplink or mixed slot is refused. A
+transmission that misses a slot, or overwrites an NR channel, is logged. The gNB refuses at start an
+`aiot_r2d_power_offset_dB` whose resource elements would not fit 16 bits (about +20 dB on 3 PRBs at
+the default backoff), so the R2D is never clipped. `ctest -R test_nr_aiot_r2d`
 checks it, down to a device decoding what the gNB's OFDM sends.
+
+## The MAC
+
+`openair2/LAYER2/AIOT_MAC` is the 38.391 MAC, built into the same library: the Reader with its
+protocols (registration, broadcast, unicast, gen2_q, adaptive_aloha) and the device. The caller owns
+the PHY and the clock (`aiot_mac.h`). `ctest -R test_aiot_mac` runs its tests, with the Reader and its
+protocols against the device MAC over an ideal air.
 
 ## Tests
 

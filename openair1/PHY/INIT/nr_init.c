@@ -7,6 +7,7 @@
 #include "common/utils/nr/nr_common.h"
 #include "common/ran_context.h"
 #include "PHY/defs_gNB.h"
+#include "SCHED_NR/phy_frame_config_nr.h"
 #include "PHY/NR_REFSIG/nr_refsig.h"
 #include "PHY/INIT/nr_phy_init.h"
 #include "PHY/CODING/nrLDPC_coding/nrLDPC_coding_interface.h"
@@ -91,6 +92,13 @@ void reset_active_stats(PHY_VARS_gNB *gNB, int frame)
   }
 }
 
+/* An R2D goes only in slots whose symbols are all downlink. */
+static int aiot_r2d_slot_is_dl(const void *ctx, int frame, int slot)
+{
+  const nfapi_nr_config_request_scf_t *cfg = ctx;
+  return cfg->cell_config.frame_duplex_type.value == FDD || nr_slot_select(cfg, frame, slot) == NR_DOWNLINK_SLOT;
+}
+
 void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
 {
   // shortcuts
@@ -142,6 +150,7 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
                                gNB->TX_AMP)
                   == 0,
               "Ambient IoT R2D configuration does not fit this cell\n");
+  nr_aiot_r2d_set_dl_slots(&gNB->aiot_r2d, aiot_r2d_slot_is_dl, &gNB->gNB_config);
   // ceil(((NB_RB<<1)*3)/32) // 3 RE *2(QPSK)
   nr_generate_modulation_table();
   nr_init_pbch_interleaver(gNB->nr_pbch_interleaver);

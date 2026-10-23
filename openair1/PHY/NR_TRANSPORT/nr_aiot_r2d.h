@@ -46,6 +46,7 @@ typedef struct {
   int n_rb;
   c16_t *re; /* n_sym x n_rb x 12 */
   int next_slot; /* slots of it mapped so far */
+  int last_mapped; /* absolute slot mapped last, -1: none (a slot mapped again is left as it is) */
   int collisions;
 } nr_aiot_r2d_tx_t;
 
@@ -57,6 +58,9 @@ typedef struct {
   int n_prb; /* PRBs of the carrier */
   double on_amplitude; /* the amplitude of an "on" chip, in the grid's units */
   pthread_mutex_t lock; /* scheduling and mapping run in different threads */
+  /* 1 when every symbol of the slot is downlink; NULL: every slot is (nr_aiot_r2d_set_dl_slots) */
+  int (*slot_is_dl)(const void *ctx, int frame, int slot);
+  const void *slot_ctx;
   nr_aiot_r2d_tx_t pending[NR_AIOT_R2D_MAX_PENDING];
   int n_pending;
   uint64_t sent, dropped; /* transmissions sent in full; dropped because one of their slots was missed */
@@ -74,6 +78,9 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
                      int n_prb,
                      int tx_amp);
 void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d);
+/* Which slots are all downlink: schedule() refuses an R2D that spans any other (a TDD uplink or
+ * mixed slot), since the gNB would send it only in part. */
+void nr_aiot_r2d_set_dl_slots(nr_aiot_r2d_t *r2d, int (*slot_is_dl)(const void *ctx, int frame, int slot), const void *ctx);
 
 /* Schedules the R2D of the transport block tb (a_bits bits, 1 to 1000) with M = m_chip_symb chips
  * per symbol on n_rb PRBs (aiot_n_rb_min(M) to the configured n_rb_max), starting at symbol 0 or 7

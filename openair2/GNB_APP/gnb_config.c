@@ -829,7 +829,13 @@ void RCconfig_NR_L1(void)
                                                  .n_rb_max = *gpd(params, np, L1_AIOT_R2D_N_RB)->iptr,
                                                  .power_offset_db = *gpd(params, np, L1_AIOT_R2D_POWER_OFFSET_DB)->dblptr};
       if (gNB->aiot_r2d_cfg.prb_start >= 0) {
-        /* the DL scheduler must leave the R2D's PRBs alone */
+        AssertFatal(gNB->aiot_r2d_cfg.n_rb_max >= 1,
+                    "%s is set but %s is %d: give the R2D at least one PRB\n",
+                    L1_AIOT_R2D_PRB_START,
+                    L1_AIOT_R2D_N_RB,
+                    gNB->aiot_r2d_cfg.n_rb_max);
+        /* the DL scheduler must leave the R2D's PRBs alone (with an nFAPI PNF, the VNF's file must
+         * blacklist them too: this checks only the file this L1 reads) */
         uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
         get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
         for (int rb = gNB->aiot_r2d_cfg.prb_start; rb < gNB->aiot_r2d_cfg.prb_start + gNB->aiot_r2d_cfg.n_rb_max; rb++)

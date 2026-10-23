@@ -59,6 +59,17 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
     LOG_E(NR_PHY, "A-IoT R2D on %d PRBs is wider than the 384-point symbol allows\n", cfg->n_rb_max);
     return -1;
   }
+  /* An R2D resource element is at most on_amplitude * sqrt(K) (an all-on symbol has |X| <= 1 on every
+   * subcarrier): it must fit 16 bits, so that no chip is ever clipped. */
+  const double peak = tx_amp * pow(10.0, cfg->power_offset_db / 20.0) * sqrt(cfg->n_rb_max * 12.0);
+  if (peak > INT16_MAX) {
+    LOG_E(NR_PHY,
+          "A-IoT R2D EPRE %+.1f dB over PDSCH on %d PRBs would clip: at most %+.1f dB\n",
+          cfg->power_offset_db,
+          cfg->n_rb_max,
+          cfg->power_offset_db - 20.0 * log10(peak / INT16_MAX));
+    return -1;
+  }
   r2d->cfg = *cfg;
   r2d->slots_per_frame = slots_per_frame;
   r2d->symbols_per_slot = symbols_per_slot;
@@ -76,6 +87,12 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
   return 0;
 }
 
+void nr_aiot_r2d_set_dl_slots(nr_aiot_r2d_t *r2d, int (*slot_is_dl)(const void *ctx, int frame, int slot), const void *ctx)
+{
+  r2d->slot_is_dl = slot_is_dl;
+  r2d->slot_ctx = ctx;
+}
+
 void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d)
 {
   for (int i = 0; i < r2d->n_pending; i++)
@@ -87,6 +104,13 @@ void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d)
 static int16_t sat16(double v)
 {
   v = round(v);
+  return v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : (int16_t)v;
+}
+
+/* A Q15 product back to 16 bits, rounded and saturated (as rotate_cpx_vector does for PDSCH). */
+static int16_t rot_q15(int64_t v)
+{
+  v = (v + (1 << 14)) >> 15;
   return v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : (int16_t)v;
 }
 
@@ -136,6 +160,16 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
 
   const int start = frame * r2d->slots_per_frame + slot;
   const int first = symbol, last = symbol + n_sym; /* symbols counted from the start slot */
+  if (r2d->slot_is_dl) {
+    const int wrap = FRAMES * r2d->slots_per_frame;
+    for (int d = 0; d * r2d->symbols_per_slot < last; d++) {
+      const int a = (start + d) % wrap;
+      if (!r2d->slot_is_dl(r2d->slot_ctx, a / r2d->slots_per_frame, a % r2d->slots_per_frame)) {
+        free(re16);
+        return AIOT_EINVAL;
+      }
+    }
+  }
   pthread_mutex_lock(&r2d->lock);
   rc = n_sym;
   if (r2d->n_pending == NR_AIOT_R2D_MAX_PENDING)
@@ -160,7 +194,8 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
                                                          .n_sym = n_sym,
                                                          .prb_start = r2d->cfg.prb_start,
                                                          .n_rb = n_rb,
-                                                         .re = re16};
+                                                         .re = re16,
+                                                         .last_mapped = -1};
     re16 = NULL;
   }
   pthread_mutex_unlock(&r2d->lock);
@@ -183,6 +218,10 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
       i++; /* starts later */
       continue;
     }
+    if (p->last_mapped == now) {
+      i++; /* this slot again (a repeated TX of it): its symbols are on the grid already */
+      continue;
+    }
     const int d = slot_diff(r2d, p->start_slot, now);
     const int l0 = d * nsym - p->start_symbol; /* R2D symbol at symbol 0 of this slot */
     if (d != p->next_slot) {
@@ -197,6 +236,7 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
       done = 1;
     } else {
       p->next_slot++;
+      p->last_mapped = now;
       const int K = p->n_rb * 12;
       for (int s = 0; s < nsym; s++) {
         const int l = l0 + s;
@@ -210,8 +250,8 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
           c16_t v = src[q];
           if (rotation) {
             const c16_t rot = rotation[s];
-            v = (c16_t){(int16_t)(((int32_t)src[q].r * rot.r - (int32_t)src[q].i * rot.i) >> 15),
-                        (int16_t)(((int32_t)src[q].r * rot.i + (int32_t)src[q].i * rot.r) >> 15)};
+            v = (c16_t){rot_q15((int64_t)src[q].r * rot.r - (int64_t)src[q].i * rot.i),
+                        rot_q15((int64_t)src[q].r * rot.i + (int64_t)src[q].i * rot.r)};
           }
           dst[q] = v;
         }
