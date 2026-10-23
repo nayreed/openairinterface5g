@@ -226,6 +226,25 @@ const hub_conf_t *hub_room_conf(const hub_room_t *room)
   return &room->conf;
 }
 
+/* Counter-based Gaussian noise: two of them for (node, t), from a hash of both (splitmix64), so the
+ * noise does not depend on how the blocks are cut. */
+static uint64_t mix64(uint64_t z)
+{
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
+static cf_t gaussian_pair(int node, int64_t t)
+{
+  const uint64_t h1 = mix64(((uint64_t)node << 48) ^ (uint64_t)t ^ 0x9e3779b97f4a7c15ULL);
+  const uint64_t h2 = mix64(h1 + 0x9e3779b97f4a7c15ULL);
+  const double u1 = ((h1 >> 11) + 1.0) / 9007199254740993.0; /* (0, 1] */
+  const double u2 = (h2 >> 11) / 9007199254740992.0;
+  const double r = sqrt(-2.0 * log(u1));
+  return (cf_t){(float)(r * cos(2 * M_PI * u2)), (float)(r * sin(2 * M_PI * u2))};
+}
+
 static int16_t saturate(float v)
 {
   float r = rintf(v);
@@ -321,6 +340,13 @@ bool hub_room_next_block(hub_room_t *room, int node, uint64_t *timestamp, c16_t 
       i += run;
     }
   }
+  const float noise = (float)room->conf.nodes[node].noise_counts;
+  if (noise > 0)
+    for (int64_t m = 0; m < q; m++) {
+      const cf_t w = gaussian_pair(node, nd->sent + m);
+      room->acc[m].r += noise * w.r;
+      room->acc[m].i += noise * w.i;
+    }
   for (int64_t m = 0; m < q; m++)
     out[m] = (c16_t){saturate(room->acc[m].r), saturate(room->acc[m].i)};
   *timestamp = (uint64_t)nd->sent;

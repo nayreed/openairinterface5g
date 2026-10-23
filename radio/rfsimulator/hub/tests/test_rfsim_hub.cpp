@@ -169,6 +169,65 @@ TEST(HubRoom, RefusesRoomsThatCannotRun)
   }
 }
 
+// A node's receiver noise: Gaussian, of the rms it asks for on I and on Q, on top of what it hears,
+// and the same however the blocks are cut. Another node hears none.
+TEST(HubRoom, AddsTheReceiversNoise)
+{
+  Room r;
+  int a = r.Node("a", kQuantum);
+  int rx = r.Node("rx", kQuantum);
+  r.nodes[rx].noise_counts = 3.0;
+  r.Link(a, rx);
+  r.Link(rx, a);
+  hub_room_t *room = r.Create();
+  ASSERT_NE(room, nullptr) << r.why;
+  const int64_t len = 32 * kQuantum;
+  hub_room_write(room, a, 0, Block(a, 0, len).data(), len, 0);
+  hub_room_write(room, rx, 0, std::vector<c16_t>(len, c16_t{0, 0}).data(), len, 0);
+  double sum_r = 0, sum_i = 0, sq_r = 0, sq_i = 0, cross = 0;
+  std::vector<double> noise_r;
+  for (int64_t start = 0; start < len; start += kQuantum) {
+    std::vector<c16_t> out = NextBlock(room, rx, start);
+    for (int64_t i = 0; i < kQuantum; i++) {
+      const double nr = out[i].r - Pattern(a, start + i).r, ni = out[i].i - Pattern(a, start + i).i;
+      sum_r += nr, sum_i += ni, sq_r += nr * nr, sq_i += ni * ni, cross += nr * ni;
+      noise_r.push_back(nr);
+    }
+    std::vector<c16_t> back = NextBlock(room, a, start);
+    for (int64_t i = 0; i < kQuantum; i++)
+      ASSERT_TRUE(back[i].r == 0 && back[i].i == 0) << "a has no noise";
+  }
+  const double n = (double)len;
+  EXPECT_NEAR(sum_r / n, 0, 0.15);
+  EXPECT_NEAR(sum_i / n, 0, 0.15);
+  // the rounding to counts adds 1/12 to each variance
+  EXPECT_NEAR(std::sqrt(sq_r / n), std::sqrt(9 + 1.0 / 12), 0.1);
+  EXPECT_NEAR(std::sqrt(sq_i / n), std::sqrt(9 + 1.0 / 12), 0.1);
+  EXPECT_NEAR(cross / n, 0, 0.4) << "I and Q independent";
+  double lag = 0;
+  for (size_t i = 1; i < noise_r.size(); i++)
+    lag += noise_r[i] * noise_r[i - 1];
+  EXPECT_NEAR(lag / n, 0, 0.4) << "white";
+  hub_room_free(room);
+
+  // the same room again, read in other blocks' worth of writes: the same noise
+  Room r2 = r;
+  hub_room_t *again = r2.Create();
+  ASSERT_NE(again, nullptr);
+  for (int64_t t = 0; t < len; t += 100) {
+    const int64_t k = std::min<int64_t>(100, len - t);
+    hub_room_write(again, a, t, Block(a, t, k).data(), k, 0);
+  }
+  hub_room_write(again, rx, 0, std::vector<c16_t>(len, c16_t{0, 0}).data(), len, 0);
+  for (int64_t start = 0; start < len; start += kQuantum) {
+    std::vector<c16_t> out = NextBlock(again, rx, start);
+    for (int64_t i = 0; i < kQuantum; i++)
+      ASSERT_EQ(out[i].r - Pattern(a, start + i).r, noise_r[start + i]);
+    NextBlock(again, a, start);
+  }
+  hub_room_free(again);
+}
+
 TEST(HubRoom, MixesTheSumWithGainAndDelay)
 {
   Room r;

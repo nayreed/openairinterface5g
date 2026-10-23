@@ -35,6 +35,9 @@ typedef struct {
   /// the node's first write is already lookahead samples ahead of its first read (OAI's gNB and UE):
   /// the hub counts samples [0, lookahead) of this node as silence
   bool lead;
+  /// the node's receiver noise: Gaussian, this rms on I and on Q, in counts, added to what it
+  /// receives; 0: none. It depends only on the node and the sample's time, so every run is the same.
+  double noise_counts;
 } hub_node_conf_t;
 
 typedef struct {

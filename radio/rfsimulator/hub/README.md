@@ -78,6 +78,7 @@ Each node:
 | `port`      | TCP port the node connects to                                                   | required |
 | `lookahead` | samples the node writes ahead of the samples it has read                        | 0        |
 | `lead`      | 1 when the node's first write is already `lookahead` ahead of its first read    | 0        |
+| `noise_counts` | the node's receiver noise: Gaussian, this rms on I and on Q, in counts       | 0        |
 
 Each link: `rx` hears `tx`. Without a link, `rx` does not hear `tx`.
 
@@ -121,8 +122,10 @@ The hub refuses a configuration it cannot run, and says why:
 ## Levels
 
 Samples travel as 16-bit I/Q, so each receiver's sum must stay below full scale (32767) and the
-wanted signal well above one count. A gain applies to everything the link carries; the hub adds no
-noise. When a sum exceeds full scale, the hub saturates it, as a receiver's ADC would.
+wanted signal well above one count. A gain applies to everything the link carries. The hub adds
+noise only to what a node with `noise_counts` receives: its receiver's own noise, drawn from the node
+and the sample's time alone, so a room gives the same samples on every run. When a sum exceeds full
+scale, the hub saturates it, as a receiver's ADC would.
 
 ## Limitations
 

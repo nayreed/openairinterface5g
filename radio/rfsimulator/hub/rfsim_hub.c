@@ -41,13 +41,14 @@ static int node_index(const hub_conf_t *conf, const char *name)
 
 static void read_nodes(hub_conf_t *conf)
 {
-  enum { NAME, PORT, LOOKAHEAD, LEAD };
+  enum { NAME, PORT, LOOKAHEAD, LEAD, NOISE };
   // clang-format off
   paramdef_t desc[] = {
     [NAME]      = STRINGPARAM("name",      "node name, used by the links\n",                                   PARAMFLAG_MANDATORY, NULL, NULL),
     [PORT]      = INTPARAM("port",         "port the node connects to as an rfsim client\n",                   PARAMFLAG_MANDATORY, NULL, 0),
     [LOOKAHEAD] = INTPARAM("lookahead",    "samples the node writes ahead of what it has read\n",              0,                   NULL, 0),
     [LEAD]      = BOOLPARAM("lead",        "the node's first write is already lookahead samples ahead\n",      0,                   NULL, 0),
+    [NOISE]     = DOUBLEPARAM("noise_counts", "receiver noise added to what the node hears, rms on I and Q\n",  0,                   NULL, 0.0),
   };
   // clang-format on
   paramlist_def_t list = {"nodes", NULL, 0};
@@ -61,6 +62,8 @@ static void read_nodes(hub_conf_t *conf)
     n->port = *p[PORT].iptr;
     n->lookahead = *p[LOOKAHEAD].iptr;
     n->lead = *p[LEAD].iptr != 0;
+    n->noise_counts = *p[NOISE].dblptr;
+    AssertFatal(n->noise_counts >= 0, "node %s: noise_counts must not be negative\n", n->name);
     AssertFatal(node_index(conf, n->name) == i, "two nodes are named %s\n", n->name);
   }
 }
