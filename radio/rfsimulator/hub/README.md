@@ -57,7 +57,7 @@ error when no sample has moved for `idle_timeout` seconds, after logging how far
 
 The hub uses the OAI [configuration module](../../../common/config/DOC/config.md), so every value can
 also be set on the command line, for example `--rfsim_hub.links.[2].gain_dB -30`. Example:
-[`ci-scripts/conf_files/rfsim_hub.5g-aiot.conf`](../../../ci-scripts/conf_files/rfsim_hub.5g-aiot.conf).
+[`ci-scripts/yaml_files/5g_rfsimulator_aiot/rfsim_hub.conf`](../../../ci-scripts/yaml_files/5g_rfsimulator_aiot/rfsim_hub.conf).
 
 Section `rfsim_hub`:
 

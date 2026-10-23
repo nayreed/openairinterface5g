@@ -9,11 +9,15 @@ This compose file puts a 5G cell and a 3GPP Rel-19 Ambient IoT (A-IoT) network i
 * `oai-gnb` and `oai-nr-ue`: a 25-PRB, 15 kHz FDD cell in band n28, in `--do-ra --noS1` mode
   ([runmodem-nrue.md](../../../doc/runmodem-nrue.md)), from
   [gnb.band28.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf);
-* `amber-reader` and `amber-tag0` to `amber-tag3`: an A-IoT Reader and four devices running
-  Amber's `registration` scenario ([openair2/AMBER](../../../openair2/AMBER/README.md));
+* `amber-reader` and one `amber-tag<id>` per Tag: an A-IoT Reader and its devices running an Amber
+  scenario ([openair2/AMBER](../../../openair2/AMBER/README.md)); as checked in, the four Tags of
+  `registration`;
 * `rfsim-hub`: [rfsim_hub](../../../radio/rfsimulator/hub/README.md), which every other container
   connects to as an RFsimulator client, and which decides who hears whom, from
-  [rfsim_hub.5g-aiot.conf](../../conf_files/rfsim_hub.5g-aiot.conf).
+  [rfsim_hub.conf](rfsim_hub.conf).
+
+`amber-compose --5g-room` writes `docker-compose.yaml` and `rfsim_hub.conf` for any scenario, with as
+many Tags as it has (see [Another scenario](#another-scenario-any-number-of-tags)).
 
 ## How the two systems share the air
 
@@ -51,8 +55,14 @@ interference-to-signal ratio (I/S) chosen at each receiver:
 | reader → gnb | the Reader's carrier in UL PRB 18 | +10 dB over the UE's UL | 20 log10(118 √10 / 7466) = −26 dB |
 | ue → reader | the UE's UL | 0 dB, as strong as a Tag's D2R | 20 log10(568 / 118) = +14 dB |
 
+**PRACH detection.** The RFsimulator adds no noise, so the gNB's PRACH detector measures almost no
+noise floor, and the A-IoT signals in the UL band reach 18 to 23 dB in it. With OAI's default
+threshold of 15 dB they fake preambles; a fake one on the UE's dedicated preamble ends the UE's
+random access before the UE has sent anything. The gNB runs with
+`--L1s.[0].prach_dtx_threshold 300` (30 dB); the UE's preamble arrives at 54 dB.
+
 Every receiver's sum stays far below 16-bit full scale. To try other levels, edit the gains in
-the hub configuration and restart the containers.
+`rfsim_hub.conf` and restart the containers.
 
 ## Build the images
 
@@ -78,10 +88,9 @@ export REGISTRY= TAG=latest
 docker compose up -d
 ```
 
-The hub waits for all seven nodes, then starts the room. The Reader and the Tags stop after the
-scenario's 8001 simulated milliseconds; the gNB and the UE keep running.
-`AMBER_SCENARIO=/opt/amber/tests/scenarios/<name>.toml` runs another scenario of Amber's with
-four Tags (node ids 0 to 3).
+The hub waits for every node (the gNB, the UE, the Reader and each Tag), then starts the room. The
+Reader and the Tags stop after the scenario's simulated time (8001 ms for `registration`); the gNB
+and the UE keep running.
 
 **5G.** Ping the gNB from the UE through the noS1 tunnel, and read the gNB's per-UE statistics:
 
@@ -92,7 +101,7 @@ docker logs rfsim5g-oai-gnb 2>&1 | grep -A 4 "UE RNTI" | tail -5
 
 `dlsch_errors` and `ulsch_errors` count the transport blocks that failed after every
 retransmission, and `dlsch_rounds` and `ulsch_rounds` the transmissions of each HARQ round. With
-the gains of the hub configuration, every ping gets through and both error counts stay at 0.
+the gains of `rfsim_hub.conf`, every ping gets through and both error counts stay at 0.
 
 **A-IoT.** The Reader and the Tags write their CSV files to the `amber.out` volume. Summarize them,
 then run the same scenario with Amber alone (no 5G, no hub) and compare:
@@ -112,6 +121,20 @@ failed detection more (the summary's `collided`).
 ```bash
 docker compose down -v
 ```
+
+### Another scenario, any number of Tags
+
+The scenario decides how many Tags there are. `amber-compose` reads it and writes this folder's
+`docker-compose.yaml` and `rfsim_hub.conf` again, with one container and one hub node per Tag, and
+the same gains on every Tag's links. For the 12 Tags of Amber's `gen2_q` scenario:
+
+```bash
+docker run --rm -v "$PWD:/room" oai-amber:latest amber-compose --5g-room /room /opt/amber/tests/scenarios/gen2_q.toml
+```
+
+For a scenario of your own, put it in `./scenarios` and add `-v "$PWD/scenarios:/scenarios:ro"`,
+naming it as `/scenarios/<file>.toml`. The room's network has addresses for 121 Tags, and each Tag
+is a container of its own. `git checkout -- .` brings back the four Tags of `registration`.
 
 ## Timing
 

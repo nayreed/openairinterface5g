@@ -129,6 +129,10 @@ The compose file names the exact image that wrote it, by commit. Every program w
 path under `/scenarios`, with `-v "$PWD/scenarios:/scenarios"`; the compose file then mounts
 `./scenarios` too.
 
+`amber-compose --5g-room DIR` writes instead a room with a 5G cell, the scenario's Reader and every
+one of its Tags in one air through `rfsim_hub`: see
+[5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md).
+
 Amber's demos are in the image as TOML scenarios, one folder per protocol:
 `/opt/amber/demo_experiments/<protocol>/<name>.toml`, for example `broadcast/broadcast_sic.toml`.
 A demo is named by its TOML file. They have no `seed` in `[run]`, so copy one into `./scenarios`
