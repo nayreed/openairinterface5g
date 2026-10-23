@@ -778,44 +778,52 @@ static int startServer(openair0_device_t *device)
   char port[6];
   snprintf(port, sizeof(port), "%d", t->port);
 
-  struct addrinfo hints = {
-      .ai_flags = AI_PASSIVE,
-      .ai_family = AF_INET6,
-      .ai_socktype = SOCK_STREAM,
-  };
+  // An IPv6 socket that also takes IPv4 clients; on a host without IPv6, a plain IPv4 socket.
+  for (int family : {AF_INET6, AF_INET}) {
+    struct addrinfo hints = {
+        .ai_flags = AI_PASSIVE,
+        .ai_family = family,
+        .ai_socktype = SOCK_STREAM,
+    };
 
-  int s = getaddrinfo(NULL, port, &hints, &results);
-  if (s != 0) {
-    LOG_E(HW, "getaddrinfo: %s\n", gai_strerror(s));
+    int s = getaddrinfo(NULL, port, &hints, &results);
+    if (s != 0) {
+      LOG_W(HW, "getaddrinfo (%s): %s\n", family == AF_INET6 ? "IPv6" : "IPv4", gai_strerror(s));
+      continue;
+    }
+
+    int enable = 1;
+    int disable = 0;
+    for (rp = results; rp != NULL; rp = rp->ai_next) {
+      sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+      if (sock == -1) {
+        continue;
+      }
+
+      // Dual stack: the IPv6 socket also takes IPv4 clients
+      if (rp->ai_family == AF_INET6 && setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &disable, sizeof(int)) != 0) {
+        close(sock);
+        continue;
+      }
+
+      if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) != 0) {
+        close(sock);
+        continue;
+      }
+
+      if (bind(sock, rp->ai_addr, rp->ai_addrlen) == 0) {
+        break;
+      }
+
+      close(sock);
+      sock = -1;
+    }
+
     freeaddrinfo(results);
-    return -1;
-  }
-
-  int enable = 1;
-  int disable = 0;
-  for (rp = results; rp != NULL; rp = rp->ai_next) {
-    sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-    if (sock == -1) {
-      continue;
-    }
-
-    if (setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &disable, sizeof(int)) != 0) {
-      continue;
-    }
-
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) != 0) {
-      continue;
-    }
-
-    if (bind(sock, rp->ai_addr, rp->ai_addrlen) == 0) {
+    results = NULL;
+    if (sock > 0)
       break;
-    }
-
-    close(sock);
-    sock = -1;
   }
-
-  freeaddrinfo(results);
 
   if (sock <= 0) {
     LOG_E(HW, "could not open a socket\n");
