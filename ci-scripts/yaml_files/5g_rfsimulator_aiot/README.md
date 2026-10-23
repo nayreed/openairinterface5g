@@ -4,20 +4,23 @@
 
 [[_TOC_]]
 
-This compose file puts a 5G cell and a 3GPP Rel-19 Ambient IoT (A-IoT) network in one shared air:
+This folder puts a 5G cell and a 3GPP Rel-19 Ambient IoT (A-IoT) network in one shared air. One file
+describes it, [scenario.toml](scenario.toml): an Amber scenario whose `[network]` table names the 5G
+cell (`cell = "n28-25prb"`). `amber-compose` writes every other file of the folder from it (see
+[Another scenario](#another-scenario-any-number-of-tags)):
 
 * `oai-gnb` and `oai-nr-ue`: a 25-PRB, 15 kHz FDD cell in band n28, in `--do-ra --noS1` mode
-  ([runmodem-nrue.md](../../../doc/runmodem-nrue.md)), from
-  [gnb.band28.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf);
-* `amber-reader` and one `amber-tag<id>` per Tag: an A-IoT Reader and its devices running an Amber
+  ([runmodem-nrue.md](../../../doc/runmodem-nrue.md)), from `gnb.conf` and `nr-ue.conf`, copies of
+  [gnb.band28.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf) and
+  [nrue.uicc.conf](../../conf_files/nrue.uicc.conf);
+* `amber-reader` and one `amber-tag<id>` per Tag: an A-IoT Reader and its devices running the
   scenario ([openair2/AMBER](../../../openair2/AMBER/README.md)); as checked in, the four Tags of
-  `registration`;
+  Amber's `registration`;
 * `rfsim-hub`: [rfsim_hub](../../../radio/rfsimulator/hub/README.md), which every other container
   connects to as an RFsimulator client, and which decides who hears whom, from
   [rfsim_hub.conf](rfsim_hub.conf).
 
-`amber-compose --5g-room` writes `docker-compose.yaml` and `rfsim_hub.conf` for any scenario, with as
-many Tags as it has (see [Another scenario](#another-scenario-any-number-of-tags)).
+The folder is self-contained: copy it anywhere and run it.
 
 ## How the two systems share the air
 
@@ -108,8 +111,8 @@ then run the same scenario with Amber alone (no 5G, no hub) and compare:
 
 ```bash
 docker run --rm -v 5g_rfsimulator_aiot_amber.out:/out oai-amber:latest python3 -m amber.summary 8001 /out
-docker run --rm -v 5g_rfsimulator_aiot_amber.out:/out oai-amber:latest sh -c \
-    'python3 -m amber.run /opt/amber/tests/scenarios/registration.toml /tmp/ref > /dev/null && diff -r /tmp/ref /out'
+docker run --rm -v "$PWD:/room:ro" -v 5g_rfsimulator_aiot_amber.out:/out oai-amber:latest sh -c \
+    'python3 -m amber.run /room/scenario.toml /tmp/ref > /dev/null && diff -r /tmp/ref /out'
 ```
 
 At these levels the 5G cell does not change what the Tags receive and send: their files, and the
@@ -124,17 +127,22 @@ docker compose down -v
 
 ### Another scenario, any number of Tags
 
-The scenario decides how many Tags there are. `amber-compose` reads it and writes this folder's
-`docker-compose.yaml` and `rfsim_hub.conf` again, with one container and one hub node per Tag, and
-the same gains on every Tag's links. For the 12 Tags of Amber's `gen2_q` scenario:
+The scenario decides how many Tags there are, and everything else. Edit `scenario.toml` (or put
+another Amber scenario here, with a `[network]` table naming the cell), then write the folder again:
 
 ```bash
-docker run --rm -v "$PWD:/room" oai-amber:latest amber-compose --5g-room /room /opt/amber/tests/scenarios/gen2_q.toml
+docker run --rm -v "$PWD:/room" oai-amber:latest amber-compose /room/scenario.toml /room
 ```
 
-For a scenario of your own, put it in `./scenarios` and add `-v "$PWD/scenarios:/scenarios:ro"`,
-naming it as `/scenarios/<file>.toml`. The room's network has addresses for 121 Tags, and each Tag
-is a container of its own. `git checkout -- .` brings back the four Tags of `registration`.
+It writes `docker-compose.yaml`, `rfsim_hub.conf`, `gnb.conf` and `nr-ue.conf`: one container and
+one hub node per Tag, with the same gains on every Tag's links. The containers see this folder as
+`/room`. Amber's 12-Tag `gen2_q`, for example, is `tests/scenarios/gen2_q.toml` in Amber with
+`[network]` and `cell = "n28-25prb"` added. The room's network has addresses for 121 Tags, and each
+Tag is a container of its own. `git checkout -- .` brings back the checked-in room.
+
+`[network]` also names who sends R2D, who receives D2R and who sends the carrier: the four
+topologies of the Rel-19 study. As checked in, a standalone Reader does all three. A gNB or a UE as
+the Reader is not built yet, and `amber-compose` refuses those scenarios with that reason.
 
 ## Timing
 

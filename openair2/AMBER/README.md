@@ -92,8 +92,8 @@ the control samples. The Reader and every Tag are then clients of
 [rfsim_hub](../../radio/rfsimulator/hub/README.md), which starts them together at sample 0, and the
 Reader and the Tags stop after the `sim_time_ms` of the scenario's `[run]` table. The hub sums what each node hears with
 the gains, delays and frequency shifts of its configuration, so Amber can share the air with a 5G
-cell. [doc/nr_aiot_rfsim_hub.md](../../doc/nr_aiot_rfsim_hub.md) runs a gNB, a UE, a Reader and four
-Tags in one room.
+cell. [5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md) runs a gNB, a UE, a
+Reader and four Tags in one room.
 
 ## Docker
 
@@ -113,11 +113,15 @@ oai-amber image > Run workflow). Its jobs check the scripts, build the image aga
 one runner with `docker/scripts/amber_check_image.sh`, which compares their files with `amber.run`, and, on `aiot-rfsim` only, publish `ghcr.io/nayreed/oai-amber`, tagged with the first 8
 characters of the commit and with `latest`. Runs between two hosts are the campaign's job (below).
 
-`amber-compose` writes a compose file with one Reader and one Tag per node of a scenario:
+`amber-compose SCENARIO DIR` writes the compose files that run a scenario into DIR. What it writes
+follows the scenario's `[network]` table: without one, a compose file with one Reader and one Tag
+per node over plain rfsim; with a 5G cell (`cell = "n28-25prb"`), the whole room of
+[5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md), the cell and the
+Reader and Tags in one air through `rfsim_hub`.
 
 ```bash
 IMAGE=ghcr.io/nayreed/oai-amber:latest
-docker run --rm $IMAGE amber-compose /opt/amber/tests/scenarios/registration.toml > compose.yaml
+docker run --rm -v "$PWD:/room" $IMAGE amber-compose /opt/amber/tests/scenarios/registration.toml /room
 docker compose up
 docker run --rm -v "$PWD/ref:/ref" $IMAGE \
     python3 -m amber.run /opt/amber/tests/scenarios/registration.toml /ref
@@ -125,17 +129,15 @@ diff -r ref out
 ```
 
 The compose file names the exact image that wrote it, by commit. Every program writes its CSV files to
-`./out`, as root. For your own scenarios, put them in `./scenarios` and give `amber-compose` their
-path under `/scenarios`, with `-v "$PWD/scenarios:/scenarios"`; the compose file then mounts
-`./scenarios` too.
+`./out`, as root. A scenario of your own goes in DIR, and the containers see DIR as `/room`:
 
-`amber-compose --5g-room DIR` writes instead a room with a 5G cell, the scenario's Reader and every
-one of its Tags in one air through `rfsim_hub`: see
-[5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md).
+```bash
+docker run --rm -v "$PWD:/room" $IMAGE amber-compose /room/my_scenario.toml /room
+```
 
 Amber's demos are in the image as TOML scenarios, one folder per protocol:
 `/opt/amber/demo_experiments/<protocol>/<name>.toml`, for example `broadcast/broadcast_sic.toml`.
-A demo is named by its TOML file. They have no `seed` in `[run]`, so copy one into `./scenarios`
+A demo is named by its TOML file. They have no `seed` in `[run]`, so copy one into your folder
 and add a seed before running it in containers; `amber_check_image.sh` does exactly that. The
 demos' results (sent, decoded, DER, throughput) from the CSV files:
 

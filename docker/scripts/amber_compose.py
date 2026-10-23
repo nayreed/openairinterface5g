@@ -1,32 +1,38 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
-"""Write a docker compose file that runs an Amber scenario from the oai-amber image: one
-amber-reader and one amber-tag per node of the scenario's NODE_IDS.
+"""Write the docker compose files that run an Amber scenario, as its [network] table describes.
 
-    docker run --rm IMAGE amber-compose SCENARIO > compose.yaml
-    docker compose up
+    docker run --rm -v "$PWD:/room" IMAGE amber-compose /room/scenario.toml /room
 
-With --5g-room DIR it writes instead the room of ci-scripts/yaml_files/5g_rfsimulator_aiot for
-that scenario: DIR/docker-compose.yaml and DIR/rfsim_hub.conf, a 5G cell and the scenario's Reader
-and Tags in one air through rfsim_hub (see the README there).
+writes into DIR (here the current folder):
 
-    docker run --rm -v "$PWD:/room" IMAGE amber-compose --5g-room /room SCENARIO
+- docker-compose.yaml, always;
+- with a 5G cell in [network] (cell = "n28-25prb"): rfsim_hub.conf, gnb.conf and nr-ue.conf too,
+  the room of ci-scripts/yaml_files/5g_rfsimulator_aiot (see the README there);
+- without one: one amber-reader and one amber-tag per node of the scenario, over plain rfsim.
 
-SCENARIO is a path inside the image, such as /opt/amber/tests/scenarios/registration.toml.
-For your own scenarios, put them in ./scenarios and mount it at /scenarios when running this
-script; the compose file then mounts ./scenarios too. Every program writes its CSV logs to ./out
-(to the amber.out volume in a 5G room).
+The scenario is either a file inside DIR, which the containers see under /room, or a file in the
+image, such as /opt/amber/tests/scenarios/registration.toml. Every program writes its CSV logs to
+./out, or to the amber.out volume in a 5G room. A gNB or a UE as the A-IoT Reader (topologies 1
+to 4 of the Rel-19 study) is not built yet, and this script says so.
 """
 
 import argparse
 import contextlib
 import json
 import os
+import shutil
 import sys
 
 from amber.hosts import load_scenario
 
-OWN_SCENARIOS = "/scenarios"
+ROOM = "/room"  # where the containers see DIR
+
+# The 5G cells a scenario's [network] can name, and their gNB and UE configuration files. The image
+# has them in CELL_DIRS[0]; a checkout of this repository, in CELL_DIRS[1].
+CELLS = {"n28-25prb": ("gnb.band28.u0.25prb.rfsim.dora.conf", "nrue.uicc.conf")}
+CELL_DIRS = ("/opt/oai-amber/etc/cells",
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ci-scripts", "conf_files"))
 
 
 def service(name, image, command, volumes, depends_on=None):
@@ -41,10 +47,10 @@ def service(name, image, command, volumes, depends_on=None):
 
 def compose(scenario_path, node_ids, image):
     volumes = ["./out:/out"]
-    if scenario_path.startswith(OWN_SCENARIOS + "/"):
-        volumes.append(f"./scenarios:{OWN_SCENARIOS}:ro")
+    if scenario_path.startswith(ROOM + "/"):
+        volumes.append(f".:{ROOM}:ro")
     common = ["--amber.scenario", scenario_path, "--amber.output_dir", "/out"]
-    lines = [f"# Written by amber-compose for {json.dumps(scenario_path)}", "services:"]
+    lines = [f"# Written by amber-compose from {json.dumps(scenario_path)}", "services:"]
     lines += service("reader", image, ["amber-reader", "--rfsimulator.[0].serveraddr", "server"] + common, volumes)
     for node_id in node_ids:
         tag = ["amber-tag", "--rfsimulator.[0].serveraddr", "reader", "--amber.node_id", str(node_id)] + common
@@ -106,9 +112,9 @@ def hub_conf(scenario_path, node_ids):
         return [l + "," if l.startswith("    {") and i != last else l for i, l in enumerate(lines)]
 
     head = ["# SPDX-License-Identifier: LicenseRef-CSSL-1.0",
-            f"# Written by amber-compose --5g-room for {json.dumps(scenario_path)}",
+            f"# Written by amber-compose from {json.dumps(scenario_path)}",
             "#",
-            "# rfsim_hub room: the 25-PRB n28 cell of gnb.band28.u0.25prb.rfsim.dora.conf (gNB and UE) and an",
+            "# rfsim_hub room: the 25-PRB n28 cell of gnb.conf (gNB) and nr-ue.conf (UE) and an",
             f"# Ambient IoT Reader with {len(tags)} Tags, all at 5.76 Msps. The gNB leaves DL PRBs 0-2 and UL PRBs 15-21",
             "# free (dl_prbblacklist, ul_prbblacklist), and the links put the A-IoT carrier there.",
             "# README.md next to this file explains the gains, and radio/rfsimulator/hub/README.md the parameters.",
@@ -137,8 +143,8 @@ def room_compose(scenario_path, node_ids, image):
         return json.dumps(words)
 
     amber_volumes = ["amber.out:/out"]
-    if scenario_path.startswith(OWN_SCENARIOS + "/"):
-        amber_volumes.append(f"./scenarios:{OWN_SCENARIOS}:ro")
+    if scenario_path.startswith(ROOM + "/"):
+        amber_volumes.append(f".:{ROOM}:ro")
     amber = ["--amber.block_bytes", "23040", "--amber.output_dir", "/out", "--amber.scenario", scenario_path]
     rfsim = lambda port: ["--rfsimulator.[0].serveraddr", HUB_ADDR, "--rfsimulator.[0].serverport", str(port)]
     gnb_opts = " ".join(["-E --do-ra --rfsim --noS1"] + rfsim(GNB_PORT) +
@@ -148,7 +154,7 @@ def room_compose(scenario_path, node_ids, image):
                        + rfsim(UE_PORT) + LOG)
     lines = [
         "# SPDX-License-Identifier: MIT",
-        f"# Written by amber-compose --5g-room for {json.dumps(scenario_path)}",
+        f"# Written by amber-compose from {json.dumps(scenario_path)}",
         "#",
         f"# A 5G cell (gNB and UE, --do-ra --noS1) and an Ambient IoT Reader with {len(node_ids)} Tags in one shared air,",
         "# through rfsim_hub. See README.md in this folder.",
@@ -185,7 +191,7 @@ def room_compose(scenario_path, node_ids, image):
         "                ipv4_address: 192.168.71.140",
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
-        "            - ../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf:/opt/oai-gnb/etc/gnb.conf",
+        "            - ./gnb.conf:/opt/oai-gnb/etc/gnb.conf",
         "            - rrc.config:/opt/oai-gnb/",
         "        healthcheck:",
         "            test: /bin/bash -c \"pgrep nr-softmodem\"",
@@ -203,7 +209,7 @@ def room_compose(scenario_path, node_ids, image):
         "            ASAN_OPTIONS: detect_leaks=0",
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
-        "            - ../../conf_files/nrue.uicc.conf:/opt/oai-nr-ue/etc/nr-ue.conf",
+        "            - ./nr-ue.conf:/opt/oai-nr-ue/etc/nr-ue.conf",
         "            - rrc.config:/opt/oai-nr-ue/etc/rrc/",
         "        depends_on: [oai-gnb]",
         "        networks:",
@@ -236,34 +242,67 @@ def room_compose(scenario_path, node_ids, image):
     return "\n".join(lines) + "\n"
 
 
+def cell_file(name):
+    for d in CELL_DIRS:
+        path = os.path.join(d, name)
+        if os.path.isfile(path):
+            return path
+    sys.exit(f"amber-compose: no {name} in {' or '.join(CELL_DIRS)}")
+
+
+def not_built(network):
+    """Why this script cannot build the network yet, or None."""
+    if network.topology is not None:
+        return (f"topology {network.topology} (r2d = {network.r2d!r}, d2r = {network.d2r!r}) needs a gNB or a UE "
+                "that runs the A-IoT Reader, which is not built yet")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("scenario", help="scenario module, as a path inside the image")
+    parser.add_argument("scenario", help="the scenario file: in DIR, or a path inside the image")
+    parser.add_argument("dir", metavar="DIR", help="the folder to write the compose files into")
     parser.add_argument("--image", default=os.environ.get("OAI_AMBER_IMAGE", "oai-amber:latest"),
-                        help="image the compose file runs (default: this image, %(default)s)")
-    parser.add_argument("--5g-room", dest="room", metavar="DIR",
-                        help="write DIR/docker-compose.yaml and DIR/rfsim_hub.conf: the scenario with a 5G cell, "
-                             "through rfsim_hub")
+                        help="the oai-amber image the compose files run (default: this image, %(default)s)")
     args = parser.parse_args()
-    if not os.path.isabs(args.scenario):
-        parser.error("the scenario must be an absolute path inside the image")
+    room = os.path.abspath(args.dir)
+    scenario_file = os.path.abspath(args.scenario)
+    if not os.path.isdir(room):
+        parser.error(f"{args.dir} is not a folder")
+    if not os.path.isfile(scenario_file):
+        parser.error(f"no scenario {args.scenario}")
+    # The path the containers see: under /room when the scenario is in DIR, else the image's own.
+    inside = os.path.commonpath([room, scenario_file]) == room
+    scenario_path = ROOM + "/" + os.path.relpath(scenario_file, room) if inside else scenario_file
     # Whatever loading the scenario prints must not end up in the compose file.
     with contextlib.redirect_stdout(sys.stderr):
-        scenario = load_scenario(args.scenario)
+        scenario = load_scenario(scenario_file)
         node_ids = list(scenario.NODE_IDS)
     for node_id in node_ids:
         if not isinstance(node_id, int) or node_id < 0:
             parser.error(f"node ids must be non-negative integers, the scenario has {node_id!r}")
-    if not args.room:
-        sys.stdout.write(compose(args.scenario, node_ids, args.image))
-        return
-    if len(node_ids) > MAX_ROOM_TAGS:
-        parser.error(f"a 5G room's network has addresses for {MAX_ROOM_TAGS} Tags, the scenario has {len(node_ids)}")
-    for name, text in (("docker-compose.yaml", room_compose(args.scenario, node_ids, args.image)),
-                       ("rfsim_hub.conf", hub_conf(args.scenario, node_ids))):
-        with open(os.path.join(args.room, name), "w") as f:
+    network = scenario.network
+    reason = not_built(network)
+    if reason:
+        parser.error(f"{args.scenario}: [network]: {reason}")
+
+    if network.cell is None:
+        files = {"docker-compose.yaml": compose(scenario_path, node_ids, args.image)}
+        copies = {}
+    else:
+        if len(node_ids) > MAX_ROOM_TAGS:
+            parser.error(f"a 5G room's network has addresses for {MAX_ROOM_TAGS} Tags, the scenario has {len(node_ids)}")
+        gnb_conf, ue_conf = CELLS[network.cell]
+        files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image),
+                 "rfsim_hub.conf": hub_conf(scenario_path, node_ids)}
+        copies = {"gnb.conf": cell_file(gnb_conf), "nr-ue.conf": cell_file(ue_conf)}
+    for name, text in files.items():
+        with open(os.path.join(room, name), "w") as f:
             f.write(text)
-    print(f"wrote {args.room}/docker-compose.yaml and {args.room}/rfsim_hub.conf: {len(node_ids)} Tags", file=sys.stderr)
+    for name, src in copies.items():
+        shutil.copyfile(src, os.path.join(room, name))
+    print(f"amber-compose: wrote {', '.join(list(files) + list(copies))} in {args.dir}: "
+          f"{len(node_ids)} Tags" + (f", 5G cell {network.cell}" if network.cell else ""), file=sys.stderr)
 
 
 if __name__ == "__main__":
