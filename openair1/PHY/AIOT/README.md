@@ -129,7 +129,8 @@ the formulas of §6.1.3, the frame lengths of the fixed reference channels of 38
 Scheduling Info and the Access Trigger, NACK Feedback and D2R messages against hand-built 38.391
 field layouts (the other R2D messages by packing and parsing), and that each receiver gets back
 what its transmitter sent, in noise and across the parameters the spec allows, and that a device
-decodes the R2D's resource elements wherever a carrier's grid puts them.
+decodes the R2D's resource elements wherever a carrier's grid puts them, and under a carrier wave
+from another node 6 dB above its "on" chips.
 
 Where the specs disagree, the code follows 38.291: for M = 24, 38.194 Annex B.2 lists 8 padding
 chips, while the mapping of 38.291 §6.2.5, which skips the last two chips of every symbol, gives
