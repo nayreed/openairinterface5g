@@ -3,7 +3,7 @@
  */
 
 /*! \file nr_aiot_d2r.c
- * \brief The gNB as an Ambient IoT Reader: D2R reception in PRBs of its uplink band (nr_aiot_d2r.h).
+ * \brief An NR node as an Ambient IoT Reader: D2R reception in PRBs of the band it receives (nr_aiot_d2r.h).
  *
  * Each radio sample x[t] (radio timestamp t, rate fs) is turned to w[t] = x[t] exp(-j 2 pi f t / fs),
  * f the centre of the D2R PRBs, so that the D2R is at 0 Hz. A-IoT sample m is then
@@ -31,6 +31,7 @@
 #define MAX_GAP_S 1 /* a longer gap than this restarts the receiver once its windows are done */
 #define ZERO_CHUNK (AIOT_SAMPLES_PER_MS * 10) /* A-IoT samples received at a time across a gap */
 #define STATS_EVERY_S 10 /* the worker logs its counts this often */
+#define D2R_QUEUE_MS 100 /* the worker's room: a real radio's samples are lost if it falls further behind */
 
 typedef struct {
   c16_t *x;
@@ -137,19 +138,22 @@ nr_aiot_d2r_t *nr_aiot_d2r_new(const nr_aiot_d2r_config_t *cfg, int n_prb, int s
     LOG_E(NR_PHY, "A-IoT D2R: the carrier's subcarrier spacing is %d Hz; A-IoT has only %d Hz\n", scs_hz, AIOT_SCS_HZ);
     return NULL;
   }
-  if (!cfg || cfg->prb_start < 0 || cfg->n_rb < 1 || cfg->prb_start + cfg->n_rb > n_prb) {
-    LOG_E(NR_PHY,
-          "A-IoT D2R: PRBs %d to %d are not in the %d PRBs of the carrier\n",
-          cfg ? cfg->prb_start : -1,
-          cfg ? cfg->prb_start + cfg->n_rb - 1 : -1,
-          n_prb);
-    return NULL;
-  }
   if (sample_rate_hz < AIOT_SAMPLE_RATE_HZ || sample_rate_hz % AIOT_SAMPLE_RATE_HZ) {
     LOG_E(NR_PHY,
           "A-IoT D2R: the radio samples at %ld Hz, which is not a whole multiple of %d Hz (try three-quarter sampling, -E)\n",
           (long)sample_rate_hz,
           AIOT_SAMPLE_RATE_HZ);
+    return NULL;
+  }
+  /* the carrier's PRBs, then the guard band the samples hold above them (and wrapping round below) */
+  const int n_sampled = (int)(sample_rate_hz / (12 * AIOT_SCS_HZ));
+  if (!cfg || cfg->prb_start < 0 || cfg->n_rb < 1 || cfg->prb_start + cfg->n_rb > n_sampled) {
+    LOG_E(NR_PHY,
+          "A-IoT D2R: PRBs %d to %d are not in the %d PRBs the radio samples (the carrier's %d, then its guard band)\n",
+          cfg ? cfg->prb_start : -1,
+          cfg ? cfg->prb_start + cfg->n_rb - 1 : -1,
+          n_sampled,
+          n_prb);
     return NULL;
   }
   if (!(cfg->noise_counts > 0)) {
@@ -533,10 +537,35 @@ int nr_aiot_d2r_start(nr_aiot_d2r_t *d, int max_slots, int max_slot_samples, int
   return 0;
 }
 
-int nr_aiot_d2r_push(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
+nr_aiot_d2r_t *nr_aiot_d2r_open(const nr_aiot_d2r_config_t *cfg,
+                                int n_prb,
+                                int scs_hz,
+                                int64_t sample_rate_hz,
+                                int slot_samples,
+                                int wait_when_full,
+                                const char *band)
 {
-  if (!d || !d->running || n < 0 || n > d->max_slot_samples || (n && !x))
-    return AIOT_EINVAL;
+  nr_aiot_d2r_t *d = nr_aiot_d2r_new(cfg, n_prb, scs_hz, sample_rate_hz);
+  if (!d)
+    return NULL;
+  const int slots = (int)(sample_rate_hz * D2R_QUEUE_MS / 1000 / slot_samples);
+  if (nr_aiot_d2r_start(d, slots, slot_samples, wait_when_full) != 0) {
+    LOG_E(NR_PHY, "A-IoT D2R: cannot start the receiver thread\n");
+    nr_aiot_d2r_free(d);
+    return NULL;
+  }
+  LOG_I(NR_PHY,
+        "Ambient IoT D2R in %s PRBs %d to %d, %.0f Hz from the carrier\n",
+        band,
+        cfg->prb_start,
+        cfg->prb_start + cfg->n_rb - 1,
+        nr_aiot_d2r_shift_hz(d));
+  return d;
+}
+
+/* Hands one piece of at most max_slot_samples samples to the worker. */
+static int push_piece(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
+{
   pthread_mutex_lock(&d->lock);
   while (d->wait_when_full && d->tail - d->head == (uint64_t)d->ring_n)
     pthread_cond_wait(&d->cond, &d->lock);
@@ -555,6 +584,21 @@ int nr_aiot_d2r_push(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
   d->tail++;
   pthread_cond_broadcast(&d->cond);
   pthread_mutex_unlock(&d->lock);
+  return 0;
+}
+
+int nr_aiot_d2r_push(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
+{
+  if (!d || !d->running || n < 0 || (n && !x))
+    return AIOT_EINVAL;
+  int done = 0;
+  do {
+    const int k = n - done < d->max_slot_samples ? n - done : d->max_slot_samples;
+    const int ret = push_piece(d, ts + done, x + done, k);
+    if (ret < 0)
+      return ret;
+    done += k;
+  } while (done < n);
   return 0;
 }
 
