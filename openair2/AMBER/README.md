@@ -68,7 +68,9 @@ wait
 
 Options of the `amber` section: `scenario` (required), `node_id` (required for `amber-tag`),
 `output_dir` (default `.`), `block_bytes` (default 23552: 5888 samples, the 5760 of one millisecond at
-5.76 Msps and 128 control samples). A scenario is an Amber TOML file with a fixed
+5.76 Msps and 128 control samples), and for `amber-reader` `role` (default `reader`; `carrier` runs
+only the carrier node of a room whose `[network]` has `cw = "cw-node-dl"` or `"cw-node-ul"`: the
+unmodulated carrier the Tags reflect, through rfsim_hub). A scenario is an Amber TOML file with a fixed
 `seed` in its `[run]` table, so that the Reader and every Tag draw the same numbers. Every program
 prints `Bye.` when the run ends and writes its CSV files with Amber's one writer
 (`amber.output.write_csv`): `reader_rx.csv`, `reader_tx.csv` and the protocol's own

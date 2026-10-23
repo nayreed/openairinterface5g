@@ -6,7 +6,8 @@
  * \brief Amber Reader: the gNB reduced to its configuration, logging and rfsim device. It runs the
  * A-IoT Reader of an Amber scenario (its MAC and PHY), one simulated millisecond per rfsim block:
  * send the block for this millisecond, then read the Tags' answer to it, the sum of their signals
- * as rfsim gives it.
+ * as rfsim gives it. With --amber.role carrier it runs only the scenario's carrier node instead: a
+ * room whose carrier comes from a node of its own, through rfsim_hub (amber.iq.IqCarrierSession).
  */
 
 #include <stdio.h>
