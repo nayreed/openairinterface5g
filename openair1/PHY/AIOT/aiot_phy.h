@@ -151,6 +151,15 @@ int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t 
 int aiot_r2d_n_symbols(int n_chips, int m_chip_symb);
 /* Samples of n_sym symbols starting with symbol l = 0 (long CP at l mod 7 == 0). */
 int aiot_r2d_n_samples(int n_sym);
+/* The resource elements of the chips (§6.2.7): for each OFDM symbol l, the K = N_RB x 12 subcarriers
+ * q - K/2, q = 0..K-1, at re[l * K + q], lowest subcarrier first. A transmitter that has its own
+ * resource grid (a gNB) maps them onto K consecutive subcarriers of its carrier; the subcarrier at
+ * q = K/2 is the R2D's centre. Scaled so that the waveform of a symbol is
+ * x(i) = sum_q re[q] exp(j 2 pi (q - K/2) i / 384), i = 0..383, before its cyclic prefix: an "on"
+ * chip is about 1 in amplitude, an "off" chip about 0. The chips must fill whole symbols, as
+ * aiot_r2d_chips() gives them. Returns n_sym x K. */
+int aiot_r2d_n_resource_elements(int n_sym, int n_rb);
+int aiot_r2d_resource_elements(const uint8_t *chips, int n_chips, int m_chip_symb, int n_rb, cd_t *re, int max_re);
 /* Baseband samples of the chips, band limited to N_RB x 12 subcarriers around DC (§6.2.7). */
 int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_rb, cd_t *out, int max_out);
 /* aiot_r2d_chips then aiot_r2d_waveform. */

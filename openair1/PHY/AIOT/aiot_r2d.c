@@ -132,30 +132,34 @@ int aiot_r2d_n_samples(int n_sym)
   return (int)symbol_start(n_sym);
 }
 
-int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_rb, cd_t *out, int max_out)
+int aiot_r2d_n_resource_elements(int n_sym, int n_rb)
+{
+  return n_sym * n_rb * AIOT_SC_PER_RB;
+}
+
+int aiot_r2d_resource_elements(const uint8_t *chips, int n_chips, int m_chip_symb, int n_rb, cd_t *re, int max_re)
 {
   int m = m_chip_symb;
-  if (!aiot_m_valid(m) || n_rb < aiot_n_rb_min(m) || n_rb > MAX_RB || n_chips < AIOT_N_SIP || !chips || !out)
+  if (!aiot_m_valid(m) || n_rb < aiot_n_rb_min(m) || n_rb > MAX_RB || n_chips < AIOT_N_SIP || !chips || !re)
+    return AIOT_EINVAL;
+  if ((n_chips - AIOT_N_SIP) % m)
     return AIOT_EINVAL;
   int n_sym = aiot_r2d_n_symbols(n_chips, m);
-  int total = aiot_r2d_n_samples(n_sym);
-  if (total > max_out)
+  const int K = n_rb * AIOT_SC_PER_RB;
+  if (n_sym * K > max_re)
     return AIOT_ESPACE;
 
-  /* Each symbol: chips drawn as an on/off waveform over the 384-sample useful part, only the
-   * subcarriers k - K/2, k = 0..K-1 (K = N_RB x 12) kept (6.2.7), then the cyclic prefix. The kept
-   * bins are computed with a direct DFT: K of the 384 bins, fewer operations than a full FFT,
-   * zeroing and IFFT. */
+  /* Each symbol's chips are drawn as an on/off waveform over the 384-sample useful part, and only
+   * the subcarriers q - K/2, q = 0..K-1, are kept (6.2.7). The kept bins are computed with a direct
+   * DFT: K of the 384 bins, fewer operations than a full FFT. They are scaled by 1/384, so that
+   * the waveform is their plain sum over the subcarriers. */
   const int N = AIOT_N_FFT;
-  const int K = n_rb * AIOT_SC_PER_RB;
   double wc[AIOT_N_FFT], ws[AIOT_N_FFT];
   for (int i = 0; i < N; i++) {
     wc[i] = cos(2.0 * PI * i / N);
     ws[i] = sin(2.0 * PI * i / N);
   }
-  double x[AIOT_N_FFT], xr[MAX_RB * AIOT_SC_PER_RB], xi[MAX_RB * AIOT_SC_PER_RB];
-  cd_t u[AIOT_N_FFT];
-  int pos = 0;
+  uint8_t x[AIOT_N_FFT];
   for (int l = 0; l < n_sym; l++) {
     const uint8_t *c;
     int per;
@@ -168,30 +172,65 @@ int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_
     }
     int w = N / per;
     for (int i = 0; i < N; i++)
-      x[i] = c[i / w] ? 1.0 : 0.0;
+      x[i] = c[i / w] ? 1 : 0;
+    cd_t *X = re + (size_t)l * K;
     for (int q = 0; q < K; q++) {
       int kk = (q - K / 2 + N) % N;
-      double re = 0.0, im = 0.0;
+      double r = 0.0, im = 0.0;
       for (int i = 0; i < N; i++) {
-        if (x[i] == 0.0)
+        if (!x[i])
           continue;
         int t = (kk * i) % N;
-        re += wc[t];
+        r += wc[t];
         im -= ws[t];
       }
-      xr[q] = re;
-      xi[q] = im;
+      X[q].r = r / N;
+      X[q].i = im / N;
     }
+  }
+  return n_sym * K;
+}
+
+int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_rb, cd_t *out, int max_out)
+{
+  int m = m_chip_symb;
+  if (!aiot_m_valid(m) || n_rb < aiot_n_rb_min(m) || n_rb > MAX_RB || n_chips < AIOT_N_SIP || !chips || !out)
+    return AIOT_EINVAL;
+  int n_sym = aiot_r2d_n_symbols(n_chips, m);
+  int total = aiot_r2d_n_samples(n_sym);
+  if (total > max_out)
+    return AIOT_ESPACE;
+  const int N = AIOT_N_FFT;
+  const int K = n_rb * AIOT_SC_PER_RB;
+  cd_t *re = malloc((size_t)n_sym * K * sizeof(cd_t));
+  if (!re)
+    return AIOT_ENOMEM;
+  int rc = aiot_r2d_resource_elements(chips, n_chips, m, n_rb, re, n_sym * K);
+  if (rc < 0) {
+    free(re);
+    return rc;
+  }
+
+  /* Each symbol: the inverse DFT of its K subcarriers, then the cyclic prefix. */
+  double wc[AIOT_N_FFT], ws[AIOT_N_FFT];
+  for (int i = 0; i < N; i++) {
+    wc[i] = cos(2.0 * PI * i / N);
+    ws[i] = sin(2.0 * PI * i / N);
+  }
+  cd_t u[AIOT_N_FFT];
+  int pos = 0;
+  for (int l = 0; l < n_sym; l++) {
+    const cd_t *X = re + (size_t)l * K;
     for (int i = 0; i < N; i++) {
-      double re = 0.0, im = 0.0;
+      double r = 0.0, im = 0.0;
       for (int q = 0; q < K; q++) {
         int kk = (q - K / 2 + N) % N;
         int t = (kk * i) % N;
-        re += xr[q] * wc[t] - xi[q] * ws[t];
-        im += xr[q] * ws[t] + xi[q] * wc[t];
+        r += X[q].r * wc[t] - X[q].i * ws[t];
+        im += X[q].r * ws[t] + X[q].i * wc[t];
       }
-      u[i].r = re / N;
-      u[i].i = im / N;
+      u[i].r = r;
+      u[i].i = im;
     }
     int cp = cp_length(l);
     memcpy(out + pos, u + N - cp, (size_t)cp * sizeof(cd_t));
@@ -199,6 +238,7 @@ int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_
     memcpy(out + pos, u, (size_t)N * sizeof(cd_t));
     pos += N;
   }
+  free(re);
   return pos;
 }
 

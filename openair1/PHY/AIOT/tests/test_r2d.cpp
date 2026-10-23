@@ -183,6 +183,67 @@ TEST(R2DTx, WaveformIsBandLimitedOfdm)
     }
 }
 
+// 6.2.7 in the frequency domain: each symbol's resource elements are the subcarriers q - K/2 of its
+// on/off chip waveform, divided by 384, computed here with std::complex; and the waveform's useful
+// part is their sum, so a transmitter with its own grid sends the same signal.
+TEST(R2DTx, ResourceElementsAreTheWaveformsSubcarriers)
+{
+  std::mt19937 gen(5);
+  const int N = AIOT_N_FFT;
+  for (int m : kM)
+    for (int n_rb : {aiot_n_rb_min(m), 3}) {
+      std::vector<uint8_t> chips = Chips(RandomBits(gen, 40), m);
+      const int n_sym = aiot_r2d_n_symbols((int)chips.size(), m);
+      const int K = n_rb * AIOT_SC_PER_RB;
+      std::vector<cd_t> re(aiot_r2d_n_resource_elements(n_sym, n_rb));
+      ASSERT_EQ(re.size(), (size_t)n_sym * K);
+      ASSERT_EQ(aiot_r2d_resource_elements(chips.data(), (int)chips.size(), m, n_rb, re.data(), (int)re.size()), (int)re.size());
+      std::vector<cd_t> x(aiot_r2d_n_samples(n_sym));
+      ASSERT_EQ(aiot_r2d_waveform(chips.data(), (int)chips.size(), m, n_rb, x.data(), (int)x.size()), (int)x.size());
+      int start = 0;
+      for (int l = 0; l < n_sym; l++) {
+        const int per = l < 2 ? 4 : m;
+        const uint8_t *c = l < 2 ? &chips[4 * l] : &chips[8 + (l - 2) * m];
+        for (int q = 0; q < K; q++) {
+          std::complex<double> bin = 0;
+          for (int t = 0; t < N; t++)
+            if (c[t / (N / per)])
+              bin += std::polar(1.0, -2 * M_PI * (q - K / 2) * t / N);
+          bin /= N;
+          EXPECT_NEAR(re[l * K + q].r, bin.real(), 1e-12) << "M = " << m << ", symbol " << l << ", q = " << q;
+          EXPECT_NEAR(re[l * K + q].i, bin.imag(), 1e-12) << "M = " << m << ", symbol " << l << ", q = " << q;
+        }
+        const int cp = l % 7 == 0 ? AIOT_CP_LONG : AIOT_CP_SHORT;
+        for (int t = 0; t < N; t++) {
+          std::complex<double> v = 0;
+          for (int q = 0; q < K; q++)
+            v += std::complex<double>(re[l * K + q].r, re[l * K + q].i) * std::polar(1.0, 2 * M_PI * (q - K / 2) * t / N);
+          EXPECT_NEAR(x[start + cp + t].r, v.real(), 1e-9);
+          EXPECT_NEAR(x[start + cp + t].i, v.imag(), 1e-9);
+        }
+        start += cp + N;
+      }
+    }
+}
+
+TEST(R2DTx, ResourceElementsRejectBadArguments)
+{
+  uint8_t tb[8] = {1, 0, 1, 1, 0, 0, 1, 0};
+  uint8_t chips[400];
+  std::vector<cd_t> re(4000);
+  int nc = aiot_r2d_chips(tb, 8, 6, chips, 400);
+  ASSERT_GT(nc, 0);
+  const int n = aiot_r2d_n_resource_elements(aiot_r2d_n_symbols(nc, 6), 1);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc, 6, 1, re.data(), (int)re.size()), n);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc, 6, 1, re.data(), n - 1), AIOT_ESPACE);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc - 1, 6, 1, re.data(), (int)re.size()), AIOT_EINVAL); // not whole symbols
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc, 5, 1, re.data(), (int)re.size()), AIOT_EINVAL);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc, 6, 0, re.data(), (int)re.size()), AIOT_EINVAL);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc, 6, 33, re.data(), (int)re.size()), AIOT_EINVAL);
+  EXPECT_EQ(aiot_r2d_resource_elements(nullptr, nc, 6, 1, re.data(), (int)re.size()), AIOT_EINVAL);
+  EXPECT_EQ(aiot_r2d_resource_elements(chips, nc, 6, 1, nullptr, (int)re.size()), AIOT_EINVAL);
+}
+
 TEST(R2DTx, RejectsWhatTheSpecDoesNotAllow)
 {
   uint8_t tb[8] = {1, 0, 1, 1, 0, 0, 1, 0};
@@ -227,6 +288,51 @@ TEST(R2DRx, ReceivesWhatTheReaderSends)
         EXPECT_TRUE(std::equal(tb.begin(), tb.end(), found[0].bits));
         EXPECT_EQ(found[0].end_sample, end);
       }
+}
+
+// A gNB maps the resource elements onto PRBs of its own carrier (here 25 PRBs, the 300 subcarriers
+// centred in a 384-point grid, as OAI lays them out) and starts on a half-subframe. A device
+// receives it wherever it sits in the carrier: a shift by whole subcarriers leaves the envelope as
+// it is.
+TEST(R2DRx, ReceivesTheResourceElementsOnACarriersGrid)
+{
+  std::mt19937 gen(6);
+  const int N = AIOT_N_FFT, n_prb = 25, first = N - n_prb * 6;
+  for (int m : kM)
+    for (int prb0 : {0, 11, 25 - aiot_n_rb_min(m)}) {
+      const int n_rb = aiot_n_rb_min(m), K = n_rb * AIOT_SC_PER_RB;
+      std::vector<uint8_t> tb = RandomBits(gen, 96);
+      std::vector<uint8_t> chips = Chips(tb, m);
+      const int n_sym = aiot_r2d_n_symbols((int)chips.size(), m);
+      std::vector<cd_t> re(aiot_r2d_n_resource_elements(n_sym, n_rb));
+      ASSERT_GT(aiot_r2d_resource_elements(chips.data(), (int)chips.size(), m, n_rb, re.data(), (int)re.size()), 0);
+      const int at = AIOT_HALF_SUBFRAME;
+      std::vector<cd_t> y(at, cd_t{0, 0});
+      for (int l = 0; l < n_sym; l++) {
+        std::vector<std::complex<double>> grid(N, 0);
+        for (int q = 0; q < K; q++)
+          grid[(first + 12 * prb0 + q) % N] = std::complex<double>(re[l * K + q].r, re[l * K + q].i);
+        std::vector<cd_t> u(N);
+        for (int t = 0; t < N; t++) {
+          std::complex<double> v = 0;
+          for (int k = 0; k < N; k++)
+            if (grid[k] != 0.0)
+              v += grid[k] * std::polar(1.0, 2 * M_PI * k * t / N);
+          u[t] = cd_t{v.real(), v.imag()};
+        }
+        const int cp = l % 7 == 0 ? AIOT_CP_LONG : AIOT_CP_SHORT;
+        y.insert(y.end(), u.end() - cp, u.end());
+        y.insert(y.end(), u.begin(), u.end());
+      }
+      const int end = (int)y.size();
+      y.resize(end + 6000, cd_t{0, 0});
+      RxPtr rx = NewRx();
+      std::vector<aiot_r2d_frame_t> found = Receive(rx.get(), y, AIOT_SAMPLES_PER_MS);
+      ASSERT_EQ(found.size(), 1u) << "M = " << m << ", PRB " << prb0;
+      EXPECT_EQ(found[0].n_bits, 96);
+      EXPECT_TRUE(std::equal(tb.begin(), tb.end(), found[0].bits));
+      EXPECT_EQ(found[0].end_sample, end);
+    }
 }
 
 // The R2D fixed reference channels A-FR1-B1-1 to -3 of 38.194 Annex B.2 in noise: at 10 dB SNR (an
