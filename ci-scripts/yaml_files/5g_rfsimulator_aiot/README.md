@@ -141,8 +141,10 @@ one hub node per Tag, with the same gains on every Tag's links. The containers s
 Tag is a container of its own. `git checkout -- .` brings back the checked-in room.
 
 `[network]` also names who sends R2D, who receives D2R and who sends the carrier: the four
-topologies of the Rel-19 study. As checked in, a standalone Reader does all three. A gNB or a UE as
-the Reader is not built yet, and `amber-compose` refuses those scenarios with that reason.
+topologies of the Rel-19 study. As checked in, a standalone Reader does all three. With
+`r2d = d2r = "gnb"` and `cw = "gnb-dl"` the gNB is the Reader (topology 1):
+[5g_rfsimulator_aiot_t1](../5g_rfsimulator_aiot_t1/README.md) is that room. A UE as the Reader is not
+built yet, and `amber-compose` refuses those scenarios with that reason.
 
 ## Timing
 
