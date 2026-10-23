@@ -270,6 +270,23 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
   if (IS_SA_MODE(get_softmodem_params()))
     ue->received_config_request = false;
 
+  /* The modulator rotates every resource element of the UE's grid, so the carrier wave's would need a
+   * counter-rotation to run on unbroken: not supported. A UE configured without an aiot section (the
+   * simulators) has a zeroed aiot_r2d_cfg: no R2D. */
+  AssertFatal(ue->aiot_r2d_cfg.prb_start < 0 || !ue->aiot_r2d_cfg.carrier,
+              "aiot.r2d_carrier: a UE does not send the carrier wave\n");
+  /* a PUSCH QPSK resource element is AMP / sqrt(2), as the gNB's PDSCH is TX_AMP / sqrt(2) */
+  AssertFatal(nr_aiot_r2d_init(&ue->aiot_r2d,
+                               &ue->aiot_r2d_cfg,
+                               fp->slots_per_frame,
+                               fp->symbols_per_slot,
+                               fp->ofdm_symbol_size,
+                               fp->N_RB_UL,
+                               AMP)
+                  == 0,
+              "Ambient IoT R2D configuration does not fit the UE's uplink carrier\n");
+  nr_ue_aiot_r2d_set_tx_slots(ue);
+
   return 0;
 }
 
@@ -286,6 +303,7 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue)
 {
   const NR_DL_FRAME_PARMS* fp = &ue->frame_parms;
   phy_term_nr_top();
+  nr_aiot_r2d_free(&ue->aiot_r2d);
 
   NR_UE_COMMON* common_vars = &ue->common_vars;
 
@@ -326,6 +344,18 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue)
   }
 
   sl_ue_free(ue);
+}
+
+void nr_ue_aiot_r2d_set_tx_slots(PHY_VARS_NR_UE *ue)
+{
+  if (ue->aiot_r2d.slots_per_frame == 0)
+    return; /* no R2D, or a configuration before init_nr_ue_signal(), which sets the slots itself */
+  const fapi_nr_config_request_t *cfg = &ue->nrUE_config;
+  uint32_t mask = 0;
+  for (int i = 0; ue->received_config_request && i < NR_AIOT_R2D_TX_SLOT_PERIOD; i++)
+    if (cfg->cell_config.frame_duplex_type == FDD || nr_ue_slot_select(cfg, i % ue->frame_parms.slots_per_frame) == NR_UPLINK_SLOT)
+      mask |= 1u << i;
+  nr_aiot_r2d_set_tx_slots(&ue->aiot_r2d, mask);
 }
 
 void free_nr_ue_dl_harq(NR_DL_UE_HARQ_t harq_list[2][NR_MAX_HARQ_PROCESSES], int number_of_processes, int num_rb)

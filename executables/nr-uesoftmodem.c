@@ -60,6 +60,7 @@ unsigned short config_frames[4] = {2,9,11,13};
 #include <executables/nr-uesoftmodem.h>
 #include "executables/softmodem-common.h"
 #include "executables/thread-common.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_config.h"
 
 #include "nr_nas_msg.h"
 
@@ -369,6 +370,12 @@ int main(int argc, char **argv)
       mac->ssb_start_subcarrier = cell.ssb_start;
       mac->dl_frequency = cell.rf_frequency;
 
+      /* the aiot section is the first UE's: others in the same process would send in the same PRBs */
+      UE_CC->aiot_r2d_cfg = (nr_aiot_r2d_config_t){.prb_start = -1};
+      if (inst == 0 && CC_id == 0) {
+        nr_aiot_d2r_config_t aiot_d2r_cfg;
+        nr_aiot_config_phy(&UE_CC->aiot_r2d_cfg, &aiot_d2r_cfg);
+      }
       UE_CC->sl_mode = get_softmodem_params()->sl_mode;
       init_nr_ue_vars(UE_CC, inst);
 

@@ -14,6 +14,7 @@
 #include "openair2/NR_UE_PHY_INTERFACE/NR_IF_Module.h"
 #include "PHY/defs_nr_UE.h"
 #include "PHY/impl_defs_nr.h"
+#include "PHY/INIT/nr_phy_init.h"
 #include "utils.h"
 #include "SCHED_NR_UE/phy_sch_processing_time.h"
 
@@ -406,6 +407,7 @@ void nr_ue_phy_config_request(nr_phy_config_t *phy_config)
   if(phy_config != NULL) {
     phy->received_config_request = true;
     memcpy(nrUE_config, &phy_config->config_req, sizeof(fapi_nr_config_request_t));
+    nr_ue_aiot_r2d_set_tx_slots(phy);
   }
 }
 

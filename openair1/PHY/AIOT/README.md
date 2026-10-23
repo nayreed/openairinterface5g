@@ -42,7 +42,7 @@ share (or with `--aiot.r2d_prb_start 0 ...`):
 aiot = { ...
   r2d_prb_start = 0;             # first DL PRB of the R2D; -1 (the default): no R2D
   r2d_n_rb = 3;                  # PRBs reserved for it
-  r2d_power_offset_dB = 0;       # R2D EPRE over PDSCH EPRE
+  r2d_power_offset_dB = 0;       # R2D EPRE over PDSCH EPRE (a UE: PUSCH)
   r2d_carrier = 0;               # 1: the carrier wave too, whenever no R2D is sent
 };
 gNBs = ({ ... dl_prbblacklist = "0,1,2"; ... });  # must hold the R2D's PRBs
@@ -85,6 +85,22 @@ the D2R. Slots that do not arrive are received as zeros. It needs a radio of the
 RFsimulator or a local SDR): with a split RU there are no time-domain samples, and the gNB says so.
 The receiver logs its counts every 10 s. `ctest -R test_nr_aiot_d2r` checks it, beside a UE's
 uplink 20 dB above the D2R, and at 23.04 Msps with a tone that would alias onto the D2R.
+
+## In the UE
+
+A UE can send R2D too, in its uplink, from the same `aiot` section (or `--aiot.r2d_prb_start 1 ...`
+on the UE's command line): `r2d_prb_start`, `r2d_n_rb` and `r2d_power_offset_dB`, over the PUSCH EPRE,
+place it in UL PRBs, which the gNB's `ul_prbblacklist` must hold, away from PUCCH and PRACH. The
+section is the first UE's: other UEs in the same process send none.
+
+The UE builds consecutive slots in parallel threads, so it takes each slot's R2D in slot order, in
+`processSlotTX()` before its barrier (`nr_aiot_r2d_take()`), and writes it into the slot's grid after
+PUCCH, in `phy_procedures_nrUE_TX()` (`nr_aiot_r2d_put()`). Its symbols are marked used, so the UE's
+OFDM sends them, with the phase rotation of every resource element. With TDD the R2D goes only in
+slots whose symbols are all uplink. A slot with PRACH sends no OFDM, so an R2D across one is dropped
+and logged. A UE does not send the carrier wave (`r2d_carrier`). `ctest -R test_nr_ue_aiot_r2d`
+checks it through the UE's own TX procedure and OFDM, down to a device decoding what the UE sends,
+with the slots taken in order and sent in any order.
 
 ## The MAC
 

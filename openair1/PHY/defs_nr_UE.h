@@ -23,6 +23,7 @@
 #include "fapi_nr_ue_interface.h"
 #include "common/utils/barrier/barrier.h"
 #include "common/utils/actor/actor.h"
+#include "PHY/NR_TRANSPORT/nr_aiot_r2d.h"
 //#include "openair1/SCHED_NR_UE/defs.h"
 
 #define msg(aRGS...) LOG_D(PHY, ##aRGS)
@@ -433,6 +434,10 @@ typedef struct PHY_VARS_NR_UE_s {
   // Gain change required for automation RX gain change
   int adjust_rxgain;
 
+  /// Ambient IoT R2D (TS 38.291 §6.2) in the UE's UL PRBs, from the "aiot" configuration section
+  nr_aiot_r2d_config_t aiot_r2d_cfg;
+  nr_aiot_r2d_t aiot_r2d;
+
   // Sidelink parameters
   sl_nr_sidelink_mode_t sl_mode;
   sl_nr_ue_phy_params_t SL_UE_PHY_PARAMS;
@@ -558,6 +563,7 @@ typedef struct nr_phy_data_tx_s {
   NR_UE_ULSCH_t ulsch;
   NR_UE_PUCCH pucch_vars;
   NR_UE_SRS srs_vars;
+  nr_aiot_r2d_slot_t aiot_r2d; // the slot's Ambient IoT R2D, taken in slot order
 
   // Sidelink Rx action decided by MAC
   sl_nr_tx_config_type_enum_t sl_tx_action;
