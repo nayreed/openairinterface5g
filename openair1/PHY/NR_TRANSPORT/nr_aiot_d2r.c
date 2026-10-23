@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "common/utils/LOG/log.h"
 
 #define FILTER_SPAN 8 /* G = FILTER_SPAN * D radio samples each side */
@@ -583,6 +584,25 @@ int nr_aiot_d2r_pop(nr_aiot_d2r_t *d, aiot_d2r_outcome_t *out, int max)
 int64_t nr_aiot_d2r_received_until(nr_aiot_d2r_t *d)
 {
   pthread_mutex_lock(&d->lock);
+  int64_t t = d->received_until;
+  pthread_mutex_unlock(&d->lock);
+  return t;
+}
+
+int64_t nr_aiot_d2r_wait(nr_aiot_d2r_t *d, int64_t after, int timeout_ms)
+{
+  struct timespec until;
+  clock_gettime(CLOCK_REALTIME, &until);
+  until.tv_sec += timeout_ms / 1000;
+  until.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+  if (until.tv_nsec >= 1000000000L) {
+    until.tv_sec++;
+    until.tv_nsec -= 1000000000L;
+  }
+  pthread_mutex_lock(&d->lock);
+  while (d->received_until <= after && !d->stop)
+    if (pthread_cond_timedwait(&d->cond, &d->lock, &until) != 0)
+      break;
   int64_t t = d->received_until;
   pthread_mutex_unlock(&d->lock);
   return t;

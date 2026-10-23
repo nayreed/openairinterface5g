@@ -30,6 +30,7 @@ extern "C" {
 #endif
 
 #define NR_AIOT_R2D_MAX_PENDING 8
+#define NR_AIOT_R2D_ETOOLATE (-10) /* the start slot has been mapped already, or is being mapped */
 
 /* The R2D resources of one cell. */
 typedef struct {
@@ -63,6 +64,7 @@ typedef struct {
   const void *slot_ctx;
   nr_aiot_r2d_tx_t pending[NR_AIOT_R2D_MAX_PENDING];
   int n_pending;
+  int now_slot; /* absolute slot mapped last, -1: none yet */
   uint64_t sent, dropped; /* transmissions sent in full; dropped because one of their slots was missed */
   uint64_t collisions; /* resource elements of NR channels the R2D overwrote */
 } nr_aiot_r2d_t;
@@ -86,7 +88,8 @@ void nr_aiot_r2d_set_dl_slots(nr_aiot_r2d_t *r2d, int (*slot_is_dl)(const void *
  * per symbol on n_rb PRBs (aiot_n_rb_min(M) to the configured n_rb_max), starting at symbol 0 or 7
  * of (frame, slot). Must be called before that slot is mapped, and must not overlap a transmission
  * already scheduled. Returns the number of OFDM symbols of the transmission, or a negative AIOT_E*
- * code (AIOT_EINVAL for a bad argument or an overlap, AIOT_ESPACE when too many are pending). */
+ * code (AIOT_EINVAL for a bad argument or an overlap, AIOT_ESPACE when too many are pending), or
+ * NR_AIOT_R2D_ETOOLATE when (frame, slot) is not after the slot mapped last. */
 int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
                          int frame,
                          int slot,
@@ -95,6 +98,9 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
                          int a_bits,
                          int m_chip_symb,
                          int n_rb);
+
+/* The absolute slot (frame * slots_per_frame + slot) the gNB mapped last, or -1 before the first. */
+int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d);
 
 /* Writes the R2D symbols that fall in (frame, slot) into txdataF, the slot's grid of the first
  * antenna (symbols_per_slot x ofdm_symbol_size, the carrier's subcarriers from index 0 at point A).

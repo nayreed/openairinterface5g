@@ -22,6 +22,7 @@
 #include <math.h>
 #include <complex.h>
 #include "PHY/NR_TRANSPORT/nr_ulsch.h"
+#include "LAYER2/NR_MAC_gNB/nr_aiot_reader.h"
 #include "PHY/NR_REFSIG/nr_refsig.h"
 #include "PHY/NR_REFSIG/ul_ref_seq_nr.h"
 #include <string.h>
@@ -298,6 +299,8 @@ void phy_free_nr_gNB(PHY_VARS_gNB *gNB)
   free(gNB->pusch_vars);
 
   free_nrLDPC_coding_interface(&gNB->nrLDPC_coding_interface);
+  nr_aiot_reader_free(gNB->aiot_reader); /* first: it uses the R2D and the D2R */
+  gNB->aiot_reader = NULL;
   nr_aiot_r2d_free(&gNB->aiot_r2d);
   nr_aiot_d2r_free(gNB->aiot_d2r);
   gNB->aiot_d2r = NULL;

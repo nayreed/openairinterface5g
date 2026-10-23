@@ -85,6 +85,32 @@ protocols (registration, broadcast, unicast, gen2_q, adaptive_aloha) and the dev
 the PHY and the clock (`aiot_mac.h`). `ctest -R test_aiot_mac` runs its tests, with the Reader and its
 protocols against the device MAC over an ideal air.
 
+`openair2/LAYER2/NR_MAC_gNB/nr_aiot_reader.c` makes the gNB the Reader: it runs that MAC on the
+gNB's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D the
+protocol sends next on the first half-subframe the gNB has not sent yet (`lead_slots` ahead, twice
+as many after one that came too late), opens the D2R windows the MAC asks for, and gives the MAC
+their outcomes. It needs both the R2D and the D2R in `L1s`, and is set in the `aiot` section (or
+with `--aiot.protocol registration --aiot.nodes 0-3 ...`):
+
+```
+aiot = {
+  protocol = "registration";     # registration, broadcast, unicast, gen2_q, adaptive_aloha; "" (the default): no Reader
+  params = "";                   # the protocol's parameters, name=value,name=value
+  nodes = "0-3";                 # the Tags' node ids
+  m_chip_symb = 6;               # R2D chips per OFDM symbol
+  t_bit = "1/8";                 # D2R bit duration in tau
+  r_sfs = "1,2,4,8";             # the R_SFS a paging offers
+  lead_slots = 2;
+  output_dir = "/tmp/aiot";      # reader_tx.csv, reader_rx.csv and the protocol's tables; "": none
+};
+```
+
+(`x`, `r_code`, `r_block`, `l_amble`, `interval_cp`, `i_add` and `d2r_tbs` set the rest of the link,
+with Amber's defaults.) The records have the columns of Amber's Reader, so Amber's tools read them,
+and each Tag's data is logged. `ctest -R test_nr_aiot_reader` closes the loop: the gNB's grid, OFDM,
+Tags running the device MAC, and the D2R receiver, under a carrier wave 26 dB above the Tags; with
+registration every Tag registers, and gen2_q reads every Tag.
+
 ## Tests
 
 With `-DENABLE_TESTS=ON`, `ctest -R test_aiot` runs the unit tests of `tests/`. They need no data

@@ -38,6 +38,7 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
                      int tx_amp)
 {
   memset(r2d, 0, sizeof(*r2d));
+  r2d->now_slot = -1;
   r2d->cfg = *cfg;
   r2d->cfg.prb_start = -1;
   pthread_mutex_init(&r2d->lock, NULL);
@@ -172,7 +173,9 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
   }
   pthread_mutex_lock(&r2d->lock);
   rc = n_sym;
-  if (r2d->n_pending == NR_AIOT_R2D_MAX_PENDING)
+  if (r2d->now_slot >= 0 && !in_past(r2d, start, r2d->now_slot))
+    rc = NR_AIOT_R2D_ETOOLATE;
+  else if (r2d->n_pending == NR_AIOT_R2D_MAX_PENDING)
     rc = AIOT_ESPACE;
   for (int i = 0; i < r2d->n_pending && rc > 0; i++) {
     const nr_aiot_r2d_tx_t *p = &r2d->pending[i];
@@ -203,6 +206,14 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
   return rc;
 }
 
+int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d)
+{
+  pthread_mutex_lock(&r2d->lock);
+  int now = r2d->now_slot;
+  pthread_mutex_unlock(&r2d->lock);
+  return now;
+}
+
 int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, const c16_t *rotation)
 {
   if (r2d->cfg.prb_start < 0)
@@ -211,6 +222,7 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
   const int nsym = r2d->symbols_per_slot, fft = r2d->ofdm_symbol_size;
   int written = 0;
   pthread_mutex_lock(&r2d->lock);
+  r2d->now_slot = now;
   for (int i = 0; i < r2d->n_pending;) {
     nr_aiot_r2d_tx_t *p = &r2d->pending[i];
     int done = 0;

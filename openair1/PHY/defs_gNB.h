@@ -391,6 +391,8 @@ typedef struct PHY_VARS_gNB_s {
   /// Ambient IoT Reader: the D2R resources from the configuration, and the D2R receiver (NULL: none)
   nr_aiot_d2r_config_t aiot_d2r_cfg;
   nr_aiot_d2r_t *aiot_d2r;
+  /// Ambient IoT Reader: the Reader MAC on aiot_r2d and aiot_d2r (NULL: the gNB is no Reader)
+  struct nr_aiot_reader *aiot_reader;
 
   // PUCCH0 Look-up table for cyclic-shifts
   NR_gNB_PUCCH0_LUT_t pucch0_lut;

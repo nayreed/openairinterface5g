@@ -172,10 +172,10 @@ TEST(NrAiotR2D, EpreFollowsTheOffset)
   for (int m : {2, 6, 12, 24})
     for (double offset : {0.0, -6.0, 3.0}) {
       const int n_rb = aiot_n_rb_min(m), K = n_rb * 12;
-      Cell cell(4, 3, offset);
       double sum = 0;
       int n = 0;
       for (int t = 0; t < 10; t++) {
+        Cell cell(4, 3, offset); // each from frame 0 again
         std::vector<uint8_t> tb = RandomBits(gen, 200);
         const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 200, m, n_rb);
         ASSERT_GT(n_sym, 0);
@@ -375,6 +375,23 @@ TEST(NrAiotR2D, RefusesAPowerThatWouldClip)
   cfg.power_offset_db = 21.0;
   EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), -1);
   nr_aiot_r2d_free(&r2d);
+}
+
+// The slot mapped last is the gNB's TX time: an R2D must start after it.
+TEST(NrAiotR2D, RefusesASlotAlreadyMapped)
+{
+  std::mt19937 gen(9);
+  std::vector<uint8_t> tb = RandomBits(gen, 96);
+  Cell cell(0, 3);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d), -1);
+  Grid g;
+  nr_aiot_r2d_map(&cell.r2d, 5, 4, g.re.data(), nullptr);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d), 54);
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 5, 4, 7, tb.data(), 96, 6, 1), NR_AIOT_R2D_ETOOLATE);
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 5, 1, 0, tb.data(), 96, 6, 1), NR_AIOT_R2D_ETOOLATE);
+  EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 5, 5, 0, tb.data(), 96, 6, 1), 0);
+  nr_aiot_r2d_map(&cell.r2d, 1023, 9, g.re.data(), nullptr); // across the wrap, 0.0 is next
+  EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 7, tb.data(), 96, 6, 1), 0);
 }
 
 int main(int argc, char **argv)

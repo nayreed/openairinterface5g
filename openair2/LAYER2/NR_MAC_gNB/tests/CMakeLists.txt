@@ -11,3 +11,8 @@ add_dependencies(tests test_nr_mac_gnb)
 include(GoogleTest)
 # one process per test, see test_nr_mac_gnb.cpp
 gtest_discover_tests(test_nr_mac_gnb)
+
+add_executable(test_nr_aiot_reader test_nr_aiot_reader.cpp)
+target_link_libraries(test_nr_aiot_reader PRIVATE nr_aiot_reader GTest::gtest LOG minimal_lib)
+add_dependencies(tests test_nr_aiot_reader)
+add_test(NAME test_nr_aiot_reader COMMAND ./test_nr_aiot_reader)

@@ -92,6 +92,9 @@ void nr_aiot_d2r_drain(nr_aiot_d2r_t *d);
 int nr_aiot_d2r_pop(nr_aiot_d2r_t *d, aiot_d2r_outcome_t *out, int max);
 /* The first A-IoT sample not yet received: windows decode once it passes their end. */
 int64_t nr_aiot_d2r_received_until(nr_aiot_d2r_t *d);
+/* Waits until the receiver has passed A-IoT sample after, or timeout_ms (wall clock) have gone by.
+ * Returns nr_aiot_d2r_received_until(). */
+int64_t nr_aiot_d2r_wait(nr_aiot_d2r_t *d, int64_t after, int timeout_ms);
 nr_aiot_d2r_stats_t nr_aiot_d2r_stats(nr_aiot_d2r_t *d);
 
 #ifdef __cplusplus
