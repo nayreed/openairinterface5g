@@ -42,10 +42,17 @@ level Amber's own Reader would give it.
 | Link | Gain | Why |
 |:-----|-----:|:----|
 | gnb → tagN | +19.02 dB, shifted +1.98 MHz | the carrier leaves the gNB at 917.5 counts (TX_AMP 519 × 10 × √12 / √384); Amber's Tag takes 8192 counts as its Reader's carrier |
-| tagN → gnb | 0 dB, shifted +1.08 MHz | Amber writes a Tag's D2R as its Reader's receiver sees it |
+| tagN → gnb | 0 dB, shifted +1.08 MHz, UL PRBs 15 to 21 only | Amber writes a Tag's D2R as its Reader's receiver sees it |
 | gnb noise | 1 count rms | the hub adds the receiver noise Amber's Reader has (`noise_counts` of the gNB's node) |
 
 The shift puts DL PRB 1's centre at each Tag's DC, and the Tags' D2R at UL PRB 18's centre.
+
+**Only the D2R's PRBs.** A Tag reflects all it hears, here the gNB's whole DL, and the hub gives
+each link one shift. A real Tag's reflection of the DL stays in the DL band, and only the reflection
+of the carrier lands where the D2R is. So the link from each Tag passes only the D2R's UL PRBs 15 to
+21 (`pass_Hz`, `pass_width_Hz`: a 193-tap filter, radio/rfsimulator/hub/README.md). Without it the
+reflection of the DL fell on the UL's other PRBs too: the gNB's PRACH detector once found a
+preamble in it, at 30.9 dB, which no UE had sent.
 
 Measured on the gNB's transmitted samples during a run (28 s, the RFsimulator's `saviq`): the
 carrier is 917.6 counts, 8197 at a Tag. The R2D symbols are 3.4 dB under the carrier (half the chips
@@ -91,6 +98,12 @@ Every Tag registers and sends as much data, at the levels of the link budget. Th
 R2D: each R2D waits for a half-subframe some slots ahead of what the gNB has sent, and for the D2R
 windows before it to come back through the gNB's UL, where Amber's Reader answers within its next
 millisecond. Over the same run the cell had no DL or UL errors and a ping went through (10 of 10).
+
+That run had no filter on the Tags' links yet. A run with it (this folder's `rfsim_hub.conf`) had
+429 R2D, 106 data and 3 collisions, with every Tag registered and the levels 0, −7.4, −9.6, −10.1 dB
+from Tag 0. Each Tag's level is 0.3 dB lower: the filter takes off the D2R's energy outside its 7
+PRBs. The cell had no DL or UL errors, the ping went through (10 of 10), and the gNB's PRACH
+detector found only the UE's preamble.
 
 ## Limits
 

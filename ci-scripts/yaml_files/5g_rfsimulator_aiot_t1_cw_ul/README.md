@@ -40,7 +40,7 @@ As in topology 1, the gains bring each signal to the level Amber's own Reader wo
 |:-----|-----:|------:|:----|
 | gnb → tagN | +19.02 dB | +1.98 MHz | as in topology 1: DL PRB 1 at each Tag's DC, the R2D's "on" chips at 8192 counts |
 | cw → tagN | 0 dB | −0.90 MHz | the carrier at 8192 counts, the level of Amber's Reader's carrier |
-| tagN → gnb | 0 dB | +1.98 MHz | the carrier's reflection at UL PRB 18's centre (+1.08 MHz), the D2R around it in PRBs 15 to 21 |
+| tagN → gnb | 0 dB | +1.98 MHz | the carrier's reflection at UL PRB 18's centre (+1.08 MHz), the D2R around it in PRBs 15 to 21; the link passes only those PRBs, as in [topology 1](../5g_rfsimulator_aiot_t1/README.md#levels) |
 | cw → gnb | −12.89 dB | +1.08 MHz | the carrier at 1858 counts in UL PRB 18: the leak Amber's Reader has of its own carrier (`cw_leak_dbm`, −38 dBm as 38.194 REFSENS assumes) over its 1-count noise |
 | gnb → cw | 0 dB | 0 | the CW node hears the gNB and ignores it: the hub needs every node to hear someone |
 | gnb noise | 1 count rms | | the receiver noise of Amber's Reader, as in topology 1 |
@@ -89,6 +89,12 @@ varies from run to run, as in topology 1, with the slots at which the Reader's l
 Over the same run the cell had no DL or UL errors, and a ping went through (10 of 10). The gNB's
 PRACH detector found one preamble that no UE had sent, at 30.9 dB against its 30 dB threshold,
 during Tag 0's D2R. The gNB found no random access for it and dropped it.
+
+That run had no filter on the Tags' links yet, and the preamble was in the Tags' reflection of the
+gNB's DL. A run with it (this folder's `rfsim_hub.conf`) had 474 R2D, 116 data and 6 collisions,
+with every Tag registered and the levels 0, −7.4, −9.6, −10.2 dB from Tag 0, each 0.3 dB lower. The
+cell had no DL or UL errors, the ping went through (10 of 10), and the gNB's PRACH detector found
+only the UE's preamble.
 
 ## Limits
 

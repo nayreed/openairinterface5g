@@ -88,6 +88,7 @@ CELL_PRBS, FFT_SIZE = 25, 384
 TX_AMP = int(min(32767.0 / 10 ** (36 / 20), 32767))  # the gNB's TX_AMP at the default 36 dB backoff
 R2D_OFFSET_DB = 20.0
 D2R_PRB_START, D2R_N_RB = 15, 7
+D2R_WIDTH_HZ = 12 * D2R_N_RB * 15e3
 
 
 def gnb_reader(phy):
@@ -138,8 +139,10 @@ def hub_conf_t1(scenario_path, node_ids, scenario):
         return f'    {{ name = {json.dumps(name) + ";":<{width}} port = {port}; lookahead = {lookahead};' + \
             (" lead = 1;" if lead else "") + (f" noise_counts = {noise};" if noise else "") + " }"
 
-    def link(tx, rx, gain=None, shift=None):
+    def link(tx, rx, gain=None, shift=None, pass_hz=None):  # with pass_hz, only the D2R's PRBs, centred there
         extra = "" if gain is None else f" gain_dB = {gain}; shift_Hz = {shift};"
+        if pass_hz is not None:
+            extra += f" pass_Hz = {pass_hz}; pass_width_Hz = {D2R_WIDTH_HZ};"
         return f'    {{ tx = "{tx}"; rx = "{rx}";{extra} }}'
 
     nodes = ["    # sl_ahead (6 slots) ahead, and its first write comes after its first read; its receiver",
@@ -162,15 +165,16 @@ def hub_conf_t1(scenario_path, node_ids, scenario):
         links += ["    # the CW node's carrier at each Tag, as strong as Amber's Reader's there, 0.9 MHz under the Tag's DC"]
         links += [link("cw", t, 0.0, CW_AT_TAG_HZ) for t in tags]
         links += ["    # each Tag's D2R at the gNB, around the carrier's reflection at UL PRB 18's centre, at the level",
-                  "    # Amber gives it"]
-        links += [link(t, "gnb", 0.0, CW_REFLECTION_SHIFT_HZ) for t in tags]
+                  "    # Amber gives it: only UL PRBs 15-21, as from a Tag next to the carrier"]
+        links += [link(t, "gnb", 0.0, CW_REFLECTION_SHIFT_HZ, UL_SHIFT_HZ) for t in tags]
         links += ["    # the carrier at the gNB, in UL PRB 18, as strong as Amber's Reader's own carrier leak",
                   link("cw", "gnb", cw_leak_db(scenario), UL_SHIFT_HZ),
                   "    # the CW node hears the gNB, and does nothing with it: every node hears someone",
                   link("gnb", "cw")]
     else:
-        links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre), at the level Amber gives it"]
-        links += [link(t, "gnb", 0.0, UL_SHIFT_HZ) for t in tags]
+        links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre), at the level Amber gives it:",
+                  "    # only those PRBs, as from a Tag next to the carrier"]
+        links += [link(t, "gnb", 0.0, UL_SHIFT_HZ, UL_SHIFT_HZ) for t in tags]
 
     def items(lines):  # every node or link but the last ends with a comma
         last = max(i for i, l in enumerate(lines) if l.startswith("    {"))
