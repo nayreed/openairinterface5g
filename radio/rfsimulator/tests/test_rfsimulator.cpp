@@ -108,15 +108,14 @@ double MixCoeff(int tx_ant, int rx_ant)
   return d ? (0.2 / d) : 1.0;
 }
 
-// Same per-antenna accumulation/truncation order as simulator.cpp, for a bit-exact match.
+// As rfsimulator_read_internal(): the senders' antennas are summed in float, in the same order, and
+// the sum is rounded once. The pattern stays far from the 16-bit limits, so it never saturates.
 int16_t ExpectedCombined(bool sender_is_server, uint64_t sample_pos, int rx_ant, int num_tx_ant)
 {
-  double acc = 0.0;
-  for (int tx_ant = 0; tx_ant < num_tx_ant; tx_ant++) {
-    double term = static_cast<double>(TxPattern(sender_is_server, sample_pos, tx_ant)) * MixCoeff(tx_ant, rx_ant);
-    acc = static_cast<double>(static_cast<int16_t>(acc + term));
-  }
-  return static_cast<int16_t>(acc);
+  float acc = 0.0f;
+  for (int tx_ant = 0; tx_ant < num_tx_ant; tx_ant++)
+    acc += TxPattern(sender_is_server, sample_pos, tx_ant) * MixCoeff(tx_ant, rx_ant);
+  return static_cast<int16_t>(lroundf(acc));
 }
 
 void FillTxBlock(std::vector<std::vector<c16_t>> &bufs, bool sender_is_server, uint64_t start_ts, int nant, int nsamps)
@@ -177,8 +176,8 @@ int16_t ExpectedBeamSample(bool sender_is_server, uint64_t sample_pos, int beam_
   int16_t v = TxPattern(sender_is_server, sample_pos, /*tx_ant=*/0);
   float gain_dB = gain_diag_db.at(static_cast<size_t>(beam_id));
   float gain_linear = powf(10, gain_dB / 20.0);
-  double term = static_cast<double>(v) * static_cast<double>(gain_linear);
-  return static_cast<int16_t>(term);
+  float term = static_cast<double>(v) * static_cast<double>(gain_linear);
+  return static_cast<int16_t>(lroundf(term));
 }
 
 VerifyResult VerifyBeamBlock(const std::vector<c16_t> &rx,
