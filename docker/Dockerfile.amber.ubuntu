@@ -100,6 +100,7 @@ COPY ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot/ /tmp/rooms/5g_rfsimulator_aiot/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1/ /tmp/rooms/5g_rfsimulator_aiot_t1/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1_cw_ul/ /tmp/rooms/5g_rfsimulator_aiot_t1_cw_ul/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t4/ /tmp/rooms/5g_rfsimulator_aiot_t4/
 
 # Fail here rather than at run time if a library is missing.
 RUN ldconfig && \
