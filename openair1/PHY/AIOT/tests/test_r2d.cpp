@@ -122,7 +122,31 @@ TEST(R2DTx, ChipsFollowTheSpec)
       ASSERT_GE(body.size(), want.size());
       EXPECT_TRUE(std::equal(want.begin(), want.end(), body.begin())) << "M = " << m << ", A = " << a;
       EXPECT_TRUE(std::all_of(body.begin() + want.size(), body.end(), [](uint8_t c) { return c == 0; })) << "padding";
+      // the smallest N_pad: less than one symbol's worth of free chips
+      EXPECT_LT(body.size() - want.size(), (size_t)(m == 24 ? 22 : m)) << "M = " << m << ", A = " << a;
     }
+}
+
+// 38.291 Table 4.3.3.3-1: the fewest PRBs for each M.
+TEST(R2DTx, MinimumPrbs)
+{
+  const int want[][2] = {{2, 1}, {6, 1}, {12, 2}, {24, 3}};
+  for (const auto &w : want)
+    EXPECT_EQ(aiot_n_rb_min(w[0]), w[1]) << "M = " << w[0];
+}
+
+// The R2D fixed reference channels of 38.194 Annex B.2 (TBS 96, CRC 16, M = 6, 12, 24): 8 SIP
+// chips, then the CAP (4), the Manchester-coded 112 bits (224), the postamble (4) and padding.
+// B.2 lists 2 padding chips for M = 6 and 8 for M = 12, which 38.291 6.2.5 gives too: 242 and 248
+// chips. For M = 24 B.2 lists 8, but 6.2.5 skips the last two chips of every symbol for the PRDCH
+// and the postamble, so 232 chips need 11 symbols of 22 and the last symbol ends with 10 padding
+// chips and the two forced ones (12): 272 chips. This follows 38.291, the normative mapping.
+TEST(R2DTx, FixedReferenceChannelsOf38194)
+{
+  std::vector<uint8_t> tb(96, 0);
+  EXPECT_EQ(Chips(tb, 6).size(), 242u);
+  EXPECT_EQ(Chips(tb, 12).size(), 248u);
+  EXPECT_EQ(Chips(tb, 24).size(), 272u);
 }
 
 // 38.291 6.2.6 and 6.2.7: OFDM symbols with the long CP at l = 0 and 7, every symbol's spectrum
@@ -205,8 +229,10 @@ TEST(R2DRx, ReceivesWhatTheReaderSends)
       }
 }
 
-// The device's sensitivity point, 38.191 7.2.2: at 10 dB SNR (an "on" chip over the noise) it
-// detects the A-FR1-B1-x FRCs; here every one of a few transmissions back to back.
+// The R2D fixed reference channels A-FR1-B1-1 to -3 of 38.194 Annex B.2 in noise: at 10 dB SNR (an
+// "on" chip, of power 1, over the noise) the device detects every one of a few transmissions back
+// to back. 38.191 7.2.2 gives the device's sensitivity as a power (REFSENS, -34 dBm, 90% detected),
+// not an SNR: 10 dB is this test's point, the same as aiot_sim check's.
 TEST(R2DRx, ReceivesInNoise)
 {
   std::mt19937 gen(4);
@@ -219,7 +245,7 @@ TEST(R2DRx, ReceivesInNoise)
       Place(y, (int)y.size(), tbs.back(), f[0], f[1]);
       y.resize(y.size() + 3000, cd_t{0, 0});
     }
-    AddNoise(y, std::pow(10.0, -15.0 / 10), gen);
+    AddNoise(y, std::pow(10.0, -10.0 / 10), gen);
     RxPtr rx = NewRx();
     std::vector<aiot_r2d_frame_t> found = Receive(rx.get(), y, AIOT_SAMPLES_PER_MS);
     ASSERT_EQ(found.size(), tbs.size()) << "M = " << f[0];

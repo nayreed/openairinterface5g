@@ -89,7 +89,9 @@ std::vector<aiot_d2r_outcome_t> Receive(aiot_d2r_rx_t *rx, const std::vector<cd_
 }
 
 // A spread of what 38.391 allows: every bit duration, both modulations, with and without coding
-// and repetition, both amble lengths, the shortest and the longest midamble interval.
+// and repetition, both amble lengths, each midamble interval.
+const int kIntervals[4] = {48, 96, 168, 240}; // 38.391 Table 6.2.1.6-1, before the scale S
+
 std::vector<aiot_d2r_params_t> Combinations()
 {
   const int durations[8][3] = {{2, 1, 1}, {1, 1, 2}, {1, 2, 4}, {1, 4, 8}, {1, 8, 16}, {1, 16, 32}, {1, 32, 64}, {1, 96, 192}};
@@ -99,7 +101,7 @@ std::vector<aiot_d2r_params_t> Combinations()
     int r[8];
     const int nr = aiot_allowed_r_sfs(d[0], d[1], r);
     for (int ir = 0; ir < nr; ir += 3) {
-      aiot_d2r_params_t p = {d[0], d[1], r[ir], 1 + (k & 1), (k >> 1) & 1, (k & 4) ? 7 : 31, d[2] * ((k & 8) ? 240 : 48), (k >> 4) & 1, ((k / 3) & 1) ? AIOT_OOK : AIOT_BPSK};
+      aiot_d2r_params_t p = {d[0], d[1], r[ir], 1 + (k & 1), (k >> 1) & 1, (k & 4) ? 7 : 31, d[2] * kIntervals[(k >> 3) & 3], (k >> 4) & 1, ((k / 3) & 1) ? AIOT_OOK : AIOT_BPSK};
       k += 5;
       if (aiot_d2r_params_check(&p) == 0)
         all.push_back(p);
@@ -151,8 +153,23 @@ TEST(D2RTx, FrameAndChips)
       ASSERT_EQ(aiot_d2r_amble_layout(n_e, &p, lay.data(), n_v), n_v);
       uint8_t amble[31];
       aiot_m_sequence(p.l_amble, amble);
-      for (int j = 0; j < p.l_amble; j++)
-        EXPECT_EQ(lay[j], j);
+      // 38.291 6.1.3, written out: V = E + (1 + floor(E / I_bit)) l_amble, or with ceil when I_add;
+      // the preamble at v_k, a midamble at v_{k + K (l_amble + I_bit)} for K = 1 .. floor(E / I_bit),
+      // the additional midamble at v_{k + V - l_amble}; the coded bits fill the rest in order
+      const int l = p.l_amble, n_mid = n_e / p.i_bit;
+      const int v_len = n_e + (1 + (p.i_add ? (n_e + p.i_bit - 1) / p.i_bit : n_mid)) * l;
+      ASSERT_EQ(n_v, v_len);
+      std::vector<int> want(v_len, -1);
+      for (int k = 0; k < l; k++)
+        want[k] = k;
+      for (int K = 1; K <= n_mid; K++)
+        for (int k = 0; k < l; k++)
+          want[k + K * (l + p.i_bit)] = k;
+      if (p.i_add)
+        for (int k = 0; k < l; k++)
+          want[k + v_len - l] = k;
+      EXPECT_EQ(std::count(want.begin(), want.end(), -1), n_e);
+      EXPECT_EQ(lay, want);
       int ie = 0;
       for (int i = 0; i < n_v; i++)
         EXPECT_EQ(v[i], lay[i] < 0 ? e[ie++] : amble[lay[i]]) << "bit " << i;

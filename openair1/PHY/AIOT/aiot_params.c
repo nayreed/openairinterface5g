@@ -258,6 +258,7 @@ int aiot_timing_tolerance(int t_sfo_samples)
 int aiot_t_d2r_min(const aiot_d2r_params_t *p)
 {
   int three_chips = 3 * aiot_chip_samples(p);
-  int ten_us = AIOT_SAMPLE_RATE_HZ / 100000;
+  /* 10 us is 57.6 samples: rounded up, so that the gap is never shorter than 10 us */
+  int ten_us = (AIOT_SAMPLE_RATE_HZ + 99999) / 100000;
   return three_chips > ten_us ? three_chips : ten_us;
 }

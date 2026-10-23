@@ -35,9 +35,16 @@ ninja -C build-aiot aiot_phy_shared
 
 With `-DENABLE_TESTS=ON`, `ctest -R test_aiot` runs the unit tests of `tests/`. They need no data
 files: they check the CRC and the convolutional code against encoders written from their
-polynomials, the R2D chips and OFDM band limit against 38.291 §6.2, the D2R frame layout against
-§6.1.3, the MAC PDUs against hand-built 38.391 field layouts, and that each receiver gets back what
-its transmitter sent, in noise and across the parameters the spec allows.
+polynomials, the m-sequences against the bits written in 38.291 §8.3, the R2D chips, the fewest
+PRBs and the OFDM band limit against 38.291 §6.2 and Table 4.3.3.3-1, the D2R frame layout against
+the formulas of §6.1.3, the frame lengths of the fixed reference channels of 38.194 Annex B, the
+Scheduling Info and the Access Trigger, NACK Feedback and D2R messages against hand-built 38.391
+field layouts (the other R2D messages by packing and parsing), and that each receiver gets back
+what its transmitter sent, in noise and across the parameters the spec allows.
+
+Where the specs disagree, the code follows 38.291: for M = 24, 38.194 Annex B.2 lists 8 padding
+chips, while the mapping of 38.291 §6.2.5, which skips the last two chips of every symbol, gives
+12 (`R2DTx.FixedReferenceChannelsOf38194`).
 
 `aiot_sim` is the link-level simulator ([physical simulators](../../../doc/physical-simulators.md)):
 

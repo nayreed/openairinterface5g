@@ -109,7 +109,8 @@ int aiot_t_r_to_d(const aiot_d2r_params_t *p,
                   int n_candidates,
                   int earlier_occasion,
                   int d2r_chips);
-/* Te = ceil(T_SFO / 10) (38.191 §9.2.1); T_D2R_min = max(3 T_chip, 10 us) (38.191 §9.3). */
+/* Te = ceil(T_SFO / 10) (38.191 §9.2.1: 10% of T_SFO; rounded up to whole samples here);
+ * T_D2R_min = max(3 T_chip, 10 us) (38.191 §9.3; 10 us = 57.6 samples, rounded up to 58). */
 int aiot_timing_tolerance(int t_sfo_samples);
 int aiot_t_d2r_min(const aiot_d2r_params_t *p);
 

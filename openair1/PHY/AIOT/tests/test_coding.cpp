@@ -6,6 +6,7 @@
 // again here in their simplest form.
 
 #include <gtest/gtest.h>
+#include <cstring>
 #include <random>
 #include <vector>
 #include "aiot_phy.h"
@@ -83,6 +84,16 @@ std::vector<double> Soft(const std::vector<uint8_t> &bits)
 
 TEST(Params, MSequencesAreMaximalLength)
 {
+  // 38.291 8.3: the sequences written out in the spec text, p_0 first
+  const char *kSpec7 = "1001110";
+  const char *kSpec31 = "0100100001010111011000111110011";
+  for (const char *want : {kSpec7, kSpec31}) {
+    const int len = (int)strlen(want);
+    std::vector<uint8_t> s(len);
+    ASSERT_EQ(aiot_m_sequence(len, s.data()), len);
+    for (int n = 0; n < len; n++)
+      EXPECT_EQ(s[n], want[n] - '0') << "length " << len << " bit " << n;
+  }
   for (int len : {7, 31}) {
     std::vector<uint8_t> s(len);
     ASSERT_EQ(aiot_m_sequence(len, s.data()), len);
@@ -124,7 +135,7 @@ TEST(Params, FrameLengthOfEveryAllowedCombination)
       for (int r_block : {1, 2})
         for (int r_code : {0, 1})
           for (int l_amble : {7, 31})
-            for (int i : {0, 3})
+            for (int i : {0, 1, 2, 3})
               for (int i_add : {0, 1})
                 for (aiot_mod_t mod : {AIOT_OOK, AIOT_BPSK}) {
                   aiot_d2r_params_t p = {d.num, d.den, r_sfs, r_block, r_code, l_amble, d.scale * kIntervalBits[i], i_add, mod};
@@ -144,10 +155,26 @@ TEST(Params, FrameLengthOfEveryAllowedCombination)
                     EXPECT_EQ(aiot_frame_bits(a, &p), e + (1 + mid) * l_amble);
                     EXPECT_EQ(aiot_frame_samples(a, &p), (e + (1 + mid) * l_amble) * bit);
                   }
-                  EXPECT_EQ(aiot_t_d2r_min(&p), std::max(3 * bit / (2 * r_sfs), AIOT_SAMPLE_RATE_HZ / 100000));
+                  // 38.191 9.3: max(3 T_chip, 10 us); 10 us is 57.6 samples at 5.76 Msps, so 58
+                  EXPECT_EQ(aiot_t_d2r_min(&p), std::max(3 * bit / (2 * r_sfs), 58));
                   checked++;
                 }
   EXPECT_GT(checked, 1000);
+}
+
+// 38.194 Annex B.1: the D2R fixed reference channels give their length on air ("Total symbols"):
+// 96-bit payload, 16-bit CRC, 31-bit preamble and midambles, midamble interval 48, FEC 1/3 (A1-1,
+// A1-2) or none (A1-3, A1-4): 584 and 143 bits.
+TEST(Params, FixedReferenceChannelsOf38194)
+{
+  const aiot_d2r_params_t a1_1 = {2, 1, 1, 1, 1, 31, 48, 0, AIOT_BPSK}; // 15 kHz DSB
+  const aiot_d2r_params_t a1_2 = {2, 1, 1, 1, 1, 31, 48, 0, AIOT_OOK};
+  const aiot_d2r_params_t a1_3 = {1, 96, 1, 1, 0, 31, 192 * 48, 0, AIOT_BPSK}; // 2880 kHz DSB
+  const aiot_d2r_params_t a1_4 = {1, 96, 1, 1, 0, 31, 192 * 48, 0, AIOT_OOK};
+  EXPECT_EQ(aiot_frame_bits(96, &a1_1), 584);
+  EXPECT_EQ(aiot_frame_bits(96, &a1_2), 584);
+  EXPECT_EQ(aiot_frame_bits(96, &a1_3), 143);
+  EXPECT_EQ(aiot_frame_bits(96, &a1_4), 143);
 }
 
 TEST(Params, ResponseTimes)
