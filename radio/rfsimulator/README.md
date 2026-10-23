@@ -172,6 +172,13 @@ The file format is successive blocks of a header followed by the I/Q array. If y
 
 The format intends to be compatible with the OAI store/replay feature on USRP.
 
+## Several nodes in one air: rfsim_hub
+
+The RFsimulator connects one server to its clients; clients do not hear each other. To put several
+systems in one air, for example a gNB with its UE and an Ambient IoT Reader with its Tags, connect
+every node as a client to [rfsim_hub](hub/README.md), which sums what each node hears with a gain,
+delay and frequency shift per link.
+
 ## How to use OAI RFSIM with a channel model
 
 Please refer to this document [`channel_simulation.md`](../../openair1/SIMULATION/TOOLS/DOC/channel_simulation.md) to get familiar with channel simulation in RFSIM and to see the list of commands for real-time usage with telnet.

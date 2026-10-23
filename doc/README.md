@@ -108,7 +108,7 @@ Legacy unmaintained files:
 
 Some directories under `radio` contain READMEs:
 
-- [RFsimulator](../radio/rfsimulator/README.md)
+- [RFsimulator](../radio/rfsimulator/README.md), and [rfsim_hub](../radio/rfsimulator/hub/README.md) to put several RFsimulator nodes in one air
 - [USRP](../radio/USRP/README.md)
 - [BladeRF](../radio/BLADERF/README.md)
 - [IQPlayer](../radio/iqplayer/DOC/iqrecordplayer_usage.md), and [general documentation](./iqrecordplayer_usage.md)

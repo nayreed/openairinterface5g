@@ -237,7 +237,7 @@ function main() {
                     ;;
                 "SIMU")
                     HWs+=" OAI_"$2
-                    TARGET_LIST="$TARGET_LIST rfsimulator"
+                    TARGET_LIST="$TARGET_LIST rfsimulator rfsim_hub"
                     CMAKE_CMD="$CMAKE_CMD -DOAI_$2=ON"
                     ;;
                 "AW2SORI")
