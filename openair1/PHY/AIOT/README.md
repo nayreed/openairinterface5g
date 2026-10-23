@@ -102,6 +102,22 @@ and logged. A UE does not send the carrier wave (`r2d_carrier`). `ctest -R test_
 checks it through the UE's own TX procedure and OFDM, down to a device decoding what the UE sends,
 with the slots taken in order and sent in any order.
 
+The UE receives D2R in its downlink band, the only band its radio delivers: `d2r_prb_start`,
+`d2r_n_rb`, `d2r_noise_counts` and `d2r_sic` place it there. A real UE would need a second receiver
+in its uplink band, where the carrier and the devices' reflections are; in the room the RFsimulator
+hub moves each device's reflection into the UE's band instead. The D2R can take DL PRBs that the
+gNB's `dl_prbblacklist` holds, but the SSB, the CORESETs and the CSI-RS still use them. So the room
+puts it past the carrier's PRBs, in the guard band the UE's samples hold: at 5.76 Msps, 32 PRBs fit,
+and PRBs 25 to 31 are the 7 above the 25 of the carrier, wrapping round below them, centred at
+2.88 MHz. No NR channel is there, and the cell gives up no PRB.
+
+`nrue_ru_read()` hands every sample the radio delivers to the D2R receiver, whatever the read: the
+initial sync's frames, each slot, and the first symbol of the next frame that the UE reads apart at
+each frame's end. The radio's timestamps run on unbroken across them, also when the UE shortens or
+lengthens a read to follow its timing drift. `ctest -R test_nr_aiot_d2r` decodes two D2Rs pushed in
+the UE's reads and checks that no sample is lost, and decodes a D2R in the guard band with the
+downlink 20 dB above it on every PRB of the carrier.
+
 ## The MAC
 
 `openair2/LAYER2/AIOT_MAC` is the 38.391 MAC, built into the same library: the Reader with its

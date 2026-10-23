@@ -286,6 +286,19 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
                   == 0,
               "Ambient IoT R2D configuration does not fit the UE's uplink carrier\n");
   nr_ue_aiot_r2d_set_tx_slots(ue);
+  /* The UE has one receiver, in its DL band: the D2R must reach it there (in the room, the RFsimulator
+   * hub moves each device's reflection into the guard band past the carrier's PRBs). nrue_ru_read()
+   * hands it every sample. */
+  if (ue->aiot_d2r_cfg.prb_start >= 0 && ue->aiot_d2r_cfg.n_rb > 0) {
+    ue->aiot_d2r = nr_aiot_d2r_open(&ue->aiot_d2r_cfg,
+                                    fp->N_RB_DL,
+                                    fp->subcarrier_spacing,
+                                    (int64_t)fp->samples_per_subframe * 1000,
+                                    get_samples_per_slot(0, fp),
+                                    IS_SOFTMODEM_RFSIM,
+                                    "DL");
+    AssertFatal(ue->aiot_d2r, "Ambient IoT D2R configuration does not fit the UE's downlink carrier\n");
+  }
 
   return 0;
 }
@@ -304,6 +317,8 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue)
   const NR_DL_FRAME_PARMS* fp = &ue->frame_parms;
   phy_term_nr_top();
   nr_aiot_r2d_free(&ue->aiot_r2d);
+  nr_aiot_d2r_free(ue->aiot_d2r);
+  ue->aiot_d2r = NULL;
 
   NR_UE_COMMON* common_vars = &ue->common_vars;
 

@@ -24,6 +24,7 @@
 #include "common/utils/barrier/barrier.h"
 #include "common/utils/actor/actor.h"
 #include "PHY/NR_TRANSPORT/nr_aiot_r2d.h"
+#include "PHY/NR_TRANSPORT/nr_aiot_d2r.h"
 //#include "openair1/SCHED_NR_UE/defs.h"
 
 #define msg(aRGS...) LOG_D(PHY, ##aRGS)
@@ -437,6 +438,9 @@ typedef struct PHY_VARS_NR_UE_s {
   /// Ambient IoT R2D (TS 38.291 §6.2) in the UE's UL PRBs, from the "aiot" configuration section
   nr_aiot_r2d_config_t aiot_r2d_cfg;
   nr_aiot_r2d_t aiot_r2d;
+  /// Ambient IoT D2R (TS 38.291 §6.1) in the UE's DL PRBs, from the same section; NULL: none
+  nr_aiot_d2r_config_t aiot_d2r_cfg;
+  nr_aiot_d2r_t *aiot_d2r;
 
   // Sidelink parameters
   sl_nr_sidelink_mode_t sl_mode;

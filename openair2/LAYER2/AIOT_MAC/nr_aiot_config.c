@@ -24,7 +24,7 @@
   {"r2d_n_rb",            "PRBs reserved for the R2D, from r2d_prb_start", 0, .iptr=NULL, .defintval=3, TYPE_INT, 0}, \
   {"r2d_power_offset_dB", "EPRE of the R2D over the PDSCH EPRE (a UE: PUSCH), in dB", 0, .dblptr=NULL, .defdblval=0.0, TYPE_DOUBLE, 0}, \
   {"r2d_carrier",         "1: the node also sends the carrier wave, at the centre of the R2D PRBs, whenever it sends no R2D (a gNB only)", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
-  {"d2r_prb_start",       "first PRB of the D2R (38.291), from point A; -1: no D2R. A gNB receives it in UL PRBs, which must be in ul_prbblacklist", 0, .iptr=NULL, .defintval=-1, TYPE_INT, 0}, \
+  {"d2r_prb_start",       "first PRB of the D2R (38.291), from point A; -1: no D2R. A gNB receives it in UL PRBs, which must be in its ul_prbblacklist; a UE in its DL band, in PRBs of the gNB's dl_prbblacklist or past the carrier's, in the guard band its samples hold (25 PRBs at 5.76 Msps: PRBs 25 to 31)", 0, .iptr=NULL, .defintval=-1, TYPE_INT, 0}, \
   {"d2r_n_rb",            "PRBs reserved for the D2R, from d2r_prb_start; the carrier wave and the D2R are at their centre", 0, .iptr=NULL, .defintval=7, TYPE_INT, 0}, \
   {"d2r_noise_counts",    "noise floor of the D2R receiver, rms on I and on Q, in ADC counts", 0, .dblptr=NULL, .defdblval=1.0, TYPE_DOUBLE, 0}, \
   {"d2r_sic",             "1: the D2R receiver cancels each D2R it decodes and looks again", 0, .iptr=NULL, .defintval=1, TYPE_INT, 0}, \
