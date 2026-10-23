@@ -151,6 +151,22 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
                   == 0,
               "Ambient IoT R2D configuration does not fit this cell\n");
   nr_aiot_r2d_set_dl_slots(&gNB->aiot_r2d, aiot_r2d_slot_is_dl, &gNB->gNB_config);
+  /* a gNB that was not configured from a file (the simulators) has a zeroed aiot_d2r_cfg: no D2R */
+  if (gNB->aiot_d2r_cfg.prb_start >= 0 && gNB->aiot_d2r_cfg.n_rb > 0) {
+    gNB->aiot_d2r =
+        nr_aiot_d2r_new(&gNB->aiot_d2r_cfg, fp->N_RB_UL, fp->subcarrier_spacing, (int64_t)fp->samples_per_subframe * 1000);
+    AssertFatal(gNB->aiot_d2r, "Ambient IoT D2R configuration does not fit this cell\n");
+    /* room for 100 ms of slots. A real radio's slots are lost if the worker falls further behind; the
+     * RFsimulator's time waits for it instead */
+    int wait = IS_SOFTMODEM_RFSIM;
+    AssertFatal(nr_aiot_d2r_start(gNB->aiot_d2r, 10 * fp->slots_per_frame, get_samples_per_slot(0, fp), wait) == 0,
+                "Ambient IoT D2R: cannot start the receiver thread\n");
+    LOG_I(PHY,
+          "Ambient IoT D2R in UL PRBs %d to %d, %.0f Hz from the carrier\n",
+          gNB->aiot_d2r_cfg.prb_start,
+          gNB->aiot_d2r_cfg.prb_start + gNB->aiot_d2r_cfg.n_rb - 1,
+          nr_aiot_d2r_shift_hz(gNB->aiot_d2r));
+  }
   // ceil(((NB_RB<<1)*3)/32) // 3 RE *2(QPSK)
   nr_generate_modulation_table();
   nr_init_pbch_interleaver(gNB->nr_pbch_interleaver);
@@ -283,6 +299,8 @@ void phy_free_nr_gNB(PHY_VARS_gNB *gNB)
 
   free_nrLDPC_coding_interface(&gNB->nrLDPC_coding_interface);
   nr_aiot_r2d_free(&gNB->aiot_r2d);
+  nr_aiot_d2r_free(gNB->aiot_d2r);
+  gNB->aiot_d2r = NULL;
 }
 
 void nr_phy_config_request_sim(PHY_VARS_gNB *gNB,

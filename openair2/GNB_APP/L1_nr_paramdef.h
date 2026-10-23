@@ -46,6 +46,14 @@
 #define HLP_L1_AIOT_R2D_N_RB "DL PRBs reserved for the Ambient IoT R2D, from aiot_r2d_prb_start"
 #define L1_AIOT_R2D_POWER_OFFSET_DB          "aiot_r2d_power_offset_dB"
 #define HLP_L1_AIOT_R2D_POWER_OFFSET_DB "EPRE of the Ambient IoT R2D over the PDSCH EPRE, in dB"
+#define L1_AIOT_D2R_PRB_START                "aiot_d2r_prb_start"
+#define HLP_L1_AIOT_D2R_PRB_START "First UL PRB of the Ambient IoT D2R (38.291), from point A; -1: no D2R. The PRBs must be in ul_prbblacklist"
+#define L1_AIOT_D2R_N_RB                     "aiot_d2r_n_rb"
+#define HLP_L1_AIOT_D2R_N_RB "UL PRBs reserved for the Ambient IoT D2R, from aiot_d2r_prb_start; the carrier wave and the D2R are at their centre"
+#define L1_AIOT_D2R_NOISE_COUNTS             "aiot_d2r_noise_counts"
+#define HLP_L1_AIOT_D2R_NOISE_COUNTS "Noise floor of the Ambient IoT D2R receiver, rms on I and on Q, in ADC counts"
+#define L1_AIOT_D2R_SIC                      "aiot_d2r_sic"
+#define HLP_L1_AIOT_D2R_SIC "1: the Ambient IoT D2R receiver cancels each D2R it decodes and looks again"
 
 /*----------------------------------------------------------------------------------------------------------------------------------------------------*/
 /*                                            L1 configuration parameters                                                                             */
@@ -77,6 +85,10 @@
   {L1_AIOT_R2D_PRB_START,                HLP_L1_AIOT_R2D_PRB_START, 0, .iptr=NULL,  .defintval=-1,              TYPE_INT,      0},         \
   {L1_AIOT_R2D_N_RB,                     HLP_L1_AIOT_R2D_N_RB, 0,  .iptr=NULL,        .defintval=3,               TYPE_INT,      0},         \
   {L1_AIOT_R2D_POWER_OFFSET_DB,          HLP_L1_AIOT_R2D_POWER_OFFSET_DB, 0, .dblptr=NULL, .defdblval=0.0,       TYPE_DOUBLE,   0},         \
+  {L1_AIOT_D2R_PRB_START,                HLP_L1_AIOT_D2R_PRB_START, 0, .iptr=NULL,  .defintval=-1,              TYPE_INT,      0},         \
+  {L1_AIOT_D2R_N_RB,                     HLP_L1_AIOT_D2R_N_RB, 0,  .iptr=NULL,        .defintval=7,               TYPE_INT,      0},         \
+  {L1_AIOT_D2R_NOISE_COUNTS,             HLP_L1_AIOT_D2R_NOISE_COUNTS, 0, .dblptr=NULL, .defdblval=1.0,         TYPE_DOUBLE,   0},         \
+  {L1_AIOT_D2R_SIC,                      HLP_L1_AIOT_D2R_SIC, 0,   .iptr=NULL,        .defintval=1,               TYPE_INT,      0},         \
 }
 // clang-format on
 

@@ -53,6 +53,31 @@ transmission that misses a slot, or overwrites an NR channel, is logged. The gNB
 the default backoff), so the R2D is never clipped. `ctest -R test_nr_aiot_r2d`
 checks it, down to a device decoding what the gNB's OFDM sends.
 
+`openair1/PHY/NR_TRANSPORT/nr_aiot_d2r.c` receives D2R from the gNB's UL band. The D2R is not
+OFDM, so it works on the time-domain samples of each slot, as the radio delivers them: it moves the
+centre of the D2R PRBs (where the carrier wave and the D2R are) to 0 Hz, brings the samples to the
+A-IoT rate of 5.76 Msps, and runs the D2R receiver over each window the MAC opens. That runs in its
+own thread, as PRACH detection does, so the RU thread only copies the slot. It is set in `L1s` too:
+
+```
+L1s = ({ ...
+  aiot_d2r_prb_start = 15;       # first UL PRB of the D2R; -1 (the default): no D2R
+  aiot_d2r_n_rb = 7;             # PRBs reserved for it; the carrier wave is at their centre
+  aiot_d2r_noise_counts = 1.0;   # the receiver's noise floor, rms on I and Q, in ADC counts
+  aiot_d2r_sic = 1;              # cancel each decoded D2R and look again
+});
+gNBs = ({ ... ul_prbblacklist = "15,16,17,18,19,20,21"; ... });  # must hold the D2R's PRBs
+```
+
+The clock of the windows and of every decoded D2R is the radio's sample clock divided by
+D = (radio rate) / 5.76 Msps, so the radio rate must be a whole multiple of 5.76 Msps, as with
+three-quarter sampling (`-E`). With D = 1 the receiver gets the samples as they are, the same as a
+standalone Reader in the same air; with D > 1 a low-pass filter first stops what would alias into
+the D2R. Slots that do not arrive are received as zeros. It needs a radio of the gNB's own RU (the
+RFsimulator or a local SDR): with a split RU there are no time-domain samples, and the gNB says so.
+The receiver logs its counts every 10 s. `ctest -R test_nr_aiot_d2r` checks it, beside a UE's
+uplink 20 dB above the D2R, and at 23.04 Msps with a tone that would alias onto the D2R.
+
 ## The MAC
 
 `openair2/LAYER2/AIOT_MAC` is the 38.391 MAC, built into the same library: the Reader with its

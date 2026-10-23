@@ -587,6 +587,7 @@ void *ru_thread(void *param)
   int                frame    = 1023;
   char               threadname[40];
   int initial_wait = 0;
+  uint64_t d2r_slots = 0;
 
   bool rx_tti_busy[RU_RX_SLOT_DEPTH] = {false};
   // set default return value
@@ -679,6 +680,9 @@ void *ru_thread(void *param)
   struct timespec slot_start;
   clock_gettime(CLOCK_MONOTONIC, &slot_start);
 
+  if (gNB->aiot_d2r && !ru->feprx)
+    LOG_W(PHY, "Ambient IoT D2R needs the time-domain samples of a local radio, and this RU has none: no D2R is received\n");
+
   while (!oai_exit) {
     if (slot==(fp->slots_per_frame-1)) {
       slot=0;
@@ -732,6 +736,14 @@ void *ru_thread(void *param)
 
     if (ru->idx != 0)
       proc->frame_tx = (proc->frame_tx + proc->frame_offset) & 1023;
+
+    // Ambient IoT D2R: the slot's time-domain samples, from a radio of this RU (feprx). Not the first
+    // slot: rx_rf() may have moved its timestamp to the next slot boundary without its samples
+    if (gNB->aiot_d2r && ru->feprx && d2r_slots++ > 0)
+      nr_aiot_d2r_push(gNB->aiot_d2r,
+                       proc->timestamp_rx,
+                       (const c16_t *)&ru->common.rxdata[0][get_samples_slot_timestamp(fp, proc->tti_rx)],
+                       get_samples_per_slot(proc->tti_rx, fp));
 
     // do RX front-end processing (frequency-shift, dft) if needed
     int slot_type = nr_slot_select(&ru->config, proc->frame_rx, proc->tti_rx);
