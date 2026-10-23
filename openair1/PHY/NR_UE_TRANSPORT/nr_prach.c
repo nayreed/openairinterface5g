@@ -216,6 +216,12 @@ int32_t generate_nr_prach(PHY_VARS_NR_UE *ue, uint8_t gNB_id, int frame, uint8_t
   }
 
   switch (fp->samples_per_subframe) {
+    case 5760:
+      // 5 MHz @ 5.76 Ms/s (three-quarter sampling, -E)
+      Ncp = (Ncp * 3) / 16;
+      dftlen = (dftlen * 3) / 16;
+      break;
+
     case 7680:
       // 5 MHz @ 7.68 Ms/s
       Ncp >>= 2;

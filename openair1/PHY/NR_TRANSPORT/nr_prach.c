@@ -128,6 +128,12 @@ static prach_ru_params_t get_prach_ru_params(prach_item_t *p,
   }
 
   switch(fp->samples_per_subframe) {
+  case 5760:
+    // 5 MHz @ 5.76 Ms/s (three-quarter sampling, -E)
+    par.Ncp = (par.Ncp * 3) / 16;
+    par.dftlen = (par.dftlen * 3) / 16;
+    break;
+
   case 7680:
     // 5 MHz @ 7.68 Ms/s
     par.Ncp >>= 2;

@@ -734,9 +734,10 @@ void RCconfig_nr_prs(void)
 #define ALL_SYMBOLS_TAKEN 0x3FFF
 
 /**
- * @brief Get number or blacklisted UL PRBs and their mapping from gNB config
+ * @brief Get number or blacklisted PRBs and their mapping from gNB config
+ * @param idx GNB_ULPRBBLACKLIST_IDX or GNB_DLPRBBLACKLIST_IDX
  */
-static int get_prb_blacklist(uint16_t *prbbl)
+static int get_prb_blacklist(uint16_t *prbbl, int idx)
 {
   paramdef_t GNBSParams[] = GNBSPARAMS_DESC;
   paramlist_def_t GNBParamList = {GNB_CONFIG_STRING_GNB_LIST, NULL, 0};
@@ -747,7 +748,7 @@ static int get_prb_blacklist(uint16_t *prbbl)
   config_getlist(config_get_if(), &GNBParamList, GNBParams, sizeofArray(GNBParams), NULL);
 
   int num_prbbl = 0;
-  char *ulprbbl = *GNBParamList.paramarray[0][GNB_ULPRBBLACKLIST_IDX].strptr;
+  char *ulprbbl = *GNBParamList.paramarray[0][idx].strptr;
 
   if (!ulprbbl)
     return -1;
@@ -790,7 +791,7 @@ void RCconfig_NR_L1(void)
 
       // PRB Blacklist
       uint16_t prbbl[MAX_BWP_SIZE] = {0};
-      int num_ulprbbl = get_prb_blacklist(prbbl);
+      int num_ulprbbl = get_prb_blacklist(prbbl, GNB_ULPRBBLACKLIST_IDX);
       if (num_ulprbbl != -1) {
         RC.gNB[j]->num_ulprbbl = num_ulprbbl;
         LOG_D(NR_PHY, "Copying %d blacklisted PRB to L1 context\n", RC.gNB[j]->num_ulprbbl);
@@ -1776,10 +1777,17 @@ void RCconfig_nr_macrlc(configmodule_interface_t *cfg, nr_cell_sched_t **out_cel
       cell->identity_pm = *gpd(params, np, MACRLC_IDENTITY_PM)->u8ptr;
       // PRB Blacklist
       uint16_t prbbl[MAX_BWP_SIZE] = {0};
-      int num_ulprbbl = get_prb_blacklist(prbbl);
+      int num_ulprbbl = get_prb_blacklist(prbbl, GNB_ULPRBBLACKLIST_IDX);
       if (num_ulprbbl != -1) {
         LOG_I(NR_PHY, "Copying %d blacklisted PRB to L1 context\n", num_ulprbbl);
         memcpy(cell->ulprbbl, prbbl, MAX_BWP_SIZE * sizeof(prbbl[0]));
+      }
+      // DL PRB blacklist: PRBs the DL scheduler never allocates (e.g. kept free for another system)
+      uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
+      int num_dlprbbl = get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
+      if (num_dlprbbl > 0) {
+        LOG_I(NR_MAC, "%d PRBs blacklisted in DL\n", num_dlprbbl);
+        memcpy(cell->dlprbbl, dlprbbl, MAX_BWP_SIZE * sizeof(dlprbbl[0]));
       }
       // config_get_processedint() takes only paramdef_t *, so cast const away
       paramdef_t *p_ab = (paramdef_t *)gpd(params, np, MACRLC_ANALOG_BEAMFORMING);
