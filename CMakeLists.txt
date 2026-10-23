@@ -1030,10 +1030,10 @@ else()
   add_library(PHY_NR ${PHY_NR_SRC})
   add_library(PHY_NR_UE ${PHY_NR_UE_SRC})
 endif()
-target_link_libraries(PHY_NR PHY_NR_COMMON nr_phy_common nr_common nr_fapi_p5 polar smallblock ds)
+target_link_libraries(PHY_NR PHY_NR_COMMON nr_phy_common nr_common nr_fapi_p5 polar smallblock ds nr_aiot_r2d)
 
 add_library(PHY_NR_NO_AVX_256 ${PHY_NR_SRC})
-target_link_libraries(PHY_NR_NO_AVX_256 PHY_NR_COMMON nr_phy_common_no_avx_256 nr_common)
+target_link_libraries(PHY_NR_NO_AVX_256 PHY_NR_COMMON nr_phy_common_no_avx_256 nr_common nr_aiot_r2d)
 target_compile_definitions(PHY_NR_NO_AVX_256 PUBLIC USE_128BIT)
 
 target_link_libraries(PHY_NR_UE asn1_nr_rrc_hdrs nr_phy_common nr_common UTIL polar smallblock)

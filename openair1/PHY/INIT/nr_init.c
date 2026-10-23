@@ -133,6 +133,15 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
   gNB->bad_pucch = 0;
   if (gNB->TX_AMP == 0)
     gNB->TX_AMP = AMP;
+  AssertFatal(nr_aiot_r2d_init(&gNB->aiot_r2d,
+                               &gNB->aiot_r2d_cfg,
+                               fp->slots_per_frame,
+                               fp->symbols_per_slot,
+                               fp->ofdm_symbol_size,
+                               fp->N_RB_DL,
+                               gNB->TX_AMP)
+                  == 0,
+              "Ambient IoT R2D configuration does not fit this cell\n");
   // ceil(((NB_RB<<1)*3)/32) // 3 RE *2(QPSK)
   nr_generate_modulation_table();
   nr_init_pbch_interleaver(gNB->nr_pbch_interleaver);
@@ -264,6 +273,7 @@ void phy_free_nr_gNB(PHY_VARS_gNB *gNB)
   free(gNB->pusch_vars);
 
   free_nrLDPC_coding_interface(&gNB->nrLDPC_coding_interface);
+  nr_aiot_r2d_free(&gNB->aiot_r2d);
 }
 
 void nr_phy_config_request_sim(PHY_VARS_gNB *gNB,

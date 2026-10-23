@@ -40,6 +40,12 @@
 #define L1_NUM_ANTENNAS_PER_THREAD           "dmrs_num_antennas_per_thread"
 #define HLP_NUM_ARX "Number of antennas per thread for PUSCH channel estimation"
 #define L1_ANALOG_DAS                        "enable_das"
+#define L1_AIOT_R2D_PRB_START                "aiot_r2d_prb_start"
+#define HLP_L1_AIOT_R2D_PRB_START "First DL PRB of the Ambient IoT R2D (38.291), from point A; -1: no R2D. The PRBs must be in dl_prbblacklist"
+#define L1_AIOT_R2D_N_RB                     "aiot_r2d_n_rb"
+#define HLP_L1_AIOT_R2D_N_RB "DL PRBs reserved for the Ambient IoT R2D, from aiot_r2d_prb_start"
+#define L1_AIOT_R2D_POWER_OFFSET_DB          "aiot_r2d_power_offset_dB"
+#define HLP_L1_AIOT_R2D_POWER_OFFSET_DB "EPRE of the Ambient IoT R2D over the PDSCH EPRE, in dB"
 
 /*----------------------------------------------------------------------------------------------------------------------------------------------------*/
 /*                                            L1 configuration parameters                                                                             */
@@ -68,6 +74,9 @@
   {L1_PHASE_COMP,                        HLP_L1_PHASE_COMP,PARAMFLAG_BOOL, .uptr=NULL,.defintval=1,               TYPE_UINT,     0},         \
   {L1_NUM_ANTENNAS_PER_THREAD,           HLP_NUM_ARX,0,         .uptr=NULL,           .defintval=1,               TYPE_UINT,     0},         \
   {L1_ANALOG_DAS,                        NULL,       0,         .uptr=NULL,           .defintval=0,               TYPE_UINT,     0},         \
+  {L1_AIOT_R2D_PRB_START,                HLP_L1_AIOT_R2D_PRB_START, 0, .iptr=NULL,  .defintval=-1,              TYPE_INT,      0},         \
+  {L1_AIOT_R2D_N_RB,                     HLP_L1_AIOT_R2D_N_RB, 0,  .iptr=NULL,        .defintval=3,               TYPE_INT,      0},         \
+  {L1_AIOT_R2D_POWER_OFFSET_DB,          HLP_L1_AIOT_R2D_POWER_OFFSET_DB, 0, .dblptr=NULL, .defdblval=0.0,       TYPE_DOUBLE,   0},         \
 }
 // clang-format on
 

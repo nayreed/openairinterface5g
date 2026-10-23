@@ -825,6 +825,20 @@ void RCconfig_NR_L1(void)
       gNB->phase_comp = *gpd(params, np, L1_PHASE_COMP)->uptr;
       gNB->dmrs_num_antennas_per_thread = *gpd(params, np, L1_NUM_ANTENNAS_PER_THREAD)->uptr;
       gNB->enable_analog_das = *gpd(params, np, L1_ANALOG_DAS)->uptr;
+      gNB->aiot_r2d_cfg = (nr_aiot_r2d_config_t){.prb_start = *gpd(params, np, L1_AIOT_R2D_PRB_START)->iptr,
+                                                 .n_rb_max = *gpd(params, np, L1_AIOT_R2D_N_RB)->iptr,
+                                                 .power_offset_db = *gpd(params, np, L1_AIOT_R2D_POWER_OFFSET_DB)->dblptr};
+      if (gNB->aiot_r2d_cfg.prb_start >= 0) {
+        /* the DL scheduler must leave the R2D's PRBs alone */
+        uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
+        get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
+        for (int rb = gNB->aiot_r2d_cfg.prb_start; rb < gNB->aiot_r2d_cfg.prb_start + gNB->aiot_r2d_cfg.n_rb_max; rb++)
+          AssertFatal(rb >= 0 && rb < MAX_BWP_SIZE && dlprbbl[rb],
+                      "A-IoT R2D PRB %d (%s, %s) is not in gNBs.[0].dl_prbblacklist\n",
+                      rb,
+                      L1_AIOT_R2D_PRB_START,
+                      L1_AIOT_R2D_N_RB);
+      }
       // Midhaul configuration
       if (strcmp(*gpd(params, np, L1_TRANSPORT_N_PREFERENCE)->strptr, "local_mac") == 0) {
         // do nothing
