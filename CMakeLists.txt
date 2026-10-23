@@ -1985,6 +1985,10 @@ target_link_libraries(nr_dlschsim PRIVATE
   )
 target_link_libraries(nr_dlschsim PRIVATE asn1_nr_rrc_hdrs)
 
+# A-IoT (TS 38.291) link-level simulator: BLER against SNR and the spec's sensitivity points
+add_executable(aiot_sim ${OPENAIR1_DIR}/SIMULATION/AIOT_PHY/aiotsim.c)
+target_link_libraries(aiot_sim PRIVATE aiot_phy SIMU UTIL m)
+
 add_executable(nr_pbchsim ${OPENAIR1_DIR}/SIMULATION/NR_PHY/pbchsim.c)
 target_link_libraries(nr_pbchsim PRIVATE
   -Wl,--start-group UTIL SIMU PHY_NR_COMMON PHY_NR PHY_NR_UE SCHED_NR_LIB CONFIG_LIB MAC_NR_COMMON -Wl,--end-group
