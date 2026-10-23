@@ -34,7 +34,9 @@ struct Upper {
   std::vector<Bytes> got;
   int selected = 0;
 
-  explicit Upper(uint32_t seed = 0, std::mt19937 *shared = nullptr) : own(seed), rng(shared ? shared : &own) {}
+  explicit Upper(uint32_t seed = 0, std::mt19937 *shared = nullptr) : own(seed), rng(shared ? shared : &own)
+  {
+  }
 
   static int matched(void *u, const uint8_t *id, int len)
   {
@@ -42,8 +44,14 @@ struct Upper {
     s->pids_asked.emplace_back(id, id + len);
     return !s->has_pid || s->pids_asked.back() == s->pid;
   }
-  static void select(void *u) { static_cast<Upper *>(u)->selected++; }
-  static void deliver(void *u, const uint8_t *sdu, int len) { static_cast<Upper *>(u)->got.emplace_back(sdu, sdu + len); }
+  static void select(void *u)
+  {
+    static_cast<Upper *>(u)->selected++;
+  }
+  static void deliver(void *u, const uint8_t *sdu, int len)
+  {
+    static_cast<Upper *>(u)->got.emplace_back(sdu, sdu + len);
+  }
   static int next(void *u, uint8_t *sdu, int cap)
   {
     auto *s = static_cast<Upper *>(u);
@@ -90,9 +98,15 @@ struct Dev {
     aiot_device_upper_t a = u.api();
     d = aiot_device_new(&a, mod);
   }
-  ~Dev() { aiot_device_free(d); }
+  ~Dev()
+  {
+    aiot_device_free(d);
+  }
   Dev(const Dev &) = delete;
-  int on(const aiot_mac_r2d_msg_t &m, aiot_device_send_t *s) { return aiot_device_on_r2d(d, &m, s); }
+  int on(const aiot_mac_r2d_msg_t &m, aiot_device_send_t *s)
+  {
+    return aiot_device_on_r2d(d, &m, s);
+  }
   aiot_device_state_t st() const
   {
     aiot_device_state_t s;
@@ -220,7 +234,10 @@ int freq_index_of(int r_sfs)
 /* The Reader's AS ID bookkeeping, as far as these tests need it. */
 struct TestReader {
   int next_as_id = 1;
-  aiot_mac_r2d_msg_t rid_response(const std::vector<Heard> &heard, const aiot_sched_info_t &s, bool assign = true, bool with_freq = true)
+  aiot_mac_r2d_msg_t rid_response(const std::vector<Heard> &heard,
+                                  const aiot_sched_info_t &s,
+                                  bool assign = true,
+                                  bool with_freq = true)
   {
     aiot_mac_r2d_msg_t m;
     memset(&m, 0, sizeof(m));
@@ -378,7 +395,15 @@ TEST(DeviceMac, TRtoDOffsetOfWhatTheMacAsksFor)
     int n = aiot_device_send_offset(s, 6);
     EXPECT_GT(n, 0);
     int frame = aiot_frame_bits(8 * s->tbs_bytes, &s->params);
-    EXPECT_EQ(aiot_t_r_to_d(&s->params, 6, s->msg, s->tbs_bytes, s->candidates, s->n_candidates, s->slot > 0, frame * 2 * s->params.r_sfs), n);
+    EXPECT_EQ(aiot_t_r_to_d(&s->params,
+                            6,
+                            s->msg,
+                            s->tbs_bytes,
+                            s->candidates,
+                            s->n_candidates,
+                            s->slot > 0,
+                            frame * 2 * s->params.r_sfs),
+              n);
   }
 }
 
@@ -588,7 +613,8 @@ TEST(DeviceMac, Msg2EntryWithoutRsfsIsAnError)
   aiot_device_send_t s, m3;
   ASSERT_EQ(1, d.on(paging_cbra(1, cbra_sched()), &s));
   /* the bitmap indicates one R_SFS, the device is the second entry */
-  EXPECT_EQ(AIOT_EINVAL, d.on(r.rid_response({Heard{(s.message.random_id ^ 1) & 0xFFFF, 8, 0}, heard_of(s)}, ridr_sched({4})), &m3));
+  EXPECT_EQ(AIOT_EINVAL,
+            d.on(r.rid_response({Heard{(s.message.random_id ^ 1) & 0xFFFF, 8, 0}, heard_of(s)}, ridr_sched({4})), &m3));
 }
 
 TEST(DeviceMac, FailedCbraRetriesSameTransaction)

@@ -88,11 +88,7 @@ int aiot_link_ridr(const aiot_link_config_t *cfg, int n_entries, int d2r_tbs, ai
   return aiot_mac_sched_validate(out);
 }
 
-static int single(const aiot_link_config_t *cfg,
-                  aiot_sched_variant_t variant,
-                  int r_sfs,
-                  int d2r_tbs,
-                  aiot_sched_info_t *out)
+static int single(const aiot_link_config_t *cfg, aiot_sched_variant_t variant, int r_sfs, int d2r_tbs, aiot_sched_info_t *out)
 {
   if (cfg->n_r_sfs < 1 || common(cfg, variant, out) < 0)
     return AIOT_EINVAL;

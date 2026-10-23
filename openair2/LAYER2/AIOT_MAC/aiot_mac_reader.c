@@ -239,7 +239,8 @@ int aiot_reader_next_r2d(aiot_reader_t *r, int64_t now, aiot_reader_r2d_t *out)
 }
 
 /* T_R->D of a D2R the Reader expects (link.d2r_start_offset). */
-static int offset(const aiot_reader_t *r, aiot_d2r_msg_t kind, const aiot_d2r_params_t *p, int tbs, const int *cand, int n_cand, int slot)
+static int
+offset(const aiot_reader_t *r, aiot_d2r_msg_t kind, const aiot_d2r_params_t *p, int tbs, const int *cand, int n_cand, int slot)
 {
   const int chips = aiot_frame_bits(8 * tbs, p) * 2 * p->r_sfs;
   return aiot_t_r_to_d(p, r->cfg.m_chip_symb, kind, tbs, cand, n_cand, slot > 0, chips);
@@ -319,7 +320,16 @@ static int expects(aiot_reader_t *r, const aiot_mac_r2d_msg_t *m, int64_t end, a
         return AIOT_EINVAL;
       const int cfa = m->kind == AIOT_R2D_PAGING_CFA;
       const int off = offset(r, cfa ? AIOT_CFA : AIOT_DATA, &p, s->d2r_tbs, NULL, 0, 0);
-      rc = add_expect(r, out, max, end, off, 8 * s->d2r_tbs, &p, s->r_sfs, s->n_sfs, (expect_info_t){AIOT_ANSWER_DATA, 0, -1, cfa ? -1 : m->as_id});
+      rc = add_expect(r,
+                      out,
+                      max,
+                      end,
+                      off,
+                      8 * s->d2r_tbs,
+                      &p,
+                      s->r_sfs,
+                      s->n_sfs,
+                      (expect_info_t){AIOT_ANSWER_DATA, 0, -1, cfa ? -1 : m->as_id});
       break;
     }
     case AIOT_R2D_NACK_FEEDBACK:

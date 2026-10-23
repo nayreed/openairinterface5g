@@ -38,7 +38,24 @@
 }
 // clang-format on
 
-enum { P_PROTOCOL, P_PARAMS, P_NODES, P_M, P_N_RB, P_T_BIT, P_R_SFS, P_X, P_R_CODE, P_R_BLOCK, P_L_AMBLE, P_INTERVAL, P_I_ADD, P_TBS, P_LEAD, P_DIR };
+enum {
+  P_PROTOCOL,
+  P_PARAMS,
+  P_NODES,
+  P_M,
+  P_N_RB,
+  P_T_BIT,
+  P_R_SFS,
+  P_X,
+  P_R_CODE,
+  P_R_BLOCK,
+  P_L_AMBLE,
+  P_INTERVAL,
+  P_I_ADD,
+  P_TBS,
+  P_LEAD,
+  P_DIR
+};
 
 nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *d2r)
 {
@@ -50,12 +67,18 @@ nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *
   static nr_aiot_reader_config_t cfg; /* large: not on the stack */
   memset(&cfg, 0, sizeof(cfg));
   snprintf(cfg.protocol, sizeof(cfg.protocol), "%s", protocol);
-  AssertFatal(nr_aiot_reader_parse_params(&cfg, *p[P_PARAMS].strptr) == 0, "aiot.params \"%s\" is not name=value,...\n", *p[P_PARAMS].strptr);
+  AssertFatal(nr_aiot_reader_parse_params(&cfg, *p[P_PARAMS].strptr) == 0,
+              "aiot.params \"%s\" is not name=value,...\n",
+              *p[P_PARAMS].strptr);
   AssertFatal(nr_aiot_reader_parse_nodes(&cfg, *p[P_NODES].strptr) == 0 && cfg.n_nodes > 0,
               "aiot.nodes \"%s\" must list the Tags' node ids\n",
               *p[P_NODES].strptr);
-  AssertFatal(nr_aiot_reader_parse_t_bit(&cfg, *p[P_T_BIT].strptr) == 0, "aiot.t_bit \"%s\" is not a bit duration\n", *p[P_T_BIT].strptr);
-  AssertFatal(nr_aiot_reader_parse_r_sfs(&cfg, *p[P_R_SFS].strptr) == 0, "aiot.r_sfs \"%s\" is not a list of R_SFS\n", *p[P_R_SFS].strptr);
+  AssertFatal(nr_aiot_reader_parse_t_bit(&cfg, *p[P_T_BIT].strptr) == 0,
+              "aiot.t_bit \"%s\" is not a bit duration\n",
+              *p[P_T_BIT].strptr);
+  AssertFatal(nr_aiot_reader_parse_r_sfs(&cfg, *p[P_R_SFS].strptr) == 0,
+              "aiot.r_sfs \"%s\" is not a list of R_SFS\n",
+              *p[P_R_SFS].strptr);
   cfg.link.m_chip_symb = *p[P_M].iptr;
   cfg.link.n_rb = *p[P_N_RB].iptr;
   cfg.link.x = *p[P_X].iptr;

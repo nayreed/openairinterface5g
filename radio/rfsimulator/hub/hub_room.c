@@ -176,7 +176,12 @@ hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len)
      * or it would be stopped before the receivers can move. */
     int64_t need = 2 * (conf->nodes[i].lookahead + 2 * conf->quantum + longest_delay);
     if (conf->history < need) {
-      ok = refuse(why, why_len, "history %" PRId64 " is too short for node %s: it needs at least %" PRId64, conf->history, conf->nodes[i].name, need);
+      ok = refuse(why,
+                  why_len,
+                  "history %" PRId64 " is too short for node %s: it needs at least %" PRId64,
+                  conf->history,
+                  conf->nodes[i].name,
+                  need);
       break;
     }
     n->history = calloc(conf->history, sizeof(*n->history));

@@ -147,13 +147,13 @@ struct Air {
       for (int i = 0; i < e.n_r_sfs; i++) {
         std::vector<size_t> here;
         for (size_t j = 0; j < sent.size(); j++)
-          if (!used[j] && sent[j].s.params.r_sfs == e.r_sfs[i] && sent[j].at >= e.start - e.te
-              && sent[j].at <= e.start + e.te)
+          if (!used[j] && sent[j].s.params.r_sfs == e.r_sfs[i] && sent[j].at >= e.start - e.te && sent[j].at <= e.start + e.te)
             here.push_back(j);
         for (size_t j : here) {
           used[j] = true;
           EXPECT_EQ(sent[j].s.n_bits, e.a_bits);
-          const int64_t d2r_end = sent[j].at + (int64_t)aiot_frame_bits(e.a_bits, &sent[j].s.params) * aiot_bit_samples(&sent[j].s.params);
+          const int64_t d2r_end =
+              sent[j].at + (int64_t)aiot_frame_bits(e.a_bits, &sent[j].s.params) * aiot_bit_samples(&sent[j].s.params);
           last_d2r_end = std::max(last_d2r_end, d2r_end);
         }
         if (here.size() == 1) {

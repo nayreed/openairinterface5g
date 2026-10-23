@@ -311,7 +311,15 @@ static void record(nr_aiot_reader_t *r, const aiot_reader_heard_t *h)
     }
     if (r->rx_csv) {
       put_float(r->rx_csv, ms(a->start));
-      fprintf(r->rx_csv, ",%s,%s,%d,%d,%s,%d,%d,", name, a->kind == AIOT_ANSWER_MSG1 ? "msg1" : "data", node, value, id, a->r_sfs, a->slot);
+      fprintf(r->rx_csv,
+              ",%s,%s,%d,%d,%s,%d,%d,",
+              name,
+              a->kind == AIOT_ANSWER_MSG1 ? "msg1" : "data",
+              node,
+              value,
+              id,
+              a->r_sfs,
+              a->slot);
       put_float(r->rx_csv, dbfs(a->rssi_w));
       fputs("\r\n", r->rx_csv);
     }
@@ -385,7 +393,8 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
   pthread_mutex_init(&r->lock, NULL);
   r->outcomes = malloc(sizeof(*r->outcomes) * MAX_OUTCOMES);
   r->heard = malloc(sizeof(*r->heard));
-  r->mac = aiot_reader_new(&r->cfg.link, r->cfg.protocol, r->cfg.params, r->cfg.n_params, r->cfg.node_ids, r->cfg.n_nodes, err, err_len);
+  r->mac =
+      aiot_reader_new(&r->cfg.link, r->cfg.protocol, r->cfg.params, r->cfg.n_params, r->cfg.node_ids, r->cfg.n_nodes, err, err_len);
   if (!r->outcomes || !r->heard || !r->mac) {
     if (r->mac == NULL && err[0] == 0)
       snprintf(err, err_len, "out of memory");

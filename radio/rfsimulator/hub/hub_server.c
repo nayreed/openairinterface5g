@@ -209,7 +209,11 @@ int hub_serve(hub_room_t *room, double idle_timeout_s)
   bool started = false;
   double last_move = now_s(), start = 0;
   int ret = 0;
-  LOG_I(HW, "rfsim_hub: %d nodes, %d links, quantum %" PRId64 " samples: waiting for every node\n", n, conf->num_links, conf->quantum);
+  LOG_I(HW,
+        "rfsim_hub: %d nodes, %d links, quantum %" PRId64 " samples: waiting for every node\n",
+        n,
+        conf->num_links,
+        conf->quantum);
 
   for (;;) {
     int active = 0;
@@ -232,7 +236,11 @@ int hub_serve(hub_room_t *room, double idle_timeout_s)
     if (started && now_s() - last_move > idle_timeout_s) {
       LOG_E(HW, "rfsim_hub: nothing moved for %.0f s\n", idle_timeout_s);
       for (int i = 0; i < n; i++)
-        LOG_E(HW, "  %s: sent up to sample %" PRId64 ", received up to %" PRId64 "\n", conf->nodes[i].name, hub_room_written(room, i), hub_room_sent(room, i));
+        LOG_E(HW,
+              "  %s: sent up to sample %" PRId64 ", received up to %" PRId64 "\n",
+              conf->nodes[i].name,
+              hub_room_written(room, i),
+              hub_room_sent(room, i));
       ret = -1;
       break;
     }

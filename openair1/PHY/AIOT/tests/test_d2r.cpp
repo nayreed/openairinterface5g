@@ -101,7 +101,15 @@ std::vector<aiot_d2r_params_t> Combinations()
     int r[8];
     const int nr = aiot_allowed_r_sfs(d[0], d[1], r);
     for (int ir = 0; ir < nr; ir += 3) {
-      aiot_d2r_params_t p = {d[0], d[1], r[ir], 1 + (k & 1), (k >> 1) & 1, (k & 4) ? 7 : 31, d[2] * kIntervals[(k >> 3) & 3], (k >> 4) & 1, ((k / 3) & 1) ? AIOT_OOK : AIOT_BPSK};
+      aiot_d2r_params_t p = {d[0],
+                             d[1],
+                             r[ir],
+                             1 + (k & 1),
+                             (k >> 1) & 1,
+                             (k & 4) ? 7 : 31,
+                             d[2] * kIntervals[(k >> 3) & 3],
+                             (k >> 4) & 1,
+                             ((k / 3) & 1) ? AIOT_OOK : AIOT_BPSK};
       k += 5;
       if (aiot_d2r_params_check(&p) == 0)
         all.push_back(p);

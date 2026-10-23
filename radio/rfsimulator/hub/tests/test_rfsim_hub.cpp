@@ -66,7 +66,13 @@ struct Room {
   }
   hub_room_t *Create(int64_t history = kHistory)
   {
-    conf = {kSampleRate, kQuantum, history, static_cast<int>(nodes.size()), nodes.data(), static_cast<int>(links.size()), links.data()};
+    conf = {kSampleRate,
+            kQuantum,
+            history,
+            static_cast<int>(nodes.size()),
+            nodes.data(),
+            static_cast<int>(links.size()),
+            links.data()};
     char buf[256] = "";
     hub_room_t *room = hub_room_create(&conf, buf, sizeof(buf));
     why = buf;
@@ -425,7 +431,11 @@ uint16_t PickPort()
 
 configmodule_interface_t *StartClient(openair0_device_t &device, openair0_config_t &config, uint16_t port)
 {
-  std::vector<std::string> args = {"test_rfsim_hub", "--rfsimulator.serveraddr", "127.0.0.1", "--rfsimulator.serverport", std::to_string(port)};
+  std::vector<std::string> args = {"test_rfsim_hub",
+                                   "--rfsimulator.serveraddr",
+                                   "127.0.0.1",
+                                   "--rfsimulator.serverport",
+                                   std::to_string(port)};
   std::vector<const char *> argv;
   for (const auto &a : args)
     argv.push_back(a.c_str());

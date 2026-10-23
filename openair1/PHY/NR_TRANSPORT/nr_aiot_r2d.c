@@ -208,12 +208,12 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
   }
   if (rc > 0) {
     r2d->pending[r2d->n_pending++] = (nr_aiot_r2d_tx_t){.start_slot = start,
-                                                         .start_symbol = symbol,
-                                                         .n_sym = n_sym,
-                                                         .prb_start = r2d->cfg.prb_start,
-                                                         .n_rb = n_rb,
-                                                         .re = re16,
-                                                         .last_mapped = -1};
+                                                        .start_symbol = symbol,
+                                                        .n_sym = n_sym,
+                                                        .prb_start = r2d->cfg.prb_start,
+                                                        .n_rb = n_rb,
+                                                        .re = re16,
+                                                        .last_mapped = -1};
     re16 = NULL;
   }
   pthread_mutex_unlock(&r2d->lock);

@@ -30,7 +30,10 @@ struct Cell {
     nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, carrier};
     EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), 0);
   }
-  ~Cell() { nr_aiot_r2d_free(&r2d); }
+  ~Cell()
+  {
+    nr_aiot_r2d_free(&r2d);
+  }
 };
 
 std::vector<uint8_t> RandomBits(std::mt19937 &gen, int n)
@@ -44,7 +47,10 @@ std::vector<uint8_t> RandomBits(std::mt19937 &gen, int n)
 // One slot's grid, as phy_procedures_gNB_TX has it: the carrier's subcarriers from index 0.
 struct Grid {
   std::vector<c16_t> re = std::vector<c16_t>(kSym * kFft, c16_t{0, 0});
-  c16_t &at(int sym, int sc) { return re[sym * kFft + sc]; }
+  c16_t &at(int sym, int sc)
+  {
+    return re[sym * kFft + sc];
+  }
 };
 
 // The time samples of a slot's grid, as the gNB's OFDM sends them: the carrier centred on DC

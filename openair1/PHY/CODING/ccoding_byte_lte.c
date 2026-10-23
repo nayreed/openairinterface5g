@@ -67,7 +67,6 @@ ccodelte_encode (int32_t numbits,
     c = 0;
   }
 
-
   // Perform Tail-biting
 
   // get bits from last byte of input (or crc)

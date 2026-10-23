@@ -66,7 +66,9 @@ aiot_d2r_expect_t Expect(int64_t start, int te, int a_bits, const aiot_d2r_param
 struct Band {
   int64_t a0; // A-IoT sample of y[0]
   std::vector<std::complex<double>> y;
-  Band(int64_t a0, int n, double cw_phase) : a0(a0), y(n, std::polar(kCwCounts, cw_phase)) {}
+  Band(int64_t a0, int n, double cw_phase) : a0(a0), y(n, std::polar(kCwCounts, cw_phase))
+  {
+  }
   void Add(int64_t at, const std::vector<uint8_t> &tb, const aiot_d2r_params_t &p, double amp, double ph)
   {
     const int len = aiot_frame_samples((int)tb.size(), &p);
