@@ -173,7 +173,7 @@ struct Room {
     const int frame = (int)((tx / 10) % 1024), tx_slot = (int)(tx % 10);
     std::vector<c16_t> grid(kSym * kFft, c16_t{0, 0});
     nr_aiot_r2d_set_slot_time(&r2d, frame, tx_slot, tx_at);
-    nr_aiot_r2d_map(&r2d, frame, tx_slot, grid.data(), nullptr);
+    nr_aiot_r2d_map(&r2d, frame, tx_slot, grid.data(), nullptr, nullptr);
     dl.resize(tx_at + kSlot);
     Modulate(grid, dl.data() + tx_at);
 
