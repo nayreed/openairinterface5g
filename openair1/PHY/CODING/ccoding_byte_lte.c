@@ -34,7 +34,6 @@ ccodelte_encode (int32_t numbits,
   uint8_t              c, out, first_bit;
   int8_t shiftbit=0;
   uint16_t c16;
-  uint16_t next_last_byte=0;
   uint32_t crc=0;
 #ifdef DEBUG_CCODE
   uint32_t  dummy=0;
@@ -60,14 +59,14 @@ ccodelte_encode (int32_t numbits,
     first_bit      = 2;
     c = (uint8_t)((crc>>16)&0xff);
   } else {
-    next_last_byte = numbits>>3;
-    first_bit      = (numbits-6)&7;
-    c = inPtr[next_last_byte-1];
+    // Tail-biting without CRC: the start state is the last 6 input bits (the last one in bit 5),
+    // for any numbits >= 6, byte-aligned or not
+    for (int i = numbits - 6; i < numbits; i++)
+      state = (state >> 1) | ((uint32_t)((inPtr[i >> 3] >> (7 - (i & 7))) & 1) << 5);
+    first_bit = 8; // nothing more to read below
+    c = 0;
   }
 
-#ifdef DEBUG_CCODE
-  printf("next_last_byte %x (numbits %d, %d)\n",c,numbits,next_last_byte);
-#endif
 
   // Perform Tail-biting
 
@@ -81,25 +80,6 @@ ccodelte_encode (int32_t numbits,
     printf("shiftbit %d, %d -> %u \n",shiftbit,c&(1<<(7-first_bit-shiftbit)),state);
     dummy+=3;
 #endif
-  }
-
-  // get bits from next to last byte of input (not when crc is added)
-  if ((add_crc==0)&&((numbits&7)>0)) {
-    c = inPtr[next_last_byte];
-
-    //    printf("last_byte %x\n",c);
-    //    for (shiftbit = 0 ; shiftbit < (numbits&7) ; shiftbit++) {
-    for (shiftbit = (numbits&7)-1 ; shiftbit>=0 ; shiftbit--) {
-      state >>= 1;
-
-      if ((c&(1<<shiftbit)) != 0)
-        state |= 64;
-
-#ifdef DEBUG_CCODE
-      printf("shiftbit %d, %u: %u -> %u \n",shiftbit,state>>6,dummy,state);
-      dummy+=3;
-#endif
-    }
   }
 
   state = state & 0x3f;   // true initial state of Tail-biting CCode
