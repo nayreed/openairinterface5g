@@ -62,6 +62,7 @@ There is some general information in the [OpenAirInterface Gitlab Wiki](https://
 - [How to use packages](./packages.md)
 - [How to test F1-based NR-DC](./nr-dc.md)
 - [How to run an Amber Reader and its Tags over the RFsimulator](../openair2/AMBER/README.md)
+- [How to run 5G and Ambient IoT in one air with the RFsimulator](../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md)
 
 Legacy unmaintained files:
 - [`L2NFAPI_NOS1.md`](./L2NFAPI_NOS1.md), [`L2NFAPI_S1.md`](./L2NFAPI_S1.md):

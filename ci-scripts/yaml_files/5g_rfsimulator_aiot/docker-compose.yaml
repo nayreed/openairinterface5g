@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: MIT
+#
+# A 5G cell (gNB and UE, --do-ra --noS1) and an Ambient IoT Reader with 4 Tags in one shared air,
+# through rfsim_hub. See README.md in this folder.
+
+x-amber: &amber
+    image: ${AMBER_IMG:-oai-amber:latest}
+    init: true
+    depends_on:
+        - rfsim-hub
+    volumes:
+        - amber.out:/out
+    networks:
+        - public_net
+
+services:
+    rfsim-hub:
+        image: ${AMBER_IMG:-oai-amber:latest}
+        container_name: rfsim5g-aiot-hub
+        init: true
+        command: rfsim_hub -O /opt/oai-amber/etc/rfsim_hub.conf --log_config.global_log_options level,nocolor,time
+        volumes:
+            - ../../conf_files/rfsim_hub.5g-aiot.conf:/opt/oai-amber/etc/rfsim_hub.conf
+        networks:
+            public_net:
+                ipv4_address: 192.168.71.141
+        healthcheck:
+            test: /bin/bash -c "pgrep rfsim_hub"
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    oai-gnb:
+        image: ${REGISTRY-oaisoftwarealliance/}${GNB_IMG:-oai-gnb}:${TAG:-develop}
+        container_name: rfsim5g-oai-gnb
+        cap_drop:
+            - ALL
+        cap_add:
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E --do-ra --rfsim --noS1
+                                    --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4043
+                                    --gNBs.[0].dl_prbblacklist 0,1,2 --gNBs.[0].ul_prbblacklist 15,16,17,18,19,20,21
+                                    --log_config.global_log_options level,nocolor,time
+            ASAN_OPTIONS: detect_leaks=0
+        depends_on:
+            - rfsim-hub
+        networks:
+            public_net:
+                ipv4_address: 192.168.71.140
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf:/opt/oai-gnb/etc/gnb.conf
+            - rrc.config:/opt/oai-gnb/
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-softmodem"
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    oai-nr-ue:
+        image: ${REGISTRY-oaisoftwarealliance/}${NRUE_IMG:-oai-nr-ue}:${TAG:-develop}
+        container_name: rfsim5g-oai-nr-ue
+        cap_drop:
+            - ALL
+        cap_add:
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E --do-ra --rfsim --noS1 --reconfig-file etc/rrc/reconfig.raw --rbconfig-file etc/rrc/rbconfig.raw
+                                    --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4044
+                                    --log_config.global_log_options level,nocolor,time
+            ASAN_OPTIONS: detect_leaks=0
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../../conf_files/nrue.uicc.conf:/opt/oai-nr-ue/etc/nr-ue.conf
+            - rrc.config:/opt/oai-nr-ue/etc/rrc/
+        depends_on:
+            - oai-gnb
+        networks:
+            public_net:
+                ipv4_address: 192.168.71.150
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-uesoftmodem"
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    amber-reader:
+        <<: *amber
+        container_name: rfsim5g-aiot-reader
+        command: >-
+            amber-reader --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4050
+            --amber.block_bytes 23040 --amber.output_dir /out --log_config.global_log_options level,nocolor,time
+            --amber.scenario ${AMBER_SCENARIO:-/opt/amber/tests/scenarios/registration.toml}
+
+    amber-tag0:
+        <<: *amber
+        container_name: rfsim5g-aiot-tag0
+        command: >-
+            amber-tag --amber.node_id 0 --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4051
+            --amber.block_bytes 23040 --amber.output_dir /out --log_config.global_log_options level,nocolor,time
+            --amber.scenario ${AMBER_SCENARIO:-/opt/amber/tests/scenarios/registration.toml}
+
+    amber-tag1:
+        <<: *amber
+        container_name: rfsim5g-aiot-tag1
+        command: >-
+            amber-tag --amber.node_id 1 --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4052
+            --amber.block_bytes 23040 --amber.output_dir /out --log_config.global_log_options level,nocolor,time
+            --amber.scenario ${AMBER_SCENARIO:-/opt/amber/tests/scenarios/registration.toml}
+
+    amber-tag2:
+        <<: *amber
+        container_name: rfsim5g-aiot-tag2
+        command: >-
+            amber-tag --amber.node_id 2 --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4053
+            --amber.block_bytes 23040 --amber.output_dir /out --log_config.global_log_options level,nocolor,time
+            --amber.scenario ${AMBER_SCENARIO:-/opt/amber/tests/scenarios/registration.toml}
+
+    amber-tag3:
+        <<: *amber
+        container_name: rfsim5g-aiot-tag3
+        command: >-
+            amber-tag --amber.node_id 3 --rfsimulator.[0].serveraddr 192.168.71.141 --rfsimulator.[0].serverport 4054
+            --amber.block_bytes 23040 --amber.output_dir /out --log_config.global_log_options level,nocolor,time
+            --amber.scenario ${AMBER_SCENARIO:-/opt/amber/tests/scenarios/registration.toml}
+
+volumes:
+    rrc.config:
+    amber.out:
+
+networks:
+    public_net:
+        driver: bridge
+        name: rfsim5g-oai-public-net
+        ipam:
+            config:
+                - subnet: 192.168.71.128/26
+        driver_opts:
+            com.docker.network.bridge.name: "rfsim5g-public"
