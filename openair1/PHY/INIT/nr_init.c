@@ -94,10 +94,14 @@ void reset_active_stats(PHY_VARS_gNB *gNB, int frame)
 }
 
 /* An R2D goes only in slots whose symbols are all downlink. */
-static int aiot_r2d_slot_is_dl(const void *ctx, int frame, int slot)
+static uint32_t aiot_r2d_tx_slots(const nfapi_nr_config_request_scf_t *cfg, int slots_per_frame)
 {
-  const nfapi_nr_config_request_scf_t *cfg = ctx;
-  return cfg->cell_config.frame_duplex_type.value == FDD || nr_slot_select(cfg, frame, slot) == NR_DOWNLINK_SLOT;
+  uint32_t mask = 0;
+  for (int i = 0; i < NR_AIOT_R2D_TX_SLOT_PERIOD; i++)
+    if (cfg->cell_config.frame_duplex_type.value == FDD
+        || nr_slot_select(cfg, i / slots_per_frame, i % slots_per_frame) == NR_DOWNLINK_SLOT)
+      mask |= 1u << i;
+  return mask;
 }
 
 void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
@@ -150,7 +154,8 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
                                gNB->TX_AMP)
                   == 0,
               "Ambient IoT R2D configuration does not fit this cell\n");
-  nr_aiot_r2d_set_dl_slots(&gNB->aiot_r2d, aiot_r2d_slot_is_dl, &gNB->gNB_config);
+  if (gNB->aiot_r2d.cfg.prb_start >= 0)
+    nr_aiot_r2d_set_tx_slots(&gNB->aiot_r2d, aiot_r2d_tx_slots(&gNB->gNB_config, fp->slots_per_frame));
   /* a gNB that was not configured from a file (the simulators) has a zeroed aiot_d2r_cfg: no D2R */
   if (gNB->aiot_d2r_cfg.prb_start >= 0 && gNB->aiot_d2r_cfg.n_rb > 0) {
     gNB->aiot_d2r =

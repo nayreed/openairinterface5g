@@ -30,6 +30,8 @@ extern "C" {
 #endif
 
 #define NR_AIOT_R2D_MAX_PENDING 8
+/* A TDD pattern repeats within 20 ms (TS 38.331 TDD-UL-DL-ConfigCommon, both patterns): 20 slots at 15 kHz */
+#define NR_AIOT_R2D_TX_SLOT_PERIOD 20
 #define NR_AIOT_R2D_ETOOLATE (-10) /* the start slot has been mapped already, or is being mapped */
 
 /* The R2D resources of one cell. */
@@ -62,9 +64,7 @@ typedef struct {
   int carrier_sc; /* the carrier's subcarrier: the centre of the reserved PRBs */
   c16_t carrier_re[14]; /* its resource element in each symbol of a slot, phase-continuous */
   pthread_mutex_t lock; /* scheduling and mapping run in different threads */
-  /* 1 when every symbol of the slot is downlink; NULL: every slot is (nr_aiot_r2d_set_dl_slots) */
-  int (*slot_is_dl)(const void *ctx, int frame, int slot);
-  const void *slot_ctx;
+  uint32_t tx_slots; /* the slots the node sends in, see nr_aiot_r2d_set_tx_slots() */
   nr_aiot_r2d_tx_t pending[NR_AIOT_R2D_MAX_PENDING];
   int n_pending;
   int now_slot; /* absolute slot mapped last, -1: none yet */
@@ -84,9 +84,10 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
                      int n_prb,
                      int tx_amp);
 void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d);
-/* Which slots are all downlink: schedule() refuses an R2D that spans any other (a TDD uplink or
- * mixed slot), since the gNB would send it only in part. */
-void nr_aiot_r2d_set_dl_slots(nr_aiot_r2d_t *r2d, int (*slot_is_dl)(const void *ctx, int frame, int slot), const void *ctx);
+/* The slots the node sends in, in every symbol (downlink slots for a gNB, uplink slots for a UE): bit
+ * (frame % 2) * 10 + slot of tx_slots. schedule() refuses an R2D that spans any other slot (for a gNB, a
+ * TDD uplink or mixed slot), since the node would send it only in part. Every slot, unless set. */
+void nr_aiot_r2d_set_tx_slots(nr_aiot_r2d_t *r2d, uint32_t tx_slots);
 
 /* Schedules the R2D of the transport block tb (a_bits bits, 1 to 1000) with M = m_chip_symb chips
  * per symbol on n_rb PRBs (aiot_n_rb_min(M) to the configured n_rb_max), starting at symbol 0 or 7

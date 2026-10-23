@@ -45,6 +45,7 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
 {
   memset(r2d, 0, sizeof(*r2d));
   r2d->now_slot = -1;
+  r2d->tx_slots = (1u << NR_AIOT_R2D_TX_SLOT_PERIOD) - 1;
   r2d->cfg = *cfg;
   r2d->cfg.prb_start = -1;
   pthread_mutex_init(&r2d->lock, NULL);
@@ -109,10 +110,9 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
   return 0;
 }
 
-void nr_aiot_r2d_set_dl_slots(nr_aiot_r2d_t *r2d, int (*slot_is_dl)(const void *ctx, int frame, int slot), const void *ctx)
+void nr_aiot_r2d_set_tx_slots(nr_aiot_r2d_t *r2d, uint32_t tx_slots)
 {
-  r2d->slot_is_dl = slot_is_dl;
-  r2d->slot_ctx = ctx;
+  r2d->tx_slots = tx_slots;
 }
 
 void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d)
@@ -176,14 +176,12 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
 
   const int start = frame * r2d->slots_per_frame + slot;
   const int first = symbol, last = symbol + n_sym; /* symbols counted from the start slot */
-  if (r2d->slot_is_dl) {
-    const int wrap = FRAMES * r2d->slots_per_frame;
-    for (int d = 0; d * r2d->symbols_per_slot < last; d++) {
-      const int a = (start + d) % wrap;
-      if (!r2d->slot_is_dl(r2d->slot_ctx, a / r2d->slots_per_frame, a % r2d->slots_per_frame)) {
-        free(re16);
-        return AIOT_EINVAL;
-      }
+  const int wrap = FRAMES * r2d->slots_per_frame;
+  for (int d = 0; d * r2d->symbols_per_slot < last; d++) {
+    const int a = (start + d) % wrap;
+    if (!(r2d->tx_slots >> (a % NR_AIOT_R2D_TX_SLOT_PERIOD) & 1)) {
+      free(re16);
+      return AIOT_EINVAL;
     }
   }
   pthread_mutex_lock(&r2d->lock);

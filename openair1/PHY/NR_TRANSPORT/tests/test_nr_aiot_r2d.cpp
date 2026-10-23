@@ -349,17 +349,14 @@ TEST(NrAiotR2D, MappingASlotAgainChangesNothing)
 }
 
 // With a TDD pattern, an R2D that spans an uplink or mixed slot is refused.
-int DlSlots(const void *, int, int slot)
-{
-  return slot % 5 < 3; // DDDSU DDDSU
-}
+constexpr uint32_t kDddsu = 0b00111'00111'00111'00111; // DDDSU DDDSU, two frames
 
 TEST(NrAiotR2D, GoesOnlyInDownlinkSlots)
 {
   std::mt19937 gen(10);
   std::vector<uint8_t> tb = RandomBits(gen, 40);
   Cell cell(0, 3);
-  nr_aiot_r2d_set_dl_slots(&cell.r2d, DlSlots, nullptr);
+  nr_aiot_r2d_set_tx_slots(&cell.r2d, kDddsu);
   const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 40, 6, 1);
   ASSERT_GT(n_sym, kSym);
   ASSERT_LE(n_sym, 3 * kSym);
