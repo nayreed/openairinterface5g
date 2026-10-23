@@ -148,9 +148,9 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, const int cell_id, frame_
   int num_beams = 1;
   if (cell->beam_info.bf_method != BF_METHOD_STRAIGHT_WIRE)
     num_beams = cell->beam_info.beams_per_period;
-  // clear vrb_maps
+  // clear vrb_maps, keeping the DL PRB blacklist taken
   for (int i = 0; i < num_beams; i++)
-    memset(cell->common_channels.vrb_map[i], 0, sizeof(uint16_t) * MAX_BWP_SIZE);
+    memcpy(cell->common_channels.vrb_map[i], cell->dlprbbl, sizeof(uint16_t) * MAX_BWP_SIZE);
   // clear last scheduled slot's content (only)!
   const int size = cell->vrb_map_UL_size;
   const int prev_slot = frame * slots_frame + slot + size - 1;

@@ -41,12 +41,14 @@ pipelines:
 |            | `nr_psbchsim`                             | Sidelink simulation              |
 |            | `nr_srssim`                               | SRS simulation                   |
 | Coding     | `ldpctest`, `polartest`, `smallblocktest` | LDPC, Polar, and other FEC tests |
+| A-IoT      | `aiot_sim`                                | Rel-19 Ambient IoT R2D and D2R   |
 
 ### Source Locations
 
 * 4G PHY simulators: `openair1/SIMULATION/LTE_PHY/`
 * 5G PHY simulators: `openair1/SIMULATION/NR_PHY/`
 * Coding unit tests: `openair1/PHY/CODING/TESTBENCH/`
+* A-IoT simulator: `openair1/SIMULATION/AIOT_PHY/`
 
 Example:
 

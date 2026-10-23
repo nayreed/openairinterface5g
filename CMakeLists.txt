@@ -1030,10 +1030,10 @@ else()
   add_library(PHY_NR ${PHY_NR_SRC})
   add_library(PHY_NR_UE ${PHY_NR_UE_SRC})
 endif()
-target_link_libraries(PHY_NR PHY_NR_COMMON nr_phy_common nr_common nr_fapi_p5 polar smallblock ds)
+target_link_libraries(PHY_NR PHY_NR_COMMON nr_phy_common nr_common nr_fapi_p5 polar smallblock ds nr_aiot_r2d nr_aiot_d2r nr_aiot_reader)
 
 add_library(PHY_NR_NO_AVX_256 ${PHY_NR_SRC})
-target_link_libraries(PHY_NR_NO_AVX_256 PHY_NR_COMMON nr_phy_common_no_avx_256 nr_common)
+target_link_libraries(PHY_NR_NO_AVX_256 PHY_NR_COMMON nr_phy_common_no_avx_256 nr_common nr_aiot_r2d nr_aiot_d2r nr_aiot_reader)
 target_compile_definitions(PHY_NR_NO_AVX_256 PUBLIC USE_128BIT)
 
 target_link_libraries(PHY_NR_UE asn1_nr_rrc_hdrs nr_phy_common nr_common UTIL polar smallblock)
@@ -1819,7 +1819,7 @@ target_link_libraries(nr-softmodem PRIVATE
   time_management softmodem_common nrppa
   -Wl,--end-group dl)
 
-target_link_libraries(nr-softmodem PRIVATE pthread m CONFIG_LIB rt)
+target_link_libraries(nr-softmodem PRIVATE pthread m CONFIG_LIB rt nr_aiot_reader_config)
 target_link_libraries(nr-softmodem PRIVATE ${T_LIB})
 target_link_libraries(nr-softmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
 target_link_libraries(nr-softmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
@@ -1911,8 +1911,8 @@ if (ENABLE_AMBER)
   add_executable(amber-tag ${OPENAIR_DIR}/executables/amber-tag.c)
   target_link_libraries(amber-tag PRIVATE amber_host)
   # librfsimulator.so is loaded at run time
-  add_dependencies(amber-reader rfsimulator)
-  add_dependencies(amber-tag rfsimulator)
+  add_dependencies(amber-reader rfsimulator aiot_phy_shared)
+  add_dependencies(amber-tag rfsimulator aiot_phy_shared)
 endif()
 
 ###################################"
@@ -1984,6 +1984,10 @@ target_link_libraries(nr_dlschsim PRIVATE
   m pthread ${T_LIB} ITTI dl physim_common
   )
 target_link_libraries(nr_dlschsim PRIVATE asn1_nr_rrc_hdrs)
+
+# A-IoT (TS 38.291) link-level simulator: BLER against SNR and the spec's sensitivity points
+add_executable(aiot_sim ${OPENAIR1_DIR}/SIMULATION/AIOT_PHY/aiotsim.c)
+target_link_libraries(aiot_sim PRIVATE aiot_phy SIMU UTIL m)
 
 add_executable(nr_pbchsim ${OPENAIR1_DIR}/SIMULATION/NR_PHY/pbchsim.c)
 target_link_libraries(nr_pbchsim PRIVATE

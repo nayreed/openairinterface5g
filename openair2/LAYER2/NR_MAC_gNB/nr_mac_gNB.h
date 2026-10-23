@@ -1298,6 +1298,8 @@ typedef struct nr_cell_sched_s {
   uint16_t pdu_index;
   /// UL PRB blacklist (SNR-based)
   uint16_t ulprbbl[MAX_BWP_SIZE];
+  /// DL PRBs that the scheduler never allocates (dl_prbblacklist)
+  uint16_t dlprbbl[MAX_BWP_SIZE];
   /// NFAPI SCF config request sent to the DU/L1
   nfapi_nr_config_request_scf_t config;
   /// Pointers into the current DL_req PDCCH PDU, indexed by CORESET

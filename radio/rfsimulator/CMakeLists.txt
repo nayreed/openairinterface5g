@@ -12,6 +12,8 @@ set_target_properties(rfsimulator PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BI
 add_executable(replay_node stored_node.c)
 target_link_libraries (replay_node minimal_lib)
 
+add_subdirectory(hub)
+
 if (ENABLE_TESTS)
   add_library(rfsimulator_static
               simulator.cpp

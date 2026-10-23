@@ -82,6 +82,7 @@ typedef enum {
 #define GNB_CONFIG_STRING_NRCELLID                      "nr_cellid"
 #define GNB_CONFIG_STRING_MINRXTXTIME                   "min_rxtxtime"
 #define GNB_CONFIG_STRING_ULPRBBLACKLIST                "ul_prbblacklist"
+#define GNB_CONFIG_STRING_DLPRBBLACKLIST "dl_prbblacklist"
 #define GNB_CONFIG_STRING_UMONDEFAULTDRB                "um_on_default_drb"
 #define GNB_CONFIG_STRING_FORCE256QAMOFF                "force_256qam_off"
 #define GNB_CONFIG_STRING_MAXMIMOLAYERS                 "maxMIMO_layers"
@@ -163,6 +164,7 @@ typedef enum {
 {GNB_CONFIG_STRING_CONFIG_REP, GNB_CONFIG_HLP_CONFIG_REP, 0,          .strptr=NULL, .defstrval="ssb_rsrp",        TYPE_STRING,    0},  \
 {GNB_CONFIG_STRING_1ST_ACTIVE_BWP,               NULL,   0,            .iptr=NULL,  .defintval=0,                 TYPE_INT,       0},  \
 {GNB_CONFIG_STRING_LIMIT_RSRP_REPORT,            NULL,   0,            .iptr=NULL,  .defintval=0,                 TYPE_INT,       0},  \
+{GNB_CONFIG_STRING_DLPRBBLACKLIST,               NULL,   0,            .strptr=NULL,.defstrval="",                TYPE_STRING,    0},  \
 }
 // clang-format on
 
@@ -207,59 +209,25 @@ typedef enum {
 #define GNB_CONFIG_REP_IDX              37
 #define GNB_1ST_ACTIVE_BWP_IDX          38
 #define GNB_LIMIT_RSRP_REPORT_IDX       39
+#define GNB_DLPRBBLACKLIST_IDX 40
 
 #define TRACKING_AREA_CODE_OKRANGE {0x0001,0xFFFD}
 #define NUM_DL_HARQ_OKVALUES {2,4,6,8,10,12,16,32}
 #define NUM_UL_HARQ_OKVALUES {16,32}
 
-#define GNBPARAMS_CHECK {                                         \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s2 = { config_check_intrange, TRACKING_AREA_CODE_OKRANGE } },\
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s3a = { config_checkstr_assign_integer, \
-             {"none", "periodic", "aperiodic"}, \
-             {NO_SRS, PERIODIC_SRS, APERIODIC_SRS}, \
-             3 } }, \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s1 =  { config_check_intval, NUM_DL_HARQ_OKVALUES,8 } },     \
-  { .s1 =  { config_check_intval, NUM_UL_HARQ_OKVALUES,2 } },     \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-  { .s3a = { config_checkstr_assign_integer, \
-             {"ssb_rsrp", "ssb_sinr", "cri_rsrp"}, \
-             {SSB_RSRP, SSB_SINR, CRI_RSRP}, \
-             3 } }, \
-  { .s5 = { NULL } },                                             \
-  { .s5 = { NULL } },                                             \
-}
+#define GNBPARAMS_CHECK                                                                                                          \
+  {                                                                                                                              \
+    {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s2 = {config_check_intrange, TRACKING_AREA_CODE_OKRANGE}}, {.s5 = {NULL}}, \
+        {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}},          \
+        {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}},          \
+        {.s3a = {config_checkstr_assign_integer, {"none", "periodic", "aperiodic"}, {NO_SRS, PERIODIC_SRS, APERIODIC_SRS}, 3}},  \
+        {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}},          \
+        {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}},                                          \
+        {.s1 = {config_check_intval, NUM_DL_HARQ_OKVALUES, 8}}, {.s1 = {config_check_intval, NUM_UL_HARQ_OKVALUES, 2}},          \
+        {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}},                                                                          \
+        {.s3a = {config_checkstr_assign_integer, {"ssb_rsrp", "ssb_sinr", "cri_rsrp"}, {SSB_RSRP, SSB_SINR, CRI_RSRP}, 3}},      \
+        {.s5 = {NULL}}, {.s5 = {NULL}}, {.s5 = {NULL}},                                                                          \
+  }
 
 /*-------------------------------------------------------------------------------------------------------------------------------------------------*/
 

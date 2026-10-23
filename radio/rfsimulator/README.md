@@ -75,10 +75,9 @@ The RF simulator is using the configuration module, and its parameters are defin
 |:-------------------------------------|:-------------------------------------------------------------------------------|----:                   |
 |`--rfsimulator.[0].serveraddr <addr>` | IPv4v6 address or DNS name to connect to, or `server` to behave as a IPv4v6 TCP server | 127.0.0.1      |
 |`--rfsimulator.[0].serverport <port>` | port number to connect to or to listen on (eNB, which behaves as a tcp server) | 4043                   |
-|`--rfsimulator.[0].options`           | list of comma separated run-time options: `chanmod`, `saviq`, `msgmode`        | all options disabled   |
+|`--rfsimulator.[0].options`           | list of comma separated run-time options, two are supported: `chanmod`, `saviq`| all options disabled   |
 |`--rfsimulator.[0].options saviq`     | store IQs to a file for future replay                                          | disabled               |
 |`--rfsimulator.[0].options chanmod`   | enable the channel model                                                       | disabled               |
-|`--rfsimulator.[0].options msgmode`   | carry messages instead of signals: samples pass unchanged and a server can read each client separately with `trx_read_peers_func`. Needs one antenna, and no `chanmod`, beams or propagation delay | disabled |
 |`--rfsimulator.[0].IQfile <file>`     | path to a file to store the IQ samples to (only with `saviq`)                  | `/tmp/rfsimulator.iqs` |
 |`--rfsimulator.[0].ploss`             | coupling loss in dB (positive = attenuation, negative = net gain) of the model created by `rfsimu setmodel` | 0 |
 |`--rfsimulator.[0].prop_delay`        | simulated receive-path (gNB: UL, UE: DL) propagation delay in ms               | 0                      |
@@ -172,6 +171,13 @@ You can use this binary as I/Q data source to feed whatever UE or gNB with recor
 The file format is successive blocks of a header followed by the I/Q array. If you have existing stored I/Q, you can adapt the tool `replay_node` to convert your format to the rfsimulator format.
 
 The format intends to be compatible with the OAI store/replay feature on USRP.
+
+## Several nodes in one air: rfsim_hub
+
+The RFsimulator connects one server to its clients; clients do not hear each other. To put several
+systems in one air, for example a gNB with its UE and an Ambient IoT Reader with its Tags, connect
+every node as a client to [rfsim_hub](hub/README.md), which sums what each node hears with a gain,
+delay and frequency shift per link.
 
 ## How to use OAI RFSIM with a channel model
 

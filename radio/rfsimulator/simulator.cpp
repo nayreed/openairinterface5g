@@ -79,8 +79,7 @@ typedef enum { SIMU_ROLE_SERVER = 1, SIMU_ROLE_CLIENT } simuRole;
 #define RFSIM_CONFIG_HELP_OPTIONS                                                                  \
   " list of comma separated options to enable rf simulator functionalities. Available options: \n" \
   "        chanmod:   enable channel modelisation\n"                                               \
-  "        saviq:     enable saving written iqs to a file\n"                                       \
-  "        msgmode:   carry messages unchanged instead of signals (one antenna, no channel)\n"
+  "        saviq:     enable saving written iqs to a file\n"
 
 #define simOpt PARAMFLAG_CMDLINE_NOPREFIXENABLED
 #define simBool PARAMFLAG_BOOL | PARAMFLAG_CMDLINE_NOPREFIXENABLED
@@ -198,7 +197,6 @@ typedef struct {
   double rx_freq;
   double tx_bw;
   int channelmod;
-  bool msgmode; // Amber message mode: to be removed once IQ mode has been checked against it side by side.
   double chan_pathloss;
   double chan_forgetfact;
   uint64_t chan_offset;
@@ -335,7 +333,7 @@ static buffer_t *allocCirBuf(rfsimulator_state_t *bridge, int sock)
     LOG_E(HW, "setsockopt(SO_SNDBUF) failed\n");
     return NULL;
   }
-  // A peer that sends one block and waits for the answer (Amber, in msgmode or not) would
+  // A peer that sends one block and waits for the answer (Amber) would
   // otherwise wait for the other side's delayed acknowledgement on every block's last segment.
   // Blocks are large, so sending small segments at once costs nothing in other uses.
   const int nodelay = 1;
@@ -564,8 +562,6 @@ static void rfsimulator_readconfig(rfsimulator_state_t *rfsimulator)
                        rfsimulator->rx_freq,
                        rfsimulator->tx_bw);
       rfsimulator->channelmod = true;
-    } else if (strcmp(rfsimuParam[p].strlistptr[i], "msgmode") == 0) {
-      rfsimulator->msgmode = true;
     } else {
       fprintf(stderr, "unknown rfsimulator option: %s\n", rfsimuParam[p].strlistptr[i]);
       exit(-1);
@@ -778,44 +774,52 @@ static int startServer(openair0_device_t *device)
   char port[6];
   snprintf(port, sizeof(port), "%d", t->port);
 
-  struct addrinfo hints = {
-      .ai_flags = AI_PASSIVE,
-      .ai_family = AF_INET6,
-      .ai_socktype = SOCK_STREAM,
-  };
+  // An IPv6 socket that also takes IPv4 clients; on a host without IPv6, a plain IPv4 socket.
+  for (int family : {AF_INET6, AF_INET}) {
+    struct addrinfo hints = {
+        .ai_flags = AI_PASSIVE,
+        .ai_family = family,
+        .ai_socktype = SOCK_STREAM,
+    };
 
-  int s = getaddrinfo(NULL, port, &hints, &results);
-  if (s != 0) {
-    LOG_E(HW, "getaddrinfo: %s\n", gai_strerror(s));
+    int s = getaddrinfo(NULL, port, &hints, &results);
+    if (s != 0) {
+      LOG_W(HW, "getaddrinfo (%s): %s\n", family == AF_INET6 ? "IPv6" : "IPv4", gai_strerror(s));
+      continue;
+    }
+
+    int enable = 1;
+    int disable = 0;
+    for (rp = results; rp != NULL; rp = rp->ai_next) {
+      sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+      if (sock == -1) {
+        continue;
+      }
+
+      // Dual stack: the IPv6 socket also takes IPv4 clients
+      if (rp->ai_family == AF_INET6 && setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &disable, sizeof(int)) != 0) {
+        close(sock);
+        continue;
+      }
+
+      if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) != 0) {
+        close(sock);
+        continue;
+      }
+
+      if (bind(sock, rp->ai_addr, rp->ai_addrlen) == 0) {
+        break;
+      }
+
+      close(sock);
+      sock = -1;
+    }
+
     freeaddrinfo(results);
-    return -1;
-  }
-
-  int enable = 1;
-  int disable = 0;
-  for (rp = results; rp != NULL; rp = rp->ai_next) {
-    sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-    if (sock == -1) {
-      continue;
-    }
-
-    if (setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &disable, sizeof(int)) != 0) {
-      continue;
-    }
-
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) != 0) {
-      continue;
-    }
-
-    if (bind(sock, rp->ai_addr, rp->ai_addrlen) == 0) {
+    results = NULL;
+    if (sock > 0)
       break;
-    }
-
-    close(sock);
-    sock = -1;
   }
-
-  freeaddrinfo(results);
 
   if (sock <= 0) {
     LOG_E(HW, "could not open a socket\n");
@@ -1487,52 +1491,6 @@ static int rfsimulator_read(openair0_device_t *device, openair0_timestamp_t *pti
   return nsamps;
 }
 
-/* Copy the first antenna's samples that b received for [start, start + nsamps) into out,
- * unchanged; zeros where b sent nothing. */
-static void copy_peer_block(const buffer_t *b, openair0_timestamp_t start, int nsamps, c16_t *out)
-{
-  memset(out, 0, sampleToByte(nsamps, 1));
-  for (std::queue<rfsim_packet_t *> packets = b->received_packets; !packets.empty(); packets.pop()) {
-    const rfsim_packet_t *pkt = packets.front();
-    const openair0_timestamp_t pkt_start = pkt->header.timestamp;
-    const openair0_timestamp_t begin = std::max(start, pkt_start);
-    const openair0_timestamp_t end = std::min(start + nsamps, pkt_start + pkt->header.size);
-    if (begin >= end)
-      continue;
-    const c16_t *samples = reinterpret_cast<const c16_t *>(&pkt->payload[sizeof(float) * pkt->header.nbAnt]);
-    memcpy(&out[begin - start], &samples[begin - pkt_start], sampleToByte(end - begin, 1));
-  }
-}
-
-/* msgmode server only: read one block per connected client, each exactly as that client wrote it.
- * Amber message mode: to be removed once IQ mode has been checked against it side by side. */
-static int rfsimulator_read_peers(openair0_device_t *device,
-                                  openair0_timestamp_t *ptimestamp,
-                                  void **buff,
-                                  int nsamps,
-                                  int max_peers)
-{
-  rfsimulator_state_t *t = static_cast<rfsimulator_state_t *>(device->priv);
-  int peers = 0;
-  if (wait_for_peers(t, nsamps)) {
-    for (int sock = 0; sock < MAX_FD_RFSIMU; sock++) {
-      const buffer_t *b = &t->buf[sock];
-      if (b->conn_sock == -1)
-        continue;
-      if (peers == max_peers) {
-        LOG_E(HW, "more than %d clients are connected\n", max_peers);
-        return -1;
-      }
-      copy_peer_block(b, t->nextRxTstamp, nsamps, static_cast<c16_t *>(buff[peers]));
-      peers++;
-    }
-  }
-  *ptimestamp = t->nextRxTstamp;
-  t->nextRxTstamp += nsamps;
-  release_read_packets(t);
-  return peers;
-}
-
 static int rfsimulator_get_stats(openair0_device_t *device)
 {
   UNUSED(device);
@@ -1617,12 +1575,6 @@ extern "C" __attribute__((__visibility__("default"))) int device_init(openair0_d
     rfsimulator->prop_delay_ms = rfsimulator->chan_offset * 1000 / rfsimulator->sample_rate;
     LOG_I(HW, "propagation delay %f ms, %lu samples\n", rfsimulator->prop_delay_ms, rfsimulator->chan_offset);
   }
-  if (rfsimulator->msgmode
-      && (rfsimulator->channelmod || rfsimulator->beam_ctrl->enable_beams || rfsimulator->chan_offset != 0
-          || rfsimulator->tx_num_channels != 1 || rfsimulator->rx_num_channels != 1)) {
-    LOG_E(HW, "msgmode passes samples unchanged: it needs one antenna, and no chanmod, beams or propagation delay\n");
-    return -1;
-  }
   mutexinit(rfsimulator->Sockmutex);
   LOG_I(HW,
         "Running as %s\n",
@@ -1637,8 +1589,6 @@ extern "C" __attribute__((__visibility__("default"))) int device_init(openair0_d
   device->trx_set_gains_func = rfsimulator_set_gains;
   device->trx_write_func = rfsimulator_write;
   device->trx_read_func = rfsimulator_read;
-  if (rfsimulator->msgmode && rfsimulator->role == SIMU_ROLE_SERVER)
-    device->trx_read_peers_func = rfsimulator_read_peers;
 
   /* let's pretend to be a b2x0 */
   device->type = RFSIMULATOR;

@@ -19,6 +19,8 @@
 #include "PHY/CODING/nrLDPC_decoder/nrLDPC_types.h"
 #include "nfapi_nr_interface_scf.h"
 #include "common/utils/threadPool/task_ans.h"
+#include "PHY/NR_TRANSPORT/nr_aiot_r2d.h"
+#include "PHY/NR_TRANSPORT/nr_aiot_d2r.h"
 #include "openair1/PHY/defs_RU.h"
 #include "common/utils/ds/spsc_q.h"
 
@@ -382,6 +384,15 @@ typedef struct PHY_VARS_gNB_s {
 
   // flag to activate 3GPP phase symbolwise rotation
   bool phase_comp;
+
+  /// Ambient IoT Reader: the R2D resources from the configuration, and the R2D transmissions
+  nr_aiot_r2d_config_t aiot_r2d_cfg;
+  nr_aiot_r2d_t aiot_r2d;
+  /// Ambient IoT Reader: the D2R resources from the configuration, and the D2R receiver (NULL: none)
+  nr_aiot_d2r_config_t aiot_d2r_cfg;
+  nr_aiot_d2r_t *aiot_d2r;
+  /// Ambient IoT Reader: the Reader MAC on aiot_r2d and aiot_d2r (NULL: the gNB is no Reader)
+  struct nr_aiot_reader *aiot_reader;
 
   // PUCCH0 Look-up table for cyclic-shifts
   NR_gNB_PUCCH0_LUT_t pucch0_lut;

@@ -2,10 +2,11 @@
 
 #---------------------------------------------------------------------
 #
-# Dockerfile for amber-reader and amber-tag (openair2/AMBER) with Amber
+# Dockerfile for amber-reader and amber-tag (openair2/AMBER) with Amber, and
+# rfsim_hub (radio/rfsimulator/hub)
 #   Valid for Ubuntu 24.04
 #
-# One image holds both programs, so a Reader and its Tags always run the
+# One image holds the programs, so a Reader and its Tags always run the
 # same OAI and Amber code. Build from the repository root:
 #   docker build -f docker/Dockerfile.amber.ubuntu -t oai-amber .
 #
@@ -60,36 +61,59 @@ COPY . .
 # OAI otherwise targets the build CPU, and a container on another CPU dies on an illegal instruction.
 RUN cmake -B build -GNinja -DENABLE_AMBER=ON -DAVX512=OFF \
         -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3 && \
-    ninja -C build amber-reader amber-tag rfsimulator
+    ninja -C build amber-reader amber-tag rfsimulator aiot_phy_shared rfsim_hub params_libconfig
 
 
 FROM ${UBUNTU_IMAGE} AS oai-amber
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/opt/oai-amber/bin:$PATH"
 ENV PYTHONPATH="/opt/amber:/opt/oai-amber/python"
+# Amber's own Python (amber.run, amber.summary, its tests) uses the A-IoT PHY of the programs
+ENV AMBER_AIOT_LIB=/opt/oai-amber/bin/libaiot_phy.so
 
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends \
         python3 \
-        libpython3.12t64 && \
+        libpython3.12t64 \
+        libconfig9 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=amber-build /opt/oai-amber/python /opt/oai-amber/python
 COPY --from=amber-build /opt/amber /opt/amber
-COPY --from=amber-build /oai-ran/build/librfsimulator.so /usr/local/lib/
+COPY --from=amber-build \
+    /oai-ran/build/librfsimulator.so \
+    /oai-ran/build/libparams_libconfig.so \
+    /usr/local/lib/
 WORKDIR /opt/oai-amber/bin
 COPY --from=amber-build \
     /oai-ran/build/amber-reader \
     /oai-ran/build/amber-tag \
+    /oai-ran/build/libaiot_phy.so \
+    /oai-ran/build/rfsim_hub \
     ./
 COPY docker/scripts/amber_compose.py ./amber-compose
+# The 5G cells a scenario's [network] can name, which amber-compose copies into a room
+COPY ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
+     ci-scripts/conf_files/nrue.uicc.conf \
+     /opt/oai-amber/etc/cells/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot/ /tmp/room/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1/ /tmp/room_t1/
 
 # Fail here rather than at run time if a library is missing.
 RUN ldconfig && \
-    echo "---- ldd on amber-reader, amber-tag and librfsimulator.so ----" && \
-    ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so && \
-    ! ldd amber-reader amber-tag /usr/local/lib/librfsimulator.so | grep "not found" && \
-    python3 -c "import amber.session"
+    echo "---- ldd on the programs and the libraries they load ----" && \
+    ldd amber-reader amber-tag rfsim_hub /usr/local/lib/librfsimulator.so /usr/local/lib/libparams_libconfig.so && \
+    ! ldd amber-reader amber-tag rfsim_hub /usr/local/lib/librfsimulator.so /usr/local/lib/libparams_libconfig.so | grep "not found" && \
+    python3 -c "import amber.session" && \
+    python3 -c "from amber.phy import aiot; assert aiot.crc([1, 0, 1], 6)" && \
+    echo "---- the checked-in 5G room is what amber-compose writes from its scenario ----" && \
+    mkdir /tmp/new && cp /tmp/room/scenario.toml /tmp/new/ && \
+    amber-compose --image oai-amber:latest /tmp/new/scenario.toml /tmp/new && \
+    diff -r --exclude=README.md /tmp/room /tmp/new && \
+    mkdir /tmp/new_t1 && cp /tmp/room_t1/scenario.toml /tmp/new_t1/ && \
+    amber-compose --image oai-amber:latest /tmp/new_t1/scenario.toml /tmp/new_t1 && \
+    diff -r --exclude=README.md /tmp/room_t1 /tmp/new_t1 && \
+    rm -r /tmp/room /tmp/new /tmp/room_t1 /tmp/new_t1
 
 WORKDIR /opt/oai-amber
 # The image amber-compose names in the compose files it writes

@@ -363,7 +363,7 @@ PY
 # --- one run -------------------------------------------------------------------------------------
 
 # Fields of the run being made; written to result.json by finish_run.
-run_status="" run_reason="" missing_ids="" run_detail="" rfsim_opts="--rfsimulator.options msgmode "
+run_status="" run_reason="" missing_ids="" run_detail=""
 
 fail() {
   run_status=FAIL run_reason=$1 run_detail=${2:-}
@@ -398,12 +398,7 @@ run_containers() {
   local reader_dir=$1 tag_dir=$2 deadline=$3 scen_rel scen_path
   scen_rel=$(scenario_rel_path "$demo")
   scen_path="/scenarios/$scen_rel"
-  # Amber message mode: to be removed once IQ mode has been checked against it side by side.
-  # Messages need msgmode; a scenario in IQ mode ([phy]) runs on normal rfsim, which adds the Tags' signals up.
-  rfsim_opts="--rfsimulator.options msgmode "
-  # The local copy of the scenario: reader_dir is on the Reader node.
-  if grep -q '^\[phy\]' "$run_dir/run/scen/$scen_rel"; then rfsim_opts=""; fi
-  local common="${rfsim_opts}--rfsimulator.serverport $port --amber.scenario $scen_path --amber.output_dir /out"
+  local common="--rfsimulator.serverport $port --amber.scenario $scen_path --amber.output_dir /out"
   local t0 status code id line
 
   on "$reader_node" "$docker run -d --name $run_name-reader --network host --init \
@@ -544,7 +539,7 @@ check_output() {
     run_status=CHECK run_reason=no_bye run_detail="the Reader exited 0 without Bye."
     return
   fi
-  if ! awk 'FNR > 1 { found = 1; exit } END { exit !found }' "$ref"/reader_bs*_rx.csv 2> /dev/null; then
+  if ! awk 'FNR > 1 { found = 1; exit } END { exit !found }' "$ref"/reader*_rx.csv 2> /dev/null; then
     run_status=CHECK run_reason=empty_reference run_detail="the reference received no packet"
     return
   fi
@@ -578,8 +573,8 @@ finish_run() {
     --arg library "$library_sha" --arg reference "$reference" \
     --arg runner "$runner_sha" --arg oai_commit "$oai_commit" \
     --arg reader_node "$reader_node" --arg tag_node "$tag_node" --arg reader_addr "$reader_addr" --argjson port "$port" \
-    --arg reader_cmd "amber-reader --rfsimulator.serveraddr server ${rfsim_opts}--rfsimulator.serverport $port" \
-    --arg tag_cmd "amber-tag --rfsimulator.serveraddr $reader_addr ${rfsim_opts}--rfsimulator.serverport $port" \
+    --arg reader_cmd "amber-reader --rfsimulator.serveraddr server --rfsimulator.serverport $port" \
+    --arg tag_cmd "amber-tag --rfsimulator.serveraddr $reader_addr --rfsimulator.serverport $port" \
     --argjson deadline "$deadline" --arg started "$started" \
     --arg t_scenario "$t_scenario" --arg t_reference "$t_reference" --arg t_hello "$t_hello" --arg t_sim "$t_sim" \
     --arg t_collect "$t_collect" --arg t_run "$(elapsed "$run_t0" "$(now)")" \

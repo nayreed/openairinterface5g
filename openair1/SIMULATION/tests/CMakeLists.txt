@@ -331,6 +331,12 @@ add_physim_test(physim.5g.nr_srssim.test15 "SRS: 30KHz SCS, 217 PRBs, ToA 8, Com
 add_physim_test(physim.5g.nr_srssim.test16 "SRS: 30KHz SCS, 106 PRBs, SNR 2 dB to 30 dB in steps of 5 dB, ToA 24, Combsize 2" nr_srssim -n300 -R106 -s2 -S30 -y2 -z2 -d 24)
 
 ####################################################################################
+######                           aiot_sim unit test                           ######
+####################################################################################
+
+add_physim_test(physim.aiot.check "A-IoT: device detection and Reader BLER at the 38.191/38.194 sensitivity points" aiot_sim check -T 100)
+
+####################################################################################
 ######                           offload-specific tests                       ######
 ####################################################################################
 

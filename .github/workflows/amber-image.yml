@@ -73,7 +73,7 @@ jobs:
         scenario:
           - /opt/amber/tests/scenarios/registration.toml
           - /opt/amber/tests/scenarios/adaptive_aloha.toml
-          - /opt/amber/tests/scenarios/gen2_q_iq.toml
+          - /opt/amber/tests/scenarios/gen2_q.toml
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8

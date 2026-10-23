@@ -11,8 +11,8 @@
  */
 
 #ifndef TEST_DEBUG
-#include "PHY/defs_common.h"
-#include "PHY/phy_extern.h"
+#include <stdio.h>
+#include <string.h>
 #else
 #include <stdio.h>
 #include <stdlib.h>

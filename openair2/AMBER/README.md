@@ -2,25 +2,25 @@
 
 # Amber Reader and Tag over rfsim
 
-`amber-reader` and `amber-tag` run an [Amber](https://github.com/nayreed/Amber) simulation as one
-Reader process and one process per Tag. `amber-reader` is the gNB side: it runs the scenario's base
-stations (`BSBehavior`, the Reader MAC and PHY). Each `amber-tag` is one UE: it runs one node
-(`BackscatterModule`, `Controller`, `Capacitor`, the Tag MAC and PHY). Amber runs in embedded Python
-through its `amber.session` module; only configuration, logging and the rfsim device come from OAI.
+`amber-reader` and `amber-tag` run an [Amber](https://github.com/nayreed/Amber) simulation of a
+3GPP Rel-19 Ambient IoT (A-IoT) network as one Reader process and one process per Tag (an A-IoT
+device). `amber-reader` is the gNB side: it runs the scenario's Reader, its MAC and PHY. Each
+`amber-tag` is one UE: it runs one device of the scenario, its energy harvesting, MAC and PHY.
+Amber runs in embedded Python through its `amber.session` module; configuration, logging, the
+rfsim device and the PHY come from OAI.
 
 Each rfsim block is one simulated millisecond, and rfsim is both the link and the clock. A block
-carries one of two things:
+is IQ samples (see `amber/iq.py` in Amber): the Reader's carrier and commands as a real waveform,
+and each Tag's backscatter reflection of it, following 3GPP Rel-19 Ambient IoT. This runs on normal
+rfsim: it adds the Tags' signals up as a real antenna would, and the Reader demodulates the sum. A
+Tag only harvests, hears commands and reflects while the Reader's carrier is on, and two Tags
+reflecting at once really collide. A scenario must have a `[phy]` table: the 38.291/38.391 link
+settings (see `amber/link.py`, `LinkConfig`), every key required.
 
-* **Messages** (the default): the Reader's commands for that millisecond, then each Tag's answer
-  (see `amber/session.py` in Amber), and Amber's formulas decide what is received. rfsim's
-  `msgmode` option carries the blocks unchanged and hands the Reader each Tag's block separately
-  instead of their sum.
-* **IQ samples** (a scenario with a `[phy]` table, see `amber/iq.py` in Amber): the Reader's
-  carrier and commands as a real waveform, and each Tag's backscatter reflection of it, following
-  3GPP Rel-19 Ambient IoT. This runs on normal rfsim, without `msgmode`: rfsim adds the Tags'
-  signals up as a real antenna would, and the Reader demodulates the sum. A Tag only harvests,
-  hears commands and reflects while the Reader's carrier is on, and two Tags reflecting at once
-  really collide.
+The PHY, the R2D and D2R signal processing (waveforms, the Tag's receiver, the Reader's receiver),
+is OAI's A-IoT library `openair1/PHY/AIOT`, which the build also makes as `libaiot_phy.so` next to
+the programs. Each program points Amber at it through `AMBER_AIOT_LIB` unless that is already set,
+and logs which library it uses. Amber's MAC procedures, protocols, energy model and logs are Python.
 
 In each millisecond the Reader's events run first, then each Tag's, in the order of the scenario's
 `NODE_IDS` (see `amber/hosts.py`). Together the programs write the same files as `amber.run`,
@@ -28,7 +28,8 @@ Amber's run of the scenario on one machine.
 
 ## Amber version
 
-Use Amber's `dev` branch, which has `amber.session`, TOML scenarios and the protocols:
+Use Amber's `dev` branch, which has `amber.session`, TOML scenarios, the protocols and the A-IoT
+MAC that runs on `libaiot_phy.so`:
 
 ```bash
 git clone https://github.com/nayreed/Amber && git -C Amber checkout dev
@@ -48,8 +49,7 @@ ninja amber-reader amber-tag rfsimulator
 
 ## Run
 
-All programs need Amber on `PYTHONPATH`, the same scenario file and, with messages, rfsim's
-`msgmode` (leave `--rfsimulator.options msgmode` out for a scenario in IQ mode). Start
+All programs need Amber on `PYTHONPATH` and the same scenario file. Start
 the Reader, then one Tag per node of the scenario's `NODE_IDS`; the Reader starts millisecond 0
 once every node has connected. For `registration.toml`, whose nodes are 0 to 3:
 
@@ -57,28 +57,26 @@ once every node has connected. For `registration.toml`, whose nodes are 0 to 3:
 export PYTHONPATH=<Amber checkout>
 SCENARIO=<Amber checkout>/tests/scenarios/registration.toml
 mkdir -p out
-./amber-reader --rfsimulator.serveraddr server --rfsimulator.options msgmode \
+./amber-reader --rfsimulator.[0].serveraddr server \
     --amber.scenario $SCENARIO --amber.output_dir out/ &
 for n in 0 1 2 3; do
-  ./amber-tag --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.options msgmode \
+  ./amber-tag --rfsimulator.[0].serveraddr 127.0.0.1 \
       --amber.scenario $SCENARIO --amber.node_id $n --amber.output_dir out/ &
 done
 wait
 ```
 
 Options of the `amber` section: `scenario` (required), `node_id` (required for `amber-tag`),
-`output_dir` (default `.`), `block_bytes` (default 8192). A scenario is an Amber TOML file with a fixed
+`output_dir` (default `.`), `block_bytes` (default 23552: 5888 samples, the 5760 of one millisecond at
+5.76 Msps and 128 control samples). A scenario is an Amber TOML file with a fixed
 `seed` in its `[run]` table, so that the Reader and every Tag draw the same numbers. Every program
 prints `Bye.` when the run ends and writes its CSV files with Amber's one writer
-(`amber.output.write_csv`): `reader_bs<id>_rx.csv`, `reader_bs<id>_tx.csv` and the protocol's own
+(`amber.output.write_csv`): `reader_rx.csv`, `reader_tx.csv` and the protocol's own
 files (such as `adaptation.csv`) from the Reader, `tag<id>_rx.csv` and `tag<id>_tx.csv` from each
 Tag. Every file is written, with only its header when it has no rows.
 
-With messages, `amber-reader` refuses to start unless it is the rfsim server in `msgmode`. rfsim
-sets `TCP_NODELAY` on every connection, so no simulated millisecond waits on TCP's delayed
-acknowledgement (about 40 ms on loopback). On one machine over loopback, the registration scenario
-(4 Tags, 8001 ms) ran in 5.5 s and the adaptive ALOHA scenario (12 Tags, 6001 ms) in 11 s; in IQ
-mode, `gen2_q_iq.toml` (12 Tags, 1501 ms) ran in 7 s, with the same files as `amber.run`.
+rfsim sets `TCP_NODELAY` on every connection, so no simulated millisecond waits on TCP's delayed
+acknowledgement (about 40 ms on loopback).
 
 To check a run, run the same scenario with `amber.run` and compare:
 
@@ -86,6 +84,16 @@ To check a run, run the same scenario with `amber.run` and compare:
 python3 -m amber.run $SCENARIO ref/
 diff -r ref out
 ```
+
+## Through rfsim_hub, in the air of a 5G cell
+
+With `--amber.block_bytes 23040` a block is air only: the 5760 samples of one millisecond, without
+the control samples. The Reader and every Tag are then clients of
+[rfsim_hub](../../radio/rfsimulator/hub/README.md), which starts them together at sample 0, and the
+Reader and the Tags stop after the `sim_time_ms` of the scenario's `[run]` table. The hub sums what each node hears with
+the gains, delays and frequency shifts of its configuration, so Amber can share the air with a 5G
+cell. [5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md) runs a gNB, a UE, a
+Reader and four Tags in one room.
 
 ## Docker
 
@@ -105,11 +113,15 @@ oai-amber image > Run workflow). Its jobs check the scripts, build the image aga
 one runner with `docker/scripts/amber_check_image.sh`, which compares their files with `amber.run`, and, on `aiot-rfsim` only, publish `ghcr.io/nayreed/oai-amber`, tagged with the first 8
 characters of the commit and with `latest`. Runs between two hosts are the campaign's job (below).
 
-`amber-compose` writes a compose file with one Reader and one Tag per node of a scenario:
+`amber-compose SCENARIO DIR` writes the compose files that run a scenario into DIR. What it writes
+follows the scenario's `[network]` table: without one, a compose file with one Reader and one Tag
+per node over plain rfsim; with a 5G cell (`cell = "n28-25prb"`), the whole room of
+[5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md), the cell and the
+Reader and Tags in one air through `rfsim_hub`.
 
 ```bash
 IMAGE=ghcr.io/nayreed/oai-amber:latest
-docker run --rm $IMAGE amber-compose /opt/amber/tests/scenarios/registration.toml > compose.yaml
+docker run --rm -v "$PWD:/room" $IMAGE amber-compose /opt/amber/tests/scenarios/registration.toml /room
 docker compose up
 docker run --rm -v "$PWD/ref:/ref" $IMAGE \
     python3 -m amber.run /opt/amber/tests/scenarios/registration.toml /ref
@@ -117,13 +129,15 @@ diff -r ref out
 ```
 
 The compose file names the exact image that wrote it, by commit. Every program writes its CSV files to
-`./out`, as root. For your own scenarios, put them in `./scenarios` and give `amber-compose` their
-path under `/scenarios`, with `-v "$PWD/scenarios:/scenarios"`; the compose file then mounts
-`./scenarios` too.
+`./out`, as root. A scenario of your own goes in DIR, and the containers see DIR as `/room`:
+
+```bash
+docker run --rm -v "$PWD:/room" $IMAGE amber-compose /room/my_scenario.toml /room
+```
 
 Amber's demos are in the image as TOML scenarios, one folder per protocol:
 `/opt/amber/demo_experiments/<protocol>/<name>.toml`, for example `broadcast/broadcast_sic.toml`.
-A demo is named by its TOML file. They have no `seed` in `[run]`, so copy one into `./scenarios`
+A demo is named by its TOML file. They have no `seed` in `[run]`, so copy one into your folder
 and add a seed before running it in containers; `amber_check_image.sh` does exactly that. The
 demos' results (sent, decoded, DER, throughput) from the CSV files:
 
@@ -151,10 +165,10 @@ Runs are kept as Amber keeps a demo's output, one folder per run:
 amber-campaigns/<campaign>/
   campaign.log, summary.txt
   broadcast/output/broadcast-s1/              seed 1
-    reader_bs0_rx.csv, reader_bs0_tx.csv, tag0_rx.csv, tag0_tx.csv, ...
+    reader_rx.csv, reader_tx.csv, tag0_rx.csv, tag0_tx.csv, ...
     run/                                      result.json, logs, the scenario used, SHA256SUMS
   adaptive_aloha/output/adaptive_aloha-n50-s1/  50 Tags, seed 1
-    reader_bs0_*.csv, tag*_*.csv, adaptation.csv
+    reader_*.csv, tag*_*.csv, adaptation.csv
     run/
 ```
 
@@ -174,9 +188,9 @@ Tag node, of about 100 MB.
 
 ## Limitations
 
-* At most 250 Tags, the number of clients an rfsim server accepts.
-* IQ mode needs one base station and `amber.block_bytes` at its default (8192), and is about ten
-  times slower than messages.
+* At most 250 Tags, the number of clients an rfsim server accepts (Amber itself accepts 256).
+* A scenario needs exactly one base station, and `amber.block_bytes` at its default (23552), or
+  23040 through rfsim_hub.
 * A Tag that stops ends the run: the Reader exits with `no answer from nodes [...]`, and rfsim
   makes the other Tags exit when they lose the Reader.
 * Amber's demos run on plain SimPy, which orders the events of one millisecond by when they were

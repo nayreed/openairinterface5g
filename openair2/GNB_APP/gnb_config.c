@@ -741,9 +741,10 @@ void RCconfig_nr_prs(void)
 #define ALL_SYMBOLS_TAKEN 0x3FFF
 
 /**
- * @brief Get number or blacklisted UL PRBs and their mapping from gNB config
+ * @brief Get number or blacklisted PRBs and their mapping from gNB config
+ * @param idx GNB_ULPRBBLACKLIST_IDX or GNB_DLPRBBLACKLIST_IDX
  */
-static int get_prb_blacklist(uint16_t *prbbl)
+static int get_prb_blacklist(uint16_t *prbbl, int idx)
 {
   paramdef_t GNBSParams[] = GNBSPARAMS_DESC;
   paramlist_def_t GNBParamList = {GNB_CONFIG_STRING_GNB_LIST, NULL, 0};
@@ -754,7 +755,7 @@ static int get_prb_blacklist(uint16_t *prbbl)
   config_getlist(config_get_if(), &GNBParamList, GNBParams, sizeofArray(GNBParams), NULL);
 
   int num_prbbl = 0;
-  char *ulprbbl = *GNBParamList.paramarray[0][GNB_ULPRBBLACKLIST_IDX].strptr;
+  char *ulprbbl = *GNBParamList.paramarray[0][idx].strptr;
 
   if (!ulprbbl)
     return -1;
@@ -815,7 +816,7 @@ void RCconfig_NR_L1(void)
 
       // PRB Blacklist
       uint16_t prbbl[MAX_BWP_SIZE] = {0};
-      int num_ulprbbl = get_prb_blacklist(prbbl);
+      int num_ulprbbl = get_prb_blacklist(prbbl, GNB_ULPRBBLACKLIST_IDX);
       if (num_ulprbbl != -1) {
         RC.gNB[j]->num_ulprbbl = num_ulprbbl;
         LOG_D(NR_PHY, "Copying %d blacklisted PRB to L1 context\n", RC.gNB[j]->num_ulprbbl);
@@ -858,6 +859,48 @@ void RCconfig_NR_L1(void)
                   MACRLC_BF_METHOD " \"das\" is not supported with a split L1, the beam indices come from the VNF\n");
       if (gNB->enable_analog_das)
         LOG_I(NR_PHY, "L1 configured for a distributed antenna system (DAS)\n");
+      gNB->aiot_r2d_cfg = (nr_aiot_r2d_config_t){.prb_start = *gpd(params, np, L1_AIOT_R2D_PRB_START)->iptr,
+                                                 .n_rb_max = *gpd(params, np, L1_AIOT_R2D_N_RB)->iptr,
+                                                 .power_offset_db = *gpd(params, np, L1_AIOT_R2D_POWER_OFFSET_DB)->dblptr,
+                                                 .carrier = *gpd(params, np, L1_AIOT_R2D_CARRIER)->iptr};
+      if (gNB->aiot_r2d_cfg.prb_start >= 0) {
+        AssertFatal(gNB->aiot_r2d_cfg.n_rb_max >= 1,
+                    "%s is set but %s is %d: give the R2D at least one PRB\n",
+                    L1_AIOT_R2D_PRB_START,
+                    L1_AIOT_R2D_N_RB,
+                    gNB->aiot_r2d_cfg.n_rb_max);
+        /* the DL scheduler must leave the R2D's PRBs alone (with an nFAPI PNF, the VNF's file must
+         * blacklist them too: this checks only the file this L1 reads) */
+        uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
+        get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
+        for (int rb = gNB->aiot_r2d_cfg.prb_start; rb < gNB->aiot_r2d_cfg.prb_start + gNB->aiot_r2d_cfg.n_rb_max; rb++)
+          AssertFatal(rb >= 0 && rb < MAX_BWP_SIZE && dlprbbl[rb],
+                      "A-IoT R2D PRB %d (%s, %s) is not in gNBs.[0].dl_prbblacklist\n",
+                      rb,
+                      L1_AIOT_R2D_PRB_START,
+                      L1_AIOT_R2D_N_RB);
+      }
+      gNB->aiot_d2r_cfg = (nr_aiot_d2r_config_t){.prb_start = *gpd(params, np, L1_AIOT_D2R_PRB_START)->iptr,
+                                                 .n_rb = *gpd(params, np, L1_AIOT_D2R_N_RB)->iptr,
+                                                 .noise_counts = *gpd(params, np, L1_AIOT_D2R_NOISE_COUNTS)->dblptr,
+                                                 .enable_sic = *gpd(params, np, L1_AIOT_D2R_SIC)->iptr};
+      if (gNB->aiot_d2r_cfg.prb_start >= 0) {
+        AssertFatal(gNB->aiot_d2r_cfg.n_rb >= 1,
+                    "%s is set but %s is %d: give the D2R at least one PRB\n",
+                    L1_AIOT_D2R_PRB_START,
+                    L1_AIOT_D2R_N_RB,
+                    gNB->aiot_d2r_cfg.n_rb);
+        /* no UE may send in the D2R's PRBs (with an nFAPI PNF, the VNF's file must blacklist them
+         * too: this checks only the file this L1 reads) */
+        uint16_t ulprbbl[MAX_BWP_SIZE] = {0};
+        get_prb_blacklist(ulprbbl, GNB_ULPRBBLACKLIST_IDX);
+        for (int rb = gNB->aiot_d2r_cfg.prb_start; rb < gNB->aiot_d2r_cfg.prb_start + gNB->aiot_d2r_cfg.n_rb; rb++)
+          AssertFatal(rb >= 0 && rb < MAX_BWP_SIZE && ulprbbl[rb],
+                      "A-IoT D2R PRB %d (%s, %s) is not in gNBs.[0].ul_prbblacklist\n",
+                      rb,
+                      L1_AIOT_D2R_PRB_START,
+                      L1_AIOT_D2R_N_RB);
+      }
       // Midhaul configuration
       if (strcmp(*gpd(params, np, L1_TRANSPORT_N_PREFERENCE)->strptr, "local_mac") == 0) {
         // do nothing
@@ -1861,10 +1904,17 @@ void RCconfig_nr_macrlc(configmodule_interface_t *cfg, nr_cell_sched_t **out_cel
       cell->identity_pm = *gpd(params, np, MACRLC_IDENTITY_PM)->u8ptr;
       // PRB Blacklist
       uint16_t prbbl[MAX_BWP_SIZE] = {0};
-      int num_ulprbbl = get_prb_blacklist(prbbl);
+      int num_ulprbbl = get_prb_blacklist(prbbl, GNB_ULPRBBLACKLIST_IDX);
       if (num_ulprbbl != -1) {
         LOG_I(NR_PHY, "Copying %d blacklisted PRB to L1 context\n", num_ulprbbl);
         memcpy(cell->ulprbbl, prbbl, MAX_BWP_SIZE * sizeof(prbbl[0]));
+      }
+      // DL PRB blacklist: PRBs the DL scheduler never allocates (e.g. kept free for another system)
+      uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
+      int num_dlprbbl = get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
+      if (num_dlprbbl > 0) {
+        LOG_I(NR_MAC, "%d PRBs blacklisted in DL\n", num_dlprbbl);
+        memcpy(cell->dlprbbl, dlprbbl, MAX_BWP_SIZE * sizeof(dlprbbl[0]));
       }
       char **removed_ab = gpd(params, np, MACRLC_ANALOG_BEAMFORMING_REMOVED)->strptr;
       AssertFatal(removed_ab == NULL || *removed_ab == NULL,

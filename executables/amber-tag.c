@@ -4,9 +4,8 @@
 
 /*! \file amber-tag.c
  * \brief Amber Tag: the UE reduced to its configuration, logging and rfsim client. It runs one
- * node of an Amber scenario (BackscatterModule, Controller, Capacitor: the Tag MAC and PHY) in
- * embedded Python, one simulated millisecond per rfsim block: read the Reader's block, then
- * answer in the same block.
+ * A-IoT device of an Amber scenario (its energy harvesting, MAC and PHY), one simulated millisecond
+ * per rfsim block: read the Reader's block, then answer in the same block.
  */
 
 #include <stdio.h>
@@ -38,22 +37,30 @@ int main(int argc, char **argv)
   amber_read_params(&params, true);
   amber_session_t *session = amber_session_create_tag(&params);
   amber_radio_t radio;
-  amber_radio_start(&radio, params.block_bytes, false, false);
+  amber_radio_start(&radio, params.block_bytes);
   config_check_unknown_cmdlineopt(uniqCfg, CONFIG_CHECKALLSECTIONS);
 
-  // rfsim starts a client one sample before the server's write position: read up to the next
-  // block boundary so every read below is exactly one of the Reader's blocks.
+  // An rfsim server starts a client one sample before its write position, which is at the end of
+  // one of the Reader's blocks; rfsim_hub starts every node at sample 0. Read the first sample: if
+  // it does not start a block, read on to the next block boundary, so that every read below is
+  // exactly one of the Reader's blocks.
   const int block_samples = radio.block_samples;
-  openair0_timestamp_t ts = amber_radio_read(&radio, 1) + 1;
-  const int pad = (block_samples - ts % block_samples) % block_samples;
-  if (pad > 0)
-    ts = amber_radio_read(&radio, pad) + pad;
+  openair0_timestamp_t ts = amber_radio_read(&radio, 0, 1);
+  int have = 1; // samples of the block at ts already in radio.block
+  if (ts % block_samples != 0) {
+    ts++;
+    const int pad = (block_samples - ts % block_samples) % block_samples;
+    if (pad > 0)
+      ts = amber_radio_read(&radio, 0, pad) + pad;
+    have = 0;
+  }
 
   uint8_t *block = (uint8_t *)radio.block;
   int flags = TX_BURST_START;
   for (bool done = false; !done; ts += block_samples) {
-    openair0_timestamp_t rx_ts = amber_radio_read(&radio, block_samples);
-    AssertFatal(rx_ts == ts, "read the block at %lu, expected %lu\n", rx_ts, ts);
+    openair0_timestamp_t rx_ts = amber_radio_read(&radio, have, block_samples - have);
+    AssertFatal(rx_ts == ts + have, "read the block at %lu, expected %lu\n", rx_ts - have, ts);
+    have = 0;
     done = amber_session_reply(session, block, block);
     amber_radio_write(&radio, ts, flags);
     flags = TX_BURST_MIDDLE;

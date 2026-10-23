@@ -62,6 +62,7 @@ There is some general information in the [OpenAirInterface Gitlab Wiki](https://
 - [How to use packages](./packages.md)
 - [How to test F1-based NR-DC](./nr-dc.md)
 - [How to run an Amber Reader and its Tags over the RFsimulator](../openair2/AMBER/README.md)
+- [How to run 5G and Ambient IoT in one air with the RFsimulator](../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md)
 
 Legacy unmaintained files:
 - [`L2NFAPI_NOS1.md`](./L2NFAPI_NOS1.md), [`L2NFAPI_S1.md`](./L2NFAPI_S1.md):
@@ -101,13 +102,14 @@ Legacy unmaintained files:
 - The [shared object loader](../common/utils/DOC/loader.md)
 - The [threadpool](../common/utils/threadPool/thread-pool.md) used in L1
 - The [LDPC implementation](../openair1/PHY/CODING/DOC/LDPCImplementation.md) is a shared library
+- The [Ambient IoT physical layer](../openair1/PHY/AIOT/README.md) (3GPP Rel-19, TS 38.291) is a standalone library
 - The [time management](time_management.md) module
 
 ### Radios
 
 Some directories under `radio` contain READMEs:
 
-- [RFsimulator](../radio/rfsimulator/README.md)
+- [RFsimulator](../radio/rfsimulator/README.md), and [rfsim_hub](../radio/rfsimulator/hub/README.md) to put several RFsimulator nodes in one air
 - [USRP](../radio/USRP/README.md)
 - [BladeRF](../radio/BLADERF/README.md)
 - [IQPlayer](../radio/iqplayer/DOC/iqrecordplayer_usage.md), and [general documentation](./iqrecordplayer_usage.md)
