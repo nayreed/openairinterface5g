@@ -1326,6 +1326,7 @@ target_link_libraries(L2_NR PRIVATE ds alg)
 target_link_libraries(L2_NR PRIVATE f1ap f1ap_lib)
 target_link_libraries(L2_NR PRIVATE nfapi_nr_user_lib)
 target_link_libraries(L2_NR PRIVATE nrppa)
+target_link_libraries(L2_NR PRIVATE nr_aiot_config)
 target_include_directories(L2_NR PRIVATE ${F1AP_DIR}/lib)
 if(E2_AGENT)
   target_compile_definitions(L2_NR PRIVATE ${E2AP_VERSION} ${KPM_VERSION} E2_AGENT)
@@ -1819,7 +1820,7 @@ target_link_libraries(nr-softmodem PRIVATE
   time_management softmodem_common nrppa
   -Wl,--end-group dl)
 
-target_link_libraries(nr-softmodem PRIVATE pthread m CONFIG_LIB rt nr_aiot_reader_config)
+target_link_libraries(nr-softmodem PRIVATE pthread m CONFIG_LIB rt nr_aiot_config)
 target_link_libraries(nr-softmodem PRIVATE ${T_LIB})
 target_link_libraries(nr-softmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
 target_link_libraries(nr-softmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)

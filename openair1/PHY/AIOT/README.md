@@ -35,26 +35,27 @@ ninja -C build-aiot aiot_phy_shared
 
 A gNB can be the Reader. `openair1/PHY/NR_TRANSPORT/nr_aiot_r2d.c` schedules R2D transmissions and
 writes their resource elements into the gNB's DL grid, on PRBs the DL scheduler leaves empty, after
-the NR channels of each slot. It is set in the gNB's `L1s` section:
+the NR channels of each slot. It is set in the `aiot` section, which the D2R and the Reader below
+share (or with `--aiot.r2d_prb_start 0 ...`):
 
 ```
-L1s = ({ ...
-  aiot_r2d_prb_start = 0;        # first DL PRB of the R2D; -1 (the default): no R2D
-  aiot_r2d_n_rb = 3;             # PRBs reserved for it
-  aiot_r2d_power_offset_dB = 0;  # R2D EPRE over PDSCH EPRE
-  aiot_r2d_carrier = 0;          # 1: the carrier wave too, whenever no R2D is sent
-});
+aiot = { ...
+  r2d_prb_start = 0;             # first DL PRB of the R2D; -1 (the default): no R2D
+  r2d_n_rb = 3;                  # PRBs reserved for it
+  r2d_power_offset_dB = 0;       # R2D EPRE over PDSCH EPRE
+  r2d_carrier = 0;               # 1: the carrier wave too, whenever no R2D is sent
+};
 gNBs = ({ ... dl_prbblacklist = "0,1,2"; ... });  # must hold the R2D's PRBs
 ```
 
 The R2D starts at symbol 0 or 7 (a half-subframe) and runs over the next slots without a gap, in
 downlink slots only: with TDD, an R2D that would span an uplink or mixed slot is refused. A
 transmission that misses a slot, or overwrites an NR channel, is logged. The gNB refuses at start an
-`aiot_r2d_power_offset_dB` whose resource elements would not fit 16 bits (about +20 dB on 3 PRBs at
+`r2d_power_offset_dB` whose resource elements would not fit 16 bits (about +20 dB on 3 PRBs at
 the default backoff), so the R2D is never clipped. `ctest -R test_nr_aiot_r2d`
 checks it, down to a device decoding what the gNB's OFDM sends.
 
-With `aiot_r2d_carrier = 1` the gNB also sends the carrier the devices reflect (the "gnb-dl" carrier
+With `r2d_carrier = 1` the gNB also sends the carrier the devices reflect (the "gnb-dl" carrier
 of TR 38.769): every symbol without R2D gets one tone at the centre of the reserved PRBs, as strong
 as an "on" chip of an R2D on all of them, its phase carried over each cyclic prefix so that it runs
 on unbroken from symbol to symbol and slot to slot. The R2D is then the carrier keyed by its chips,
@@ -64,15 +65,15 @@ as from a standalone Reader.
 OFDM, so it works on the time-domain samples of each slot, as the radio delivers them: it moves the
 centre of the D2R PRBs (where the carrier wave and the D2R are) to 0 Hz, brings the samples to the
 A-IoT rate of 5.76 Msps, and runs the D2R receiver over each window the MAC opens. That runs in its
-own thread, as PRACH detection does, so the RU thread only copies the slot. It is set in `L1s` too:
+own thread, as PRACH detection does, so the RU thread only copies the slot. It is set in `aiot` too:
 
 ```
-L1s = ({ ...
-  aiot_d2r_prb_start = 15;       # first UL PRB of the D2R; -1 (the default): no D2R
-  aiot_d2r_n_rb = 7;             # PRBs reserved for it; the carrier wave is at their centre
-  aiot_d2r_noise_counts = 1.0;   # the receiver's noise floor, rms on I and Q, in ADC counts
-  aiot_d2r_sic = 1;              # cancel each decoded D2R and look again
-});
+aiot = { ...
+  d2r_prb_start = 15;            # first UL PRB of the D2R; -1 (the default): no D2R
+  d2r_n_rb = 7;                  # PRBs reserved for it; the carrier wave is at their centre
+  d2r_noise_counts = 1.0;        # the receiver's noise floor, rms on I and Q, in ADC counts
+  d2r_sic = 1;                   # cancel each decoded D2R and look again
+};
 gNBs = ({ ... ul_prbblacklist = "15,16,17,18,19,20,21"; ... });  # must hold the D2R's PRBs
 ```
 
@@ -96,8 +97,8 @@ protocols against the device MAC over an ideal air.
 gNB's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D the
 protocol sends next on the first half-subframe the gNB has not sent yet (`lead_slots` ahead, twice
 as many after one that came too late), opens the D2R windows the MAC asks for, and gives the MAC
-their outcomes. It needs both the R2D and the D2R in `L1s`, and is set in the `aiot` section (or
-with `--aiot.protocol registration --aiot.nodes 0-3 ...`):
+their outcomes. It needs both the R2D and the D2R, and is set in the same `aiot` section (or with
+`--aiot.protocol registration --aiot.nodes 0-3 ...`):
 
 ```
 aiot = {

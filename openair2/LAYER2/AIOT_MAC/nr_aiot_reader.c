@@ -377,7 +377,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
                                      int err_len)
 {
   if (!r2d || r2d->cfg.prb_start < 0 || !d2r) {
-    snprintf(err, err_len, "the Reader needs the gNB's R2D PRBs and D2R PRBs (L1s aiot_r2d_prb_start, aiot_d2r_prb_start)");
+    snprintf(err, err_len, "the Reader needs the node's R2D PRBs and D2R PRBs (aiot.r2d_prb_start, aiot.d2r_prb_start)");
     return NULL;
   }
   nr_aiot_reader_t *r = calloc(1, sizeof(*r));
@@ -404,7 +404,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
   }
   r->n_rb = aiot_link_n_rb(&r->cfg.link);
   if (r->n_rb > r2d->cfg.n_rb_max) {
-    snprintf(err, err_len, "the R2D needs %d PRBs, and the gNB reserves %d (aiot_r2d_n_rb)", r->n_rb, r2d->cfg.n_rb_max);
+    snprintf(err, err_len, "the R2D needs %d PRBs, and the node reserves %d (aiot.r2d_n_rb)", r->n_rb, r2d->cfg.n_rb_max);
     nr_aiot_reader_free(r);
     return NULL;
   }

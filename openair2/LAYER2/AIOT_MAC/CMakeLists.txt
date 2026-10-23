@@ -5,6 +5,6 @@
 add_library(nr_aiot_reader STATIC nr_aiot_reader.c)
 target_link_libraries(nr_aiot_reader PUBLIC aiot_phy nr_aiot_r2d nr_aiot_d2r PRIVATE LOG utils)
 target_include_directories(nr_aiot_reader PUBLIC ${OPENAIR1_DIR})
-# its "aiot" configuration section
-add_library(nr_aiot_reader_config STATIC nr_aiot_reader_config.c)
-target_link_libraries(nr_aiot_reader_config PUBLIC nr_aiot_reader PRIVATE CONFIG_LIB LOG)
+# the node's "aiot" configuration section: its R2D, D2R and Reader
+add_library(nr_aiot_config STATIC nr_aiot_config.c)
+target_link_libraries(nr_aiot_config PUBLIC nr_aiot_reader PRIVATE CONFIG_LIB LOG)

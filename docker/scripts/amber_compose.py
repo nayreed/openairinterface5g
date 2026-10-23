@@ -153,15 +153,15 @@ def hub_conf_t1(scenario_path, node_ids, phy):
 
 
 def gnb_reader_options(scenario, node_ids):
-    """The gNB's options of topology 1: its R2D, carrier and D2R (L1s) and its Reader (aiot)."""
+    """The gNB's options of topology 1 (aiot): its R2D, carrier and D2R, and its Reader."""
     phy = scenario.phy
     prb_start, n_rb, _, _ = gnb_reader(phy)
     protocol = scenario.protocol
     params = ",".join(f"{k}={v!r}" for k, v in protocol.params.items())
-    opts = [f"--L1s.[0].aiot_r2d_prb_start {prb_start}", f"--L1s.[0].aiot_r2d_n_rb {n_rb}",
-            f"--L1s.[0].aiot_r2d_power_offset_dB {R2D_OFFSET_DB}", "--L1s.[0].aiot_r2d_carrier 1",
-            f"--L1s.[0].aiot_d2r_prb_start {D2R_PRB_START}", f"--L1s.[0].aiot_d2r_n_rb {D2R_N_RB}",
-            f"--L1s.[0].aiot_d2r_noise_counts {ADC_NOISE_COUNTS}", f"--L1s.[0].aiot_d2r_sic {int(scenario.enable_sic)}",
+    opts = [f"--aiot.r2d_prb_start {prb_start}", f"--aiot.r2d_n_rb {n_rb}",
+            f"--aiot.r2d_power_offset_dB {R2D_OFFSET_DB}", "--aiot.r2d_carrier 1",
+            f"--aiot.d2r_prb_start {D2R_PRB_START}", f"--aiot.d2r_n_rb {D2R_N_RB}",
+            f"--aiot.d2r_noise_counts {ADC_NOISE_COUNTS}", f"--aiot.d2r_sic {int(scenario.enable_sic)}",
             f"--aiot.protocol {protocol.name}"]
     if params:
         opts.append(f"--aiot.params {params}")

@@ -83,10 +83,6 @@ int nr_aiot_reader_start(nr_aiot_reader_t *r);
 int nr_aiot_reader_done(nr_aiot_reader_t *r);
 nr_aiot_reader_stats_t nr_aiot_reader_stats(nr_aiot_reader_t *r);
 
-/* The Reader of the gNB's "aiot" configuration section (nr_aiot_reader_config.c), started; NULL
- * when aiot.protocol is empty. Stops the gNB with the reason when the section does not fit. */
-nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *d2r);
-
 #ifdef __cplusplus
 }
 #endif

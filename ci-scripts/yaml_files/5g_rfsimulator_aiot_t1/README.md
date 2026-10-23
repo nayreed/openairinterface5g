@@ -26,8 +26,8 @@ The gNB runs the scenario's protocol (here `registration`) with the A-IoT MAC of
 [openair1/PHY/AIOT/README.md](../../../openair1/PHY/AIOT/README.md#the-mac)):
 
 * **R2D and carrier, DL PRB 1.** The R2D (M = 6 on one PRB) goes in DL PRB 1, the centre of the
-  free PRBs 0 to 2, with its EPRE 20 dB over the PDSCH (`aiot_r2d_power_offset_dB`). With
-  `aiot_r2d_carrier 1` every other symbol carries the carrier: one tone at the centre of PRB 1, as
+  free PRBs 0 to 2, with its EPRE 20 dB over the PDSCH (`aiot.r2d_power_offset_dB`). With
+  `aiot.r2d_carrier 1` every other symbol carries the carrier: one tone at the centre of PRB 1, as
   strong as an "on" chip, unbroken from symbol to symbol. The R2D is the carrier keyed by its chips,
   as from Amber's Reader.
 * **D2R, UL PRBs 15 to 21.** The D2R receiver takes the gNB's UL samples, as in the other room.

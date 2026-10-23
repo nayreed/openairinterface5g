@@ -2,12 +2,13 @@
  * SPDX-License-Identifier: LicenseRef-CSSL-1.0
  */
 
-/*! \file nr_aiot_reader_config.c
- * \brief The "aiot" section of the gNB's configuration (and --aiot.* options): the Reader's protocol,
- * its Tags and its link, with the defaults of Amber's scenarios.
+/*! \file nr_aiot_config.c
+ * \brief The "aiot" section of an NR node's configuration (and --aiot.* options), see nr_aiot_config.h:
+ * the PRBs of the node's R2D and D2R, and the Reader's protocol, its Tags and its link, with the
+ * defaults of Amber's scenarios.
  */
 
-#include "nr_aiot_reader.h"
+#include "nr_aiot_config.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -18,8 +19,18 @@
 #define AIOT_SECTION "aiot"
 
 // clang-format off
+#define AIOT_PHY_PARAMS_DESC { \
+  {"r2d_prb_start",       "first PRB of the R2D (38.291), from point A; -1: no R2D. A gNB sends it in DL PRBs, which must be in dl_prbblacklist", 0, .iptr=NULL, .defintval=-1, TYPE_INT, 0}, \
+  {"r2d_n_rb",            "PRBs reserved for the R2D, from r2d_prb_start", 0, .iptr=NULL, .defintval=3, TYPE_INT, 0}, \
+  {"r2d_power_offset_dB", "EPRE of the R2D over the PDSCH EPRE, in dB", 0, .dblptr=NULL, .defdblval=0.0, TYPE_DOUBLE, 0}, \
+  {"r2d_carrier",         "1: the node also sends the carrier wave, at the centre of the R2D PRBs, whenever it sends no R2D", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
+  {"d2r_prb_start",       "first PRB of the D2R (38.291), from point A; -1: no D2R. A gNB receives it in UL PRBs, which must be in ul_prbblacklist", 0, .iptr=NULL, .defintval=-1, TYPE_INT, 0}, \
+  {"d2r_n_rb",            "PRBs reserved for the D2R, from d2r_prb_start; the carrier wave and the D2R are at their centre", 0, .iptr=NULL, .defintval=7, TYPE_INT, 0}, \
+  {"d2r_noise_counts",    "noise floor of the D2R receiver, rms on I and on Q, in ADC counts", 0, .dblptr=NULL, .defdblval=1.0, TYPE_DOUBLE, 0}, \
+  {"d2r_sic",             "1: the D2R receiver cancels each D2R it decodes and looks again", 0, .iptr=NULL, .defintval=1, TYPE_INT, 0}, \
+}
 #define AIOT_PARAMS_DESC { \
-  {"protocol",    "A-IoT Reader protocol (registration, broadcast, unicast, gen2_q, adaptive_aloha); empty: the gNB is no Reader", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
+  {"protocol",    "A-IoT Reader protocol (registration, broadcast, unicast, gen2_q, adaptive_aloha); empty: the node is no Reader", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
   {"params",      "protocol parameters, name=value,name=value", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
   {"nodes",       "the Tags' node ids, as 0,1,2 or 0-3", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
   {"m_chip_symb", "R2D chips per OFDM symbol: 2, 6, 12 or 24", 0, .iptr=NULL, .defintval=6, TYPE_INT, 0}, \
@@ -33,10 +44,12 @@
   {"interval_cp", "Interval Bits codepoint 0..3", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
   {"i_add",       "1: additional midamble", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
   {"d2r_tbs",     "D2R transport block for data, bytes", 0, .iptr=NULL, .defintval=5, TYPE_INT, 0}, \
-  {"lead_slots",  "slots between the slot the gNB sent last and an R2D's first", 0, .iptr=NULL, .defintval=2, TYPE_INT, 0}, \
+  {"lead_slots",  "slots between the slot the node sent last and an R2D's first", 0, .iptr=NULL, .defintval=2, TYPE_INT, 0}, \
   {"output_dir",  "folder for reader_tx.csv and reader_rx.csv; empty: none", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
 }
 // clang-format on
+
+enum { P_R2D_PRB_START, P_R2D_N_RB, P_R2D_POWER, P_R2D_CARRIER, P_D2R_PRB_START, P_D2R_N_RB, P_D2R_NOISE, P_D2R_SIC };
 
 enum {
   P_PROTOCOL,
@@ -56,6 +69,26 @@ enum {
   P_LEAD,
   P_DIR
 };
+
+void nr_aiot_config_phy(nr_aiot_r2d_config_t *r2d, nr_aiot_d2r_config_t *d2r)
+{
+  paramdef_t p[] = AIOT_PHY_PARAMS_DESC;
+  config_get(config_get_if(), p, sizeofArray(p), AIOT_SECTION);
+  *r2d = (nr_aiot_r2d_config_t){.prb_start = *p[P_R2D_PRB_START].iptr,
+                                .n_rb_max = *p[P_R2D_N_RB].iptr,
+                                .power_offset_db = *p[P_R2D_POWER].dblptr,
+                                .carrier = *p[P_R2D_CARRIER].iptr};
+  AssertFatal(r2d->prb_start < 0 || r2d->n_rb_max >= 1,
+              "aiot.r2d_prb_start is set but aiot.r2d_n_rb is %d: give the R2D at least one PRB\n",
+              r2d->n_rb_max);
+  *d2r = (nr_aiot_d2r_config_t){.prb_start = *p[P_D2R_PRB_START].iptr,
+                                .n_rb = *p[P_D2R_N_RB].iptr,
+                                .noise_counts = *p[P_D2R_NOISE].dblptr,
+                                .enable_sic = *p[P_D2R_SIC].iptr};
+  AssertFatal(d2r->prb_start < 0 || d2r->n_rb >= 1,
+              "aiot.d2r_prb_start is set but aiot.d2r_n_rb is %d: give the D2R at least one PRB\n",
+              d2r->n_rb);
+}
 
 nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *d2r)
 {

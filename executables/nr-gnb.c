@@ -42,7 +42,7 @@
 #include "thread-pool.h"
 #include "time_meas.h"
 #include "utils.h"
-#include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_config.h"
 
 #define TICK_TO_US(ts) (ts.trials==0?0:ts.diff/ts.trials)
 #define L1STATSSTRLEN 16384
