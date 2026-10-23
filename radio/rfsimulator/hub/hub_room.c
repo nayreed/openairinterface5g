@@ -16,6 +16,9 @@
 
 /// samples per flag of hub_node_t.nonzero
 #define GROUP 64
+/// the pass band's Kaiser window: 60 dB stop band (beta = 0.1102 (60 - 8.7))
+#define PASS_KAISER_BETA 5.653
+#define PASS_TAPS (2 * HUB_PASS_HALF + 1)
 
 typedef struct {
   int tx;
@@ -24,6 +27,10 @@ typedef struct {
   int64_t delay;
   /// cycles per sample; 0 for no shift
   double shift;
+  /// the pass band, on the transmitter's side of the shift; NULL: none
+  cf_t *taps;
+  /// samples of the transmitter's future the link needs: HUB_PASS_HALF with a pass band, else 0
+  int64_t ahead;
 } hub_link_t;
 
 typedef struct {
@@ -57,10 +64,11 @@ static bool refuse(char *why, size_t why_len, const char *fmt, ...)
   return false;
 }
 
-/* A receiver can mix samples up to t only once each transmitter it hears has sent up to t - delay,
- * and a transmitter sends at most its lookahead past what it has received. Following these waits
- * around a cycle of links, the needed position drops by the sum of (lookahead + delay) along the
- * cycle. If that sum is below one block, the cycle waits on itself. Returns the smallest sum over
+/* A receiver can mix samples up to t only once each transmitter it hears has sent up to t - delay
+ * (+ HUB_PASS_HALF through a pass band), and a transmitter sends at most its lookahead past what it
+ * has received. Following these waits around a cycle of links, the needed position drops by the sum
+ * of (lookahead + delay - HUB_PASS_HALF for a pass band) along the cycle. If that sum is below one
+ * block, the cycle waits on itself. Returns the smallest sum over
  * all cycles, or INT64_MAX when there is no cycle, and a node on the smallest cycle in *on_cycle. */
 static int64_t smallest_cycle(const hub_room_t *room, int *on_cycle)
 {
@@ -84,7 +92,7 @@ static int64_t smallest_cycle(const hub_room_t *room, int *on_cycle)
       done[u] = true;
       for (int k = 0; k < room->nodes[u].num_out; k++) {
         const hub_link_t *l = &room->links[room->nodes[u].out[k]];
-        int64_t d = dist[u] + c->nodes[u].lookahead + l->delay;
+        int64_t d = dist[u] + c->nodes[u].lookahead + l->delay - l->ahead;
         if (l->rx == s) {
           if (d < best) {
             best = d;
@@ -99,6 +107,36 @@ static int64_t smallest_cycle(const hub_room_t *room, int *on_cycle)
   free(dist);
   free(done);
   return best;
+}
+
+static double bessel_i0(double x)
+{
+  double sum = 1, term = 1;
+  for (int k = 1; k < 50 && term > 1e-12 * sum; k++) {
+    term *= (x / (2 * k)) * (x / (2 * k));
+    sum += term;
+  }
+  return sum;
+}
+
+/* The taps of a pass band width wide (cycles per sample) around centre: a windowed sinc low-pass,
+ * whose gain is 1 in the band, moved to centre. */
+static cf_t *pass_taps(double centre, double width)
+{
+  cf_t *h = malloc(PASS_TAPS * sizeof(*h));
+  double lp[PASS_TAPS], sum = 0;
+  for (int j = 0; j < PASS_TAPS; j++) {
+    const int n = j - HUB_PASS_HALF;
+    const double r = (double)n / HUB_PASS_HALF;
+    const double sinc = n == 0 ? width : sin(M_PI * width * n) / (M_PI * n);
+    lp[j] = sinc * bessel_i0(PASS_KAISER_BETA * sqrt(1 - r * r)) / bessel_i0(PASS_KAISER_BETA);
+    sum += lp[j];
+  }
+  for (int j = 0; j < PASS_TAPS; j++) {
+    const double a = 2 * M_PI * centre * (j - HUB_PASS_HALF);
+    h[j] = (cf_t){(float)(lp[j] / sum * cos(a)), (float)(lp[j] / sum * sin(a))};
+  }
+  return h;
 }
 
 static bool check_conf(const hub_conf_t *c, char *why, size_t why_len)
@@ -124,6 +162,10 @@ static bool check_conf(const hub_conf_t *c, char *why, size_t why_len)
       return refuse(why, why_len, "link %d: delay must not be negative", l);
     if (k->shift_Hz != 0.0 && !(c->sample_rate > 0))
       return refuse(why, why_len, "link %d has a frequency shift: set the sample rate", l);
+    if (k->pass_width_Hz < 0 || (k->pass_width_Hz > 0 && !(c->sample_rate > 0)))
+      return refuse(why, why_len, "link %d: a pass band needs a width above 0 and the sample rate", l);
+    if (k->pass_width_Hz >= c->sample_rate && k->pass_width_Hz > 0)
+      return refuse(why, why_len, "link %d: the pass band is as wide as the sample rate: leave it out", l);
   }
   return true;
 }
@@ -150,6 +192,11 @@ hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len)
         .delay = k->delay,
         .shift = k->shift_Hz == 0.0 ? 0.0 : k->shift_Hz / conf->sample_rate,
     };
+    if (k->pass_width_Hz > 0) {
+      /* the band before the shift: the filter runs on the transmitter's samples */
+      room->links[l].taps = pass_taps((k->pass_Hz - k->shift_Hz) / conf->sample_rate, k->pass_width_Hz / conf->sample_rate);
+      room->links[l].ahead = HUB_PASS_HALF;
+    }
   }
 
   bool ok = true;
@@ -163,8 +210,9 @@ hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len)
         n->in[n->num_in++] = l;
       if (room->links[l].tx == i) {
         n->out[n->num_out++] = l;
-        if (room->links[l].delay > longest_delay)
-          longest_delay = room->links[l].delay;
+        /* a pass band also reads HUB_PASS_HALF samples further back */
+        if (room->links[l].delay + room->links[l].ahead > longest_delay)
+          longest_delay = room->links[l].delay + room->links[l].ahead;
       }
     }
     if (n->num_in == 0) {
@@ -219,6 +267,8 @@ void hub_room_free(hub_room_t *room)
     free(room->nodes[i].out);
   }
   free(room->nodes);
+  for (int l = 0; l < room->conf.num_links; l++)
+    free(room->links[l].taps);
   free(room->links);
   free(room->acc);
   free(room->conf.nodes);
@@ -311,6 +361,47 @@ static void add_run(const hub_room_t *room, const hub_link_t *l, int64_t start, 
   }
 }
 
+/* As add_run(), through the link's pass band: each sample is the filter's output at the
+ * transmitter's sample, from HUB_PASS_HALF samples before it to HUB_PASS_HALF after (before sample 0:
+ * silence). */
+static void add_run_filtered(const hub_room_t *room, const hub_link_t *l, int64_t start, int64_t run, int64_t rx_time, cf_t *acc)
+{
+  const c16_t *h = room->nodes[l->tx].history;
+  const int64_t mask = room->conf.history - 1;
+  double cycles = l->shift * (double)rx_time;
+  cycles -= floor(cycles);
+  double cr = cos(2 * M_PI * cycles), ci = sin(2 * M_PI * cycles);
+  const double dr = cos(2 * M_PI * l->shift), di = sin(2 * M_PI * l->shift);
+  for (int64_t m = 0; m < run; m++) {
+    const int64_t newest = start + m + HUB_PASS_HALF;
+    float vr = 0, vi = 0;
+    for (int j = 0; j < PASS_TAPS && newest - j >= 0; j++) {
+      const c16_t x = h[(newest - j) & mask];
+      vr += l->taps[j].r * x.r - l->taps[j].i * x.i;
+      vi += l->taps[j].r * x.i + l->taps[j].i * x.r;
+    }
+    acc[m].r += l->gain * (float)(vr * cr - vi * ci);
+    acc[m].i += l->gain * (float)(vr * ci + vi * cr);
+    double t = cr * dr - ci * di;
+    ci = cr * di + ci * dr;
+    cr = t;
+  }
+}
+
+/* true when the transmitter's samples first to last (inclusive) hold anything but silence */
+static bool any_nonzero(const hub_room_t *room, const hub_node_t *tx, int64_t first, int64_t last)
+{
+  if (last < 0)
+    return false;
+  if (first < 0)
+    first = 0;
+  const int64_t mask = room->conf.history - 1;
+  for (int64_t g = first / GROUP; g <= last / GROUP; g++)
+    if (tx->nonzero[((g * GROUP) & mask) / GROUP])
+      return true;
+  return false;
+}
+
 bool hub_room_next_block(hub_room_t *room, int node, uint64_t *timestamp, c16_t *out)
 {
   hub_node_t *nd = &room->nodes[node];
@@ -320,7 +411,7 @@ bool hub_room_next_block(hub_room_t *room, int node, uint64_t *timestamp, c16_t 
     const hub_link_t *l = &room->links[nd->in[k]];
     if (room->nodes[l->tx].left)
       continue;
-    int64_t r = room->nodes[l->tx].written + l->delay;
+    int64_t r = room->nodes[l->tx].written + l->delay - l->ahead;
     if (r < ready)
       ready = r;
   }
@@ -340,8 +431,12 @@ bool hub_room_next_block(hub_room_t *room, int node, uint64_t *timestamp, c16_t 
       int64_t run = GROUP - (pos & (GROUP - 1));
       if (run > q - i)
         run = q - i;
-      if (start + i >= 0 && tx->nonzero[pos / GROUP])
+      if (l->taps) {
+        if (any_nonzero(room, tx, start + i - HUB_PASS_HALF, start + i + run - 1 + HUB_PASS_HALF))
+          add_run_filtered(room, l, start + i, run, nd->sent + i, room->acc + i);
+      } else if (start + i >= 0 && tx->nonzero[pos / GROUP]) {
         add_run(room, l, start + i, run, nd->sent + i, room->acc + i);
+      }
       i += run;
     }
   }
@@ -386,7 +481,7 @@ bool hub_room_must_wait(const hub_room_t *room, int node)
     const hub_link_t *l = &room->links[nd->out[k]];
     if (room->nodes[l->rx].left)
       continue;
-    int64_t o = room->nodes[l->rx].sent - l->delay;
+    int64_t o = room->nodes[l->rx].sent - l->delay - l->ahead;
     if (o < oldest)
       oldest = o;
   }

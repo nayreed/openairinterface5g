@@ -14,7 +14,7 @@ holds). A gNB with its UEs and an A-IoT Reader with its Tags are therefore two s
 `rfsim_hub` is a separate program that speaks the RFsimulator's wire format. Every node (gNB, UE,
 Reader, Tag, ...) connects to it as an ordinary RFsimulator client, each on its own port. For each
 receiver, the hub adds up the samples of every transmitter linked to it, each with its own gain,
-delay and frequency shift, and sends the sum back. The nodes need no change and no option beyond
+delay, frequency shift and, if set, pass band, and sends the sum back. The nodes need no change and no option beyond
 `serveraddr` and `serverport`.
 
 A frequency shift puts one system's carrier at its place in another system's band: the hub rotates
@@ -34,7 +34,7 @@ cd cmake_targets
 
 or, in a CMake build directory, `ninja rfsim_hub`. With `-DENABLE_TESTS=ON`, `ninja tests && ctest -R
 rfsim_hub` runs its unit tests (`radio/rfsimulator/hub/tests`). They check the room's mixing (sum,
-gain, delay, frequency shift, saturation), its timing rules, and carry samples between two stock
+gain, delay, frequency shift, pass band, saturation), its timing rules, and carry samples between two stock
 RFsimulator clients through a running hub.
 
 ## Run
@@ -88,6 +88,13 @@ Each link: `rx` hears `tx`. Without a link, `rx` does not hear `tx`.
 | `gain_dB`  | gain from `tx` to `rx`                                                     | 0        |
 | `delay`    | delay from `tx` to `rx`, in samples                                       | 0        |
 | `shift_Hz` | where `tx`'s signal lands, measured from `rx`'s centre frequency           | 0        |
+| `pass_Hz`, `pass_width_Hz` | only the band `pass_width_Hz` wide around `pass_Hz` (measured as `shift_Hz` is, after the shift) reaches `rx`; width 0: the whole band | 0 |
+
+A pass band is a linear-phase filter of 193 taps (`HUB_PASS_HALF` in `rfsim_hub.h`). Its edges fall
+from full gain to 60 dB down over about a 53rd of the sample rate (110 kHz at 5.76 Msps), centred
+on each edge. It adds no delay: `rx` waits for 96 more samples of `tx` instead. A Tag reflects all
+it hears, so its link to a Reader can pass only the A-IoT band and keep its reflection of the 5G
+cell out of the Reader's 5G receiver.
 
 ### Look-ahead of the OAI programs
 
@@ -112,11 +119,13 @@ The hub refuses a configuration it cannot run, and says why:
 * **Every cycle of links needs at least one quantum of look-ahead and delay.** A receiver can mix up
   to sample t only once each transmitter it hears has sent up to t minus the link's delay, and a
   transmitter sends at most its look-ahead past what it has received. Around a cycle, the sum of
-  (sender's `lookahead` + link `delay`) must reach `quantum`, or the cycle waits on itself. Two Tags
-  that hear each other (look-ahead 0 each) break this rule; a Reader and a Tag do not.
+  (sender's `lookahead` + link `delay`) must reach `quantum`, or the cycle waits on itself. A link
+  with a pass band counts 96 samples less. Two Tags that hear each other (look-ahead 0 each) break
+  this rule; a Reader and a Tag do not.
 * **The history must hold what a node writes ahead.** The hub stops reading a node that is half the
   history ahead of one of its receivers, so `history` must be at least
-  2 × (`lookahead` + 2 × `quantum` + the node's longest outgoing `delay`) for every node.
+  2 × (`lookahead` + 2 × `quantum` + the node's longest outgoing `delay`, plus 96 through a pass
+  band) for every node.
 * **Every node hears someone**, and no two nodes share a port.
 
 ## Levels
@@ -130,5 +139,6 @@ scale, the hub saturates it, as a receiver's ADC would.
 ## Limitations
 
 * One antenna per node, and one sample rate for the whole room.
-* A link has a fixed gain, an integer-sample delay and a fixed frequency shift: no fading.
+* A link has a fixed gain, an integer-sample delay, a fixed frequency shift and at most one pass
+  band: no fading.
 * Every node of the configuration must connect before the room starts.
