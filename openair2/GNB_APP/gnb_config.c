@@ -827,7 +827,8 @@ void RCconfig_NR_L1(void)
       gNB->enable_analog_das = *gpd(params, np, L1_ANALOG_DAS)->uptr;
       gNB->aiot_r2d_cfg = (nr_aiot_r2d_config_t){.prb_start = *gpd(params, np, L1_AIOT_R2D_PRB_START)->iptr,
                                                  .n_rb_max = *gpd(params, np, L1_AIOT_R2D_N_RB)->iptr,
-                                                 .power_offset_db = *gpd(params, np, L1_AIOT_R2D_POWER_OFFSET_DB)->dblptr};
+                                                 .power_offset_db = *gpd(params, np, L1_AIOT_R2D_POWER_OFFSET_DB)->dblptr,
+                                                 .carrier = *gpd(params, np, L1_AIOT_R2D_CARRIER)->iptr};
       if (gNB->aiot_r2d_cfg.prb_start >= 0) {
         AssertFatal(gNB->aiot_r2d_cfg.n_rb_max >= 1,
                     "%s is set but %s is %d: give the R2D at least one PRB\n",

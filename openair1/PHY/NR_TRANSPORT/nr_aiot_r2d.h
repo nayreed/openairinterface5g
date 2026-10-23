@@ -37,6 +37,7 @@ typedef struct {
   int prb_start; /* first PRB of the R2D, counted from point A; -1: the gNB sends no R2D */
   int n_rb_max; /* PRBs reserved for the R2D, from prb_start; 0: the gNB sends no R2D */
   double power_offset_db; /* R2D EPRE over PDSCH EPRE */
+  int carrier; /* 1: the gNB also sends the carrier wave the devices reflect (see nr_aiot_r2d_map) */
 } nr_aiot_r2d_config_t;
 
 typedef struct {
@@ -58,6 +59,8 @@ typedef struct {
   int ofdm_symbol_size;
   int n_prb; /* PRBs of the carrier */
   double on_amplitude; /* the amplitude of an "on" chip, in the grid's units */
+  int carrier_sc; /* the carrier's subcarrier: the centre of the reserved PRBs */
+  c16_t carrier_re[14]; /* its resource element in each symbol of a slot, phase-continuous */
   pthread_mutex_t lock; /* scheduling and mapping run in different threads */
   /* 1 when every symbol of the slot is downlink; NULL: every slot is (nr_aiot_r2d_set_dl_slots) */
   int (*slot_is_dl)(const void *ctx, int frame, int slot);
@@ -67,6 +70,7 @@ typedef struct {
   int now_slot; /* absolute slot mapped last, -1: none yet */
   uint64_t sent, dropped; /* transmissions sent in full; dropped because one of their slots was missed */
   uint64_t collisions; /* resource elements of NR channels the R2D overwrote */
+  uint64_t carrier_blocked; /* symbols where an NR channel held the carrier's resource element */
 } nr_aiot_r2d_t;
 
 /* Checks cfg against the carrier and prepares r2d. tx_amp is the gNB's TX_AMP: a PDSCH QPSK resource
@@ -106,7 +110,13 @@ int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d);
  * antenna (symbols_per_slot x ofdm_symbol_size, the carrier's subcarriers from index 0 at point A).
  * rotation, if not NULL, is the slot's per-symbol phase rotation (symbols_per_slot values, Q15), the
  * same as the NR channels get. A transmission that misses one of its slots (scheduled too late, or a
- * slot without DL) is dropped. Returns the number of symbols written. */
+ * slot without DL) is dropped. Returns the number of R2D symbols written.
+ *
+ * With cfg.carrier, every symbol without R2D gets the carrier wave: one resource element at the centre
+ * of the reserved PRBs (subcarrier 12 prb_start + 6 n_rb_max), as strong as an "on" chip of an R2D on
+ * all of them, its phase advanced over each cyclic prefix so that the tone runs on unbroken from symbol
+ * to symbol and slot to slot (it gets no rotation). The R2D is then the carrier keyed by its chips, as
+ * from a standalone Reader, and the devices reflect the carrier for their D2R. */
 int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, const c16_t *rotation);
 
 #ifdef __cplusplus

@@ -29,6 +29,12 @@ static int in_past(const nr_aiot_r2d_t *r2d, int a, int b)
   return slot_diff(r2d, a, b) > FRAMES * r2d->slots_per_frame / 2;
 }
 
+static int16_t sat16(double v)
+{
+  v = round(v);
+  return v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : (int16_t)v;
+}
+
 int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
                      const nr_aiot_r2d_config_t *cfg,
                      int slots_per_frame,
@@ -80,11 +86,26 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
    * with half the chips on, is about 1/2 over its K subcarriers, i.e. 1 / (2K) per resource element.
    * A PDSCH resource element has power TX_AMP^2 / 2. The R2D's own K is used at scheduling time. */
   r2d->on_amplitude = tx_amp * pow(10.0, cfg->power_offset_db / 20.0);
+  if (cfg->carrier) {
+    /* A tone on subcarrier k (from DC) is exp(j 2 pi k t / N) at sample t of the slot; symbol s's
+     * useful part starts at s N plus the cyclic prefixes up to it (N 160/2048 for symbols 0 and 7,
+     * N 144/2048 for the others), and a slot is 15 N samples, so the phase repeats every slot. */
+    r2d->carrier_sc = 12 * cfg->prb_start + 6 * cfg->n_rb_max;
+    const int k = r2d->carrier_sc - 6 * n_prb, N = ofdm_symbol_size;
+    const double a = r2d->on_amplitude * sqrt(12.0 * cfg->n_rb_max);
+    int64_t start = 0;
+    for (int s = 0; s < symbols_per_slot; s++) {
+      start += (s % 7 == 0 ? 160 : 144) * N / 2048;
+      const double phi = 2 * M_PI * (double)((k * start) % N) / N;
+      r2d->carrier_re[s] = (c16_t){sat16(a * cos(phi)), sat16(a * sin(phi))};
+    }
+  }
   LOG_I(NR_PHY,
-        "A-IoT R2D on PRBs %d to %d, EPRE %+.1f dB over PDSCH\n",
+        "A-IoT R2D on PRBs %d to %d, EPRE %+.1f dB over PDSCH%s\n",
         cfg->prb_start,
         cfg->prb_start + cfg->n_rb_max - 1,
-        cfg->power_offset_db);
+        cfg->power_offset_db,
+        cfg->carrier ? ", with the carrier wave at their centre" : "");
   return 0;
 }
 
@@ -100,12 +121,6 @@ void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d)
     free(r2d->pending[i].re);
   r2d->n_pending = 0;
   pthread_mutex_destroy(&r2d->lock);
-}
-
-static int16_t sat16(double v)
-{
-  v = round(v);
-  return v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : (int16_t)v;
 }
 
 /* A Q15 product back to 16 bits, rounded and saturated (as rotate_cpx_vector does for PDSCH). */
@@ -221,6 +236,7 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
   const int now = frame * r2d->slots_per_frame + slot;
   const int nsym = r2d->symbols_per_slot, fft = r2d->ofdm_symbol_size;
   int written = 0;
+  uint16_t r2d_symbols = 0; /* the symbols of this slot that carry an R2D */
   pthread_mutex_lock(&r2d->lock);
   r2d->now_slot = now;
   for (int i = 0; i < r2d->n_pending;) {
@@ -267,6 +283,7 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
           }
           dst[q] = v;
         }
+        r2d_symbols |= 1 << s;
         written++;
       }
       done = l0 + nsym >= p->n_sym;
@@ -288,6 +305,17 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
       r2d->pending[i] = r2d->pending[--r2d->n_pending];
     } else {
       i++;
+    }
+  }
+  if (r2d->cfg.carrier) {
+    for (int s = 0; s < nsym; s++) {
+      if (r2d_symbols & (1 << s))
+        continue;
+      c16_t *dst = txdataF + s * fft + r2d->carrier_sc;
+      if (dst->r || dst->i)
+        r2d->carrier_blocked++;
+      else
+        *dst = r2d->carrier_re[s];
     }
   }
   pthread_mutex_unlock(&r2d->lock);

@@ -25,9 +25,9 @@ const int kSlots = 10, kSym = 14, kFft = 384, kPrb = 25, kAmp = 519;
 
 struct Cell {
   nr_aiot_r2d_t r2d;
-  explicit Cell(int prb_start = 0, int n_rb_max = 3, double offset_db = 0)
+  explicit Cell(int prb_start = 0, int n_rb_max = 3, double offset_db = 0, int carrier = 0)
   {
-    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db};
+    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, carrier};
     EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), 0);
   }
   ~Cell() { nr_aiot_r2d_free(&r2d); }
@@ -392,6 +392,86 @@ TEST(NrAiotR2D, RefusesASlotAlreadyMapped)
   EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 5, 5, 0, tb.data(), 96, 6, 1), 0);
   nr_aiot_r2d_map(&cell.r2d, 1023, 9, g.re.data(), nullptr); // across the wrap, 0.0 is next
   EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 7, tb.data(), 96, 6, 1), 0);
+}
+
+// With the carrier on, slots without R2D carry one tone at the centre of the reserved PRBs, as
+// strong as an "on" chip of an R2D on all of them, that runs on unbroken through every cyclic prefix
+// and from slot to slot: the samples are the tone itself, to the rounding of its resource element.
+TEST(NrAiotR2D, TheCarrierRunsUnbroken)
+{
+  for (int n_rb_max : {1, 3})
+    for (int prb_start : {0, 11, kPrb - n_rb_max}) {
+      Cell cell(prb_start, n_rb_max, 0, 1);
+      std::vector<std::complex<double>> air;
+      for (int slot = 0; slot < 3; slot++) {
+        Grid g;
+        EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 7, slot, g.re.data(), nullptr), 0);
+        for (int s = 0; s < kSym; s++)
+          for (int k = 0; k < kFft; k++)
+            if (k != prb_start * 12 + 6 * n_rb_max) {
+              ASSERT_TRUE(g.at(s, k).r == 0 && g.at(s, k).i == 0) << "only the carrier's subcarrier";
+            }
+        Modulate(g, air);
+      }
+      ASSERT_EQ(air.size(), 3u * AIOT_SAMPLES_PER_MS);
+      const int k = prb_start * 12 + 6 * n_rb_max - kPrb * 6;
+      const double a = kAmp * std::sqrt(12.0 * n_rb_max);
+      double worst = 0;
+      for (size_t t = 0; t < air.size(); t++)
+        worst = std::max(worst, std::abs(air[t] - std::polar(a, 2 * M_PI * k * (double)(t % kFft) / kFft)));
+      EXPECT_LT(worst, 1.0) << n_rb_max << " PRBs from " << prb_start << ": the tone breaks";
+      EXPECT_EQ(cell.r2d.carrier_blocked, 0u);
+    }
+}
+
+// An R2D keys the carrier: its symbols carry the R2D alone, the others the carrier, and a device
+// still decodes it. A resource element an NR channel already holds is left alone and counted.
+TEST(NrAiotR2D, TheR2DKeysTheCarrier)
+{
+  std::mt19937 gen(10);
+  std::vector<uint8_t> tb = RandomBits(gen, 40);
+  Cell cell(0, 3, 0, 1);
+  const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 1, 7, tb.data(), 40, 6, 3);
+  ASSERT_GT(n_sym, 0);
+  const std::vector<c16_t> want = Expected(tb, 6, 3);
+  std::vector<std::complex<double>> air;
+  const int n_slots = 1 + (7 + n_sym + kSym - 1) / kSym + 1;
+  for (int slot = 0; slot < n_slots; slot++) {
+    Grid g;
+    if (slot == n_slots - 1)
+      g.at(2, 18) = c16_t{5, 5}; // an NR channel on the carrier's resource element
+    nr_aiot_r2d_map(&cell.r2d, 0, slot, g.re.data(), nullptr);
+    for (int s = 0; s < kSym; s++) {
+      const int l = (slot - 1) * kSym + s - 7;
+      const c16_t v = g.at(s, 18);
+      if (l >= 0 && l < n_sym) {
+        EXPECT_EQ(v.r, want[l * 36 + 18].r) << "R2D symbol " << l;
+        EXPECT_EQ(v.i, want[l * 36 + 18].i);
+      } else if (slot == n_slots - 1 && s == 2) {
+        EXPECT_EQ(v.r, 5);
+      } else {
+        EXPECT_EQ(v.r, cell.r2d.carrier_re[s].r) << "slot " << slot << ", symbol " << s;
+        EXPECT_EQ(v.i, cell.r2d.carrier_re[s].i);
+      }
+    }
+    Modulate(g, air);
+  }
+  EXPECT_EQ(cell.r2d.carrier_blocked, 1u);
+  std::vector<cd_t> y(air.size());
+  for (size_t i = 0; i < air.size(); i++)
+    y[i] = cd_t{air[i].real() / kAmp, air[i].imag() / kAmp};
+  aiot_r2d_rx_t *rx = aiot_r2d_rx_new();
+  aiot_r2d_frame_t fr[4];
+  int found = 0;
+  for (size_t p = 0; p + AIOT_SAMPLES_PER_MS <= y.size(); p += AIOT_SAMPLES_PER_MS) {
+    const int n = aiot_r2d_rx_receive(rx, y.data() + p, AIOT_SAMPLES_PER_MS, fr + found, 4 - found);
+    ASSERT_GE(n, 0);
+    found += n;
+  }
+  aiot_r2d_rx_free(rx);
+  ASSERT_EQ(found, 1);
+  EXPECT_TRUE(std::equal(tb.begin(), tb.end(), fr[0].bits));
+  EXPECT_EQ(fr[0].end_sample, AIOT_SAMPLES_PER_MS + AIOT_HALF_SUBFRAME + aiot_r2d_n_samples(n_sym));
 }
 
 int main(int argc, char **argv)

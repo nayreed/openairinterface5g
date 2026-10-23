@@ -46,6 +46,8 @@
 #define HLP_L1_AIOT_R2D_N_RB "DL PRBs reserved for the Ambient IoT R2D, from aiot_r2d_prb_start"
 #define L1_AIOT_R2D_POWER_OFFSET_DB          "aiot_r2d_power_offset_dB"
 #define HLP_L1_AIOT_R2D_POWER_OFFSET_DB "EPRE of the Ambient IoT R2D over the PDSCH EPRE, in dB"
+#define L1_AIOT_R2D_CARRIER                  "aiot_r2d_carrier"
+#define HLP_L1_AIOT_R2D_CARRIER "1: the gNB also sends the Ambient IoT carrier wave, at the centre of the R2D PRBs, whenever no R2D is sent"
 #define L1_AIOT_D2R_PRB_START                "aiot_d2r_prb_start"
 #define HLP_L1_AIOT_D2R_PRB_START "First UL PRB of the Ambient IoT D2R (38.291), from point A; -1: no D2R. The PRBs must be in ul_prbblacklist"
 #define L1_AIOT_D2R_N_RB                     "aiot_d2r_n_rb"
@@ -85,6 +87,7 @@
   {L1_AIOT_R2D_PRB_START,                HLP_L1_AIOT_R2D_PRB_START, 0, .iptr=NULL,  .defintval=-1,              TYPE_INT,      0},         \
   {L1_AIOT_R2D_N_RB,                     HLP_L1_AIOT_R2D_N_RB, 0,  .iptr=NULL,        .defintval=3,               TYPE_INT,      0},         \
   {L1_AIOT_R2D_POWER_OFFSET_DB,          HLP_L1_AIOT_R2D_POWER_OFFSET_DB, 0, .dblptr=NULL, .defdblval=0.0,       TYPE_DOUBLE,   0},         \
+  {L1_AIOT_R2D_CARRIER,                  HLP_L1_AIOT_R2D_CARRIER, 0, .iptr=NULL,    .defintval=0,               TYPE_INT,      0},         \
   {L1_AIOT_D2R_PRB_START,                HLP_L1_AIOT_D2R_PRB_START, 0, .iptr=NULL,  .defintval=-1,              TYPE_INT,      0},         \
   {L1_AIOT_D2R_N_RB,                     HLP_L1_AIOT_D2R_N_RB, 0,  .iptr=NULL,        .defintval=7,               TYPE_INT,      0},         \
   {L1_AIOT_D2R_NOISE_COUNTS,             HLP_L1_AIOT_D2R_NOISE_COUNTS, 0, .dblptr=NULL, .defdblval=1.0,         TYPE_DOUBLE,   0},         \

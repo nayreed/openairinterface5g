@@ -42,6 +42,7 @@ L1s = ({ ...
   aiot_r2d_prb_start = 0;        # first DL PRB of the R2D; -1 (the default): no R2D
   aiot_r2d_n_rb = 3;             # PRBs reserved for it
   aiot_r2d_power_offset_dB = 0;  # R2D EPRE over PDSCH EPRE
+  aiot_r2d_carrier = 0;          # 1: the carrier wave too, whenever no R2D is sent
 });
 gNBs = ({ ... dl_prbblacklist = "0,1,2"; ... });  # must hold the R2D's PRBs
 ```
@@ -52,6 +53,12 @@ transmission that misses a slot, or overwrites an NR channel, is logged. The gNB
 `aiot_r2d_power_offset_dB` whose resource elements would not fit 16 bits (about +20 dB on 3 PRBs at
 the default backoff), so the R2D is never clipped. `ctest -R test_nr_aiot_r2d`
 checks it, down to a device decoding what the gNB's OFDM sends.
+
+With `aiot_r2d_carrier = 1` the gNB also sends the carrier the devices reflect (the "gnb-dl" carrier
+of TR 38.769): every symbol without R2D gets one tone at the centre of the reserved PRBs, as strong
+as an "on" chip of an R2D on all of them, its phase carried over each cyclic prefix so that it runs
+on unbroken from symbol to symbol and slot to slot. The R2D is then the carrier keyed by its chips,
+as from a standalone Reader.
 
 `openair1/PHY/NR_TRANSPORT/nr_aiot_d2r.c` receives D2R from the gNB's UL band. The D2R is not
 OFDM, so it works on the time-domain samples of each slot, as the radio delivers them: it moves the
