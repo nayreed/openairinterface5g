@@ -24,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include "common/utils/LOG/log.h"
+#include "common/utils/system.h"
 
 #define FILTER_SPAN 8 /* G = FILTER_SPAN * D radio samples each side */
 #define FILTER_CUTOFF_HZ 1900000.0 /* passes the D2R PRBs, stops what aliases into them */
@@ -527,8 +528,7 @@ int nr_aiot_d2r_start(nr_aiot_d2r_t *d, int max_slots, int max_slot_samples, int
   d->max_slot_samples = max_slot_samples;
   d->wait_when_full = wait_when_full;
   d->head = d->tail = 0;
-  if (pthread_create(&d->thread, NULL, worker, d) != 0)
-    return AIOT_ENOMEM;
+  threadCreate(&d->thread, worker, d, "aiot_d2r", -1, OAI_PRIORITY_RT_LOW);
   d->running = 1;
   return 0;
 }

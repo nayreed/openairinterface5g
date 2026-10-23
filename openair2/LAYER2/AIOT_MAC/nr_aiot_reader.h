@@ -75,7 +75,7 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r);
 /* One pass: gives the MAC the outcomes that came in, and sends the R2Ds that are ready. Returns how
  * many of either it handled. The thread calls it once per slot received; tests call it. */
 int nr_aiot_reader_step(nr_aiot_reader_t *r);
-/* Starts the thread. Returns 0 or -1. */
+/* Starts the thread (threadCreate(), which stops the node if it cannot). Returns 0, or -1 when it runs already. */
 int nr_aiot_reader_start(nr_aiot_reader_t *r);
 /* 1 once the protocol has ended and every answer is in. */
 int nr_aiot_reader_done(nr_aiot_reader_t *r);

@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "common/utils/LOG/log.h"
+#include "common/utils/system.h"
 
 #define SLOT_SAMPLES AIOT_SAMPLES_PER_MS /* one 15 kHz slot */
 #define SLOTS_PER_FRAME 10
@@ -591,8 +592,9 @@ static void *reader_thread(void *arg)
 
 int nr_aiot_reader_start(nr_aiot_reader_t *r)
 {
-  if (r->running || pthread_create(&r->thread, NULL, reader_thread, r) != 0)
+  if (r->running)
     return -1;
+  threadCreate(&r->thread, reader_thread, r, "aiot_reader", -1, OAI_PRIORITY_RT_LOW);
   r->running = 1;
   return 0;
 }

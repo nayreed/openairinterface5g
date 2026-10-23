@@ -4,7 +4,7 @@
 add_library(nr_aiot_r2d STATIC nr_aiot_r2d.c)
 target_link_libraries(nr_aiot_r2d PUBLIC aiot_phy PRIVATE LOG)
 add_library(nr_aiot_d2r STATIC nr_aiot_d2r.c)
-target_link_libraries(nr_aiot_d2r PUBLIC aiot_phy PRIVATE LOG)
+target_link_libraries(nr_aiot_d2r PUBLIC aiot_phy PRIVATE LOG utils)
 
 if (ENABLE_TESTS)
   add_subdirectory(tests)
