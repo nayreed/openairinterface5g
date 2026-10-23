@@ -3,7 +3,7 @@
  */
 
 /*! \file nr_aiot_reader.c
- * \brief The gNB as an Ambient IoT Reader: the Reader MAC on the gNB's R2D and D2R (nr_aiot_reader.h).
+ * \brief An NR node as an Ambient IoT Reader: the Reader MAC on the node's R2D and D2R (nr_aiot_reader.h).
  */
 
 #include "nr_aiot_reader.h"
@@ -460,32 +460,25 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r)
   free(r);
 }
 
-/* The radio's slot (counted on past frame 1023) whose frame * 10 + slot is wrapped, the one
- * nearest the received sample now. */
-static int64_t unwrap_slot(int wrapped, int64_t now)
-{
-  int64_t rx_slot = now / SLOT_SAMPLES;
-  int64_t d = ((wrapped - rx_slot % WRAP_SLOTS) % WRAP_SLOTS + WRAP_SLOTS) % WRAP_SLOTS;
-  if (d >= WRAP_SLOTS / 2)
-    d -= WRAP_SLOTS;
-  return rx_slot + d;
-}
-
-/* Puts the protocol's next R2D on the grid. Returns 1 when sent, 0 when it waits for a later
- * pass, or -1 when the gNB cannot send it at all. */
+/* Puts the protocol's next R2D on the grid, on the node's clock: the slot it mapped last starts at
+ * its radio timestamp, A-IoT sample ts / D of the D2R receiver. Returns 1 when sent, 0 when it waits
+ * for a later pass, or -1 when the node cannot send it at all. */
 static int send_next(nr_aiot_reader_t *r, int64_t now)
 {
-  const int tx_slot = nr_aiot_r2d_now(r->r2d);
-  if (tx_slot < 0)
-    return 0; /* the gNB has sent nothing yet */
-  const int64_t sent_until = (unwrap_slot(tx_slot, now) + 1) * SLOT_SAMPLES;
-  int64_t start = sent_until + (int64_t)r->lead * SLOT_SAMPLES;
+  int64_t tx_ts;
+  const int tx_slot = nr_aiot_r2d_now(r->r2d, &tx_ts);
+  if (tx_slot < 0 || tx_ts < 0)
+    return 0; /* the node has sent nothing yet */
+  const int d = nr_aiot_d2r_decimation(r->d2r);
+  const int64_t tx_start = (tx_ts + d / 2) / d; /* the slot mapped last, in A-IoT samples */
+  int64_t start = tx_start + (int64_t)(1 + r->lead) * SLOT_SAMPLES;
   if (r->next.earliest_start > start)
     start = r->next.earliest_start;
-  start = (start + AIOT_HALF_SUBFRAME - 1) / AIOT_HALF_SUBFRAME * AIOT_HALF_SUBFRAME;
-  const int64_t slot = start / SLOT_SAMPLES;
-  const int frame = (int)((slot / SLOTS_PER_FRAME) % FRAMES), sl = (int)(slot % SLOTS_PER_FRAME);
-  const int symbol = start % SLOT_SAMPLES ? 7 : 0;
+  /* the node's next half-subframe from there: symbol 0 or 7 of slot tx_slot + k / 2 */
+  const int64_t k = (start - tx_start + AIOT_HALF_SUBFRAME - 1) / AIOT_HALF_SUBFRAME;
+  start = tx_start + k * AIOT_HALF_SUBFRAME;
+  const int slot = (int)((tx_slot + k / 2) % WRAP_SLOTS);
+  const int frame = slot / SLOTS_PER_FRAME, sl = slot % SLOTS_PER_FRAME, symbol = k % 2 ? 7 : 0;
   int n_sym = nr_aiot_r2d_schedule(r->r2d, frame, sl, symbol, r->next.bits, r->next.n_bits, r->cfg.link.m_chip_symb, r->n_rb);
   if (n_sym == NR_AIOT_R2D_ETOOLATE) {
     r->stats.too_late++;
@@ -497,7 +490,7 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
   if (n_sym == AIOT_ESPACE)
     return 0;
   if (n_sym < 0) {
-    LOG_E(NR_MAC, "A-IoT Reader: the gNB cannot send the R2D at %d.%d.%d (%d); the Reader stops\n", frame, sl, symbol, n_sym);
+    LOG_E(NR_MAC, "A-IoT Reader: the node cannot send the R2D at %d.%d.%d (%d); the Reader stops\n", frame, sl, symbol, n_sym);
     return -1;
   }
   const int64_t end = start + aiot_r2d_n_samples(n_sym);

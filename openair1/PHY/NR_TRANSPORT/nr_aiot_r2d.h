@@ -68,6 +68,9 @@ typedef struct {
   nr_aiot_r2d_tx_t pending[NR_AIOT_R2D_MAX_PENDING];
   int n_pending;
   int now_slot; /* absolute slot mapped last, -1: none yet */
+  int64_t now_ts; /* the radio timestamp of now_slot's first sample, -1: not given */
+  int timed_slot; /* the slot nr_aiot_r2d_set_slot_time() gave the time of last, -1: none */
+  int64_t timed_ts;
   uint64_t sent, dropped; /* transmissions sent in full; dropped because one of their slots was missed */
   uint64_t collisions; /* resource elements of NR channels the R2D overwrote */
   uint64_t carrier_blocked; /* symbols where an NR channel held the carrier's resource element */
@@ -104,8 +107,14 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
                          int m_chip_symb,
                          int n_rb);
 
-/* The absolute slot (frame * slots_per_frame + slot) the gNB mapped last, or -1 before the first. */
-int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d);
+/* The node's clock: ts is the radio timestamp (the node's own sample count) of the first sample of
+ * (frame, slot), the slot the node maps next. The Reader plans each R2D, and the D2R windows it opens,
+ * from the time of the slot mapped last, so a node calls this before it maps each slot. */
+void nr_aiot_r2d_set_slot_time(nr_aiot_r2d_t *r2d, int frame, int slot, int64_t ts);
+
+/* The absolute slot (frame * slots_per_frame + slot) the node mapped last, or -1 before the first.
+ * *ts gets the radio timestamp of its first sample, or -1 when the node did not give it. */
+int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d, int64_t *ts);
 
 /* Writes the R2D symbols that fall in (frame, slot) into txdataF, the slot's grid of the first
  * antenna (symbols_per_slot x ofdm_symbol_size, the carrier's subcarriers from index 0 at point A).

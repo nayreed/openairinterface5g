@@ -380,21 +380,40 @@ TEST(NrAiotR2D, RefusesAPowerThatWouldClip)
   nr_aiot_r2d_free(&r2d);
 }
 
-// The slot mapped last is the gNB's TX time: an R2D must start after it.
+// The slot mapped last is the node's TX time: an R2D must start after it.
 TEST(NrAiotR2D, RefusesASlotAlreadyMapped)
 {
   std::mt19937 gen(9);
   std::vector<uint8_t> tb = RandomBits(gen, 96);
   Cell cell(0, 3);
-  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d), -1);
+  int64_t ts = 0;
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), -1);
+  EXPECT_EQ(ts, -1);
   Grid g;
   nr_aiot_r2d_map(&cell.r2d, 5, 4, g.re.data(), nullptr);
-  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d), 54);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 54);
+  EXPECT_EQ(ts, -1); // the node did not say when
   EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 5, 4, 7, tb.data(), 96, 6, 1), NR_AIOT_R2D_ETOOLATE);
   EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 5, 1, 0, tb.data(), 96, 6, 1), NR_AIOT_R2D_ETOOLATE);
   EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 5, 5, 0, tb.data(), 96, 6, 1), 0);
   nr_aiot_r2d_map(&cell.r2d, 1023, 9, g.re.data(), nullptr); // across the wrap, 0.0 is next
   EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 7, tb.data(), 96, 6, 1), 0);
+}
+
+// The time the node gives a slot comes with that slot once it is mapped, and with no other.
+TEST(NrAiotR2D, KeepsTheTimeOfTheSlotMappedLast)
+{
+  Cell cell(0, 3);
+  Grid g;
+  int64_t ts = 0;
+  nr_aiot_r2d_set_slot_time(&cell.r2d, 7, 3, 123457);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), -1); // given, not mapped yet
+  nr_aiot_r2d_map(&cell.r2d, 7, 3, g.re.data(), nullptr);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 73);
+  EXPECT_EQ(ts, 123457);
+  nr_aiot_r2d_map(&cell.r2d, 7, 4, g.re.data(), nullptr);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 74);
+  EXPECT_EQ(ts, -1);
 }
 
 // With the carrier on, slots without R2D carry one tone at the centre of the reserved PRBs, as

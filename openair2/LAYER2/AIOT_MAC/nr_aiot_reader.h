@@ -3,17 +3,19 @@
  */
 
 /*! \file nr_aiot_reader.h
- * \brief The gNB as an Ambient IoT Reader: the 38.391 Reader MAC (openair2/LAYER2/AIOT_MAC) and its
- * protocol, driving the gNB's R2D transmissions (nr_aiot_r2d) and D2R reception (nr_aiot_d2r).
+ * \brief An NR node (a gNB) as an Ambient IoT Reader: the 38.391 Reader MAC (openair2/LAYER2/AIOT_MAC)
+ * and its protocol, driving the node's R2D transmissions (nr_aiot_r2d) and D2R reception (nr_aiot_d2r).
  *
- * It does what Amber's Reader does over its own air, on the gNB's: it takes the R2D the protocol
- * sends next, puts it on the DL grid from the first half-subframe that the gNB has not sent yet,
+ * It does what Amber's Reader does over its own air, on the node's: it takes the R2D the protocol
+ * sends next, puts it on the node's grid from the first half-subframe that the node has not sent yet,
  * opens the D2R windows the MAC asks for, and gives the MAC each window's outcome. Times are A-IoT
- * samples (5.76 Msps) of the radio's clock: slot s of the radio's timeline (s = frame * 10 + slot,
- * frames counted on past 1023) starts at sample 5760 s, on the DL and on the UL.
+ * samples (5.76 Msps) of the D2R receiver: radio timestamps over D (nr_aiot_d2r_decimation()). The
+ * node gives the radio timestamp of each slot it sends (nr_aiot_r2d_set_slot_time()), and the Reader
+ * plans on those, so the node's TX slots need not start where its RX slots do (a UE's start a timing
+ * advance earlier).
  *
  * It runs in its own thread, woken by each slot the D2R receiver takes; building an R2D's resource
- * elements happens there, not in the gNB's slot processing. What it sent and heard goes to
+ * elements happens there, not in the node's slot processing. What it sent and heard goes to
  * reader_tx.csv and reader_rx.csv in an output folder, with the columns of Amber's Reader, and each
  * Tag's data is logged.
  */
@@ -34,14 +36,14 @@ extern "C" {
 #define NR_AIOT_READER_MAX_NODES 1024
 
 typedef struct nr_aiot_reader_config {
-  char protocol[32]; /* "": the gNB is no Reader */
+  char protocol[32]; /* "": the node is no Reader */
   char param_names[NR_AIOT_READER_MAX_PARAMS][32];
   aiot_param_t params[NR_AIOT_READER_MAX_PARAMS]; /* names point into param_names */
   int n_params;
   int node_ids[NR_AIOT_READER_MAX_NODES];
   int n_nodes;
   aiot_link_config_t link;
-  int lead_slots; /* slots between the slot the gNB sent last and an R2D's first; doubles when late */
+  int lead_slots; /* slots between the slot the node sent last and an R2D's first; doubles when late */
   char output_dir[256]; /* "": no CSV files */
 } nr_aiot_reader_config_t;
 
@@ -63,7 +65,7 @@ int nr_aiot_reader_parse_r_sfs(nr_aiot_reader_config_t *cfg, const char *s);
 /* Parses a bit duration in tau, "2", "1", "1/2" ... "1/96", into cfg->link. Returns 0 or -1. */
 int nr_aiot_reader_parse_t_bit(nr_aiot_reader_config_t *cfg, const char *s);
 
-/* A Reader on the gNB's R2D transmitter and D2R receiver. Returns NULL with the reason in err. */
+/* A Reader on the node's R2D transmitter and D2R receiver. Returns NULL with the reason in err. */
 nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
                                      nr_aiot_r2d_t *r2d,
                                      nr_aiot_d2r_t *d2r,

@@ -123,8 +123,9 @@ struct Room {
   std::vector<std::complex<double>> dl; // the air's DL from sample 0
   std::string dir;
   int64_t slot = 0; // the air's slot: the UL the gNB receives next, the DL the Tags hear next
+  int64_t clock; // the node's TX slot k starts at air sample k kSlot + clock
 
-  Room(const char *protocol, const char *params, int n_tags, const char *name)
+  Room(const char *protocol, const char *params, int n_tags, const char *name, int64_t tx_clock = 0) : clock(tx_clock)
   {
     nr_aiot_r2d_config_t rc = {0, 3, 0.0};
     EXPECT_EQ(nr_aiot_r2d_init(&r2d, &rc, 10, kSym, kFft, kPrb, kAmp), 0);
@@ -168,11 +169,13 @@ struct Room {
   // answer, the gNB receives this slot's UL, and the Reader takes its step.
   void Step()
   {
-    const int64_t tx = slot + kAhead;
+    const int64_t tx = slot + kAhead, tx_at = tx * kSlot + clock;
+    const int frame = (int)((tx / 10) % 1024), tx_slot = (int)(tx % 10);
     std::vector<c16_t> grid(kSym * kFft, c16_t{0, 0});
-    nr_aiot_r2d_map(&r2d, (int)((tx / 10) % 1024), (int)(tx % 10), grid.data(), nullptr);
-    dl.resize((tx + 1) * kSlot);
-    Modulate(grid, dl.data() + tx * kSlot);
+    nr_aiot_r2d_set_slot_time(&r2d, frame, tx_slot, tx_at);
+    nr_aiot_r2d_map(&r2d, frame, tx_slot, grid.data(), nullptr);
+    dl.resize(tx_at + kSlot);
+    Modulate(grid, dl.data() + tx_at);
 
     const int64_t t0 = slot * kSlot;
     std::vector<cd_t> y(kSlot);
@@ -323,6 +326,36 @@ TEST(NrAiotReader, EveryTagRegistersThroughTheGnb)
     EXPECT_NEAR(start * 2 - std::round(start * 2), 0, 1e-9) << tx[i][0];
     EXPECT_GE(start, last_end);
     last_end = end;
+  }
+}
+
+// A node whose TX slots are not on its RX slots, as a UE's are (they start a timing advance early):
+// the Reader plans on the time of each slot the node sends, and every Tag still registers.
+TEST(NrAiotReader, PlansOnTheTimeOfTheSlotsTheNodeSends)
+{
+  const int64_t kClock = -1001;
+  Room room("registration", "", 4, "tx_clock", kClock);
+  ASSERT_NE(room.reader, nullptr);
+  room.Run(600);
+  EXPECT_EQ(nr_aiot_reader_stats(room.reader).too_late, 0u);
+  EXPECT_EQ(nr_aiot_d2r_stats(room.d2r).late, 0u);
+  for (auto &t : room.tags) {
+    EXPECT_EQ(t->late, 0) << "Tag " << t->id;
+    aiot_device_state_t s;
+    aiot_device_state(t->mac, &s);
+    EXPECT_GE(s.as_id, 0) << "Tag " << t->id << " has no AS ID";
+  }
+  std::set<int> data_from;
+  for (auto &r : room.Csv("reader_rx.csv"))
+    if (r.size() > 3 && r[2] == "data")
+      data_from.insert(std::stoi(r[3]));
+  EXPECT_EQ(data_from, (std::set<int>{0, 1, 2, 3}));
+  // every R2D starts on a half-subframe of the node's TX slots
+  auto tx = room.Csv("reader_tx.csv");
+  ASSERT_GE(tx.size(), 2u);
+  for (size_t i = 1; i < tx.size(); i++) {
+    const double half_subframes = (std::stod(tx[i][0]) * kSlot - kClock) / AIOT_HALF_SUBFRAME;
+    EXPECT_NEAR(half_subframes, std::round(half_subframes), 1e-6) << tx[i][0];
   }
 }
 

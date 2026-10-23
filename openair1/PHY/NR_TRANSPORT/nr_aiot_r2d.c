@@ -45,6 +45,9 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
 {
   memset(r2d, 0, sizeof(*r2d));
   r2d->now_slot = -1;
+  r2d->now_ts = -1;
+  r2d->timed_slot = -1;
+  r2d->timed_ts = -1;
   r2d->tx_slots = (1u << NR_AIOT_R2D_TX_SLOT_PERIOD) - 1;
   r2d->cfg = *cfg;
   r2d->cfg.prb_start = -1;
@@ -219,10 +222,21 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
   return rc;
 }
 
-int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d)
+void nr_aiot_r2d_set_slot_time(nr_aiot_r2d_t *r2d, int frame, int slot, int64_t ts)
+{
+  if (r2d->cfg.prb_start < 0)
+    return;
+  pthread_mutex_lock(&r2d->lock);
+  r2d->timed_slot = frame * r2d->slots_per_frame + slot;
+  r2d->timed_ts = ts;
+  pthread_mutex_unlock(&r2d->lock);
+}
+
+int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d, int64_t *ts)
 {
   pthread_mutex_lock(&r2d->lock);
   int now = r2d->now_slot;
+  *ts = r2d->now_ts;
   pthread_mutex_unlock(&r2d->lock);
   return now;
 }
@@ -237,6 +251,7 @@ int nr_aiot_r2d_map(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *txdataF, con
   uint16_t r2d_symbols = 0; /* the symbols of this slot that carry an R2D */
   pthread_mutex_lock(&r2d->lock);
   r2d->now_slot = now;
+  r2d->now_ts = r2d->timed_slot == now ? r2d->timed_ts : -1;
   for (int i = 0; i < r2d->n_pending;) {
     nr_aiot_r2d_tx_t *p = &r2d->pending[i];
     int done = 0;
