@@ -6,8 +6,11 @@
 #include <Python.h>
 
 #include "amber_host.h"
+#include <libgen.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "common/config/config_userapi.h"
 #include "common/utils/LOG/log.h"
 #include "common/utils/assertions.h"
@@ -53,7 +56,7 @@ void amber_read_params(amber_params_t *params, bool with_node_id)
   }
 }
 
-void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader, bool by_tag)
+void amber_radio_start(amber_radio_t *radio, int block_bytes)
 {
   memset(radio, 0, sizeof(*radio));
   radio->block_samples = block_bytes / sizeof(c16_t);
@@ -73,38 +76,16 @@ void amber_radio_start(amber_radio_t *radio, int block_bytes, bool reader, bool 
     LOG_E(HW, "cannot start the rfsimulator device\n");
     exit(EXIT_FAILURE);
   }
-  if (reader && by_tag) {
-    if (radio->device.trx_read_peers_func == NULL) {
-      LOG_E(HW,
-            "amber-reader must be the rfsim server in msgmode: --rfsimulator.serveraddr server --rfsimulator.options msgmode\n");
-      exit(EXIT_FAILURE);
-    }
-    radio->tag_blocks = calloc_or_fail(AMBER_MAX_TAGS, sizeof(*radio->tag_blocks));
-    c16_t *samples = calloc_or_fail((size_t)AMBER_MAX_TAGS * radio->block_samples, sizeof(c16_t));
-    for (int i = 0; i < AMBER_MAX_TAGS; i++)
-      radio->tag_blocks[i] = samples + (size_t)i * radio->block_samples;
-  }
 }
 
-openair0_timestamp_t amber_radio_read(amber_radio_t *radio, int nsamps)
+openair0_timestamp_t amber_radio_read(amber_radio_t *radio, int offset, int nsamps)
 {
-  DevAssert(nsamps > 0 && nsamps <= radio->block_samples);
+  DevAssert(offset >= 0 && nsamps > 0 && offset + nsamps <= radio->block_samples);
   openair0_timestamp_t ts;
-  void *buf[1] = {radio->block};
+  void *buf[1] = {radio->block + offset};
   int ret = radio->device.trx_read_func(&radio->device, &ts, buf, nsamps, 1);
   AssertFatal(ret == nsamps, "rfsim read returned %d samples, expected %d\n", ret, nsamps);
   return ts;
-}
-
-int amber_radio_read_tags(amber_radio_t *radio, openair0_timestamp_t *ts)
-{
-  DevAssert(radio->tag_blocks != NULL);
-  int tags = radio->device.trx_read_peers_func(&radio->device, ts, radio->tag_blocks, radio->block_samples, AMBER_MAX_TAGS);
-  if (tags < 0) {
-    LOG_E(HW, "more than %d Tags are connected\n", AMBER_MAX_TAGS);
-    exit(EXIT_FAILURE);
-  }
-  return tags;
 }
 
 void amber_radio_write(amber_radio_t *radio, openair0_timestamp_t ts, int flags)
@@ -118,10 +99,6 @@ void amber_radio_stop(amber_radio_t *radio)
 {
   radio->device.trx_end_func(&radio->device);
   free(radio->block);
-  if (radio->tag_blocks != NULL) {
-    free(radio->tag_blocks[0]);
-    free(radio->tag_blocks);
-  }
 }
 
 static void python_failed(const char *what)
@@ -153,17 +130,41 @@ static amber_session_t *session_create(const amber_params_t *params, const char 
   return session;
 }
 
-amber_session_t *amber_session_create_reader(const amber_params_t *params)
+/* Start Python. Amber's R2D and D2R signal processing is OAI's A-IoT PHY (openair1/PHY/AIOT),
+ * which Amber loads from AMBER_AIOT_LIB. Unless the environment already sets it, point it at the
+ * libaiot_phy.so next to this program, which the build puts there. */
+static void start_python(void)
 {
+  if (getenv("AMBER_AIOT_LIB") == NULL) {
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+      exe[n] = 0;
+      char lib[PATH_MAX];
+      snprintf(lib, sizeof(lib), "%s/libaiot_phy.so", dirname(exe));
+      if (access(lib, R_OK) == 0)
+        setenv("AMBER_AIOT_LIB", lib, 0);
+    }
+  }
+  const char *lib = getenv("AMBER_AIOT_LIB");
+  if (lib)
+    LOG_I(UTIL, "A-IoT PHY: %s\n", lib);
+  else
+    LOG_W(UTIL, "no libaiot_phy.so next to this program and AMBER_AIOT_LIB not set: Amber looks for its own copy\n");
   // No Python signal handlers: Ctrl-C stops the program as for any other OAI executable.
   Py_InitializeEx(0);
+}
+
+amber_session_t *amber_session_create_reader(const amber_params_t *params)
+{
+  start_python();
   PyObject *args = Py_BuildValue("(sis)", params->scenario, params->block_bytes, params->output_dir);
   return session_create(params, "ReaderSession", args);
 }
 
 amber_session_t *amber_session_create_tag(const amber_params_t *params)
 {
-  Py_InitializeEx(0);
+  start_python();
   PyObject *args = Py_BuildValue("(siis)", params->scenario, params->node_id, params->block_bytes, params->output_dir);
   return session_create(params, "TagSession", args);
 }
@@ -178,18 +179,6 @@ static void copy_block(const amber_session_t *session, PyObject *bytes, const ch
   memcpy(out, PyBytes_AS_STRING(bytes), session->block_bytes);
 }
 
-bool amber_session_reads_sum(amber_session_t *session)
-{
-  PyObject *ret = PyObject_GetAttrString(session->obj, "reads_sum");
-  if (ret == NULL)
-    python_failed("ReaderSession.reads_sum");
-  int sum = PyObject_IsTrue(ret);
-  Py_DECREF(ret);
-  if (sum < 0)
-    python_failed("ReaderSession.reads_sum");
-  return sum;
-}
-
 void amber_session_next_block(amber_session_t *session, uint8_t *out)
 {
   PyObject *ret = PyObject_CallMethod(session->obj, "next_block", NULL);
@@ -199,25 +188,15 @@ void amber_session_next_block(amber_session_t *session, uint8_t *out)
   Py_DECREF(ret);
 }
 
-bool amber_session_on_blocks(amber_session_t *session, void *const *blocks, int n)
+bool amber_session_on_block(amber_session_t *session, const uint8_t *block)
 {
-  PyObject *list = PyList_New(n);
-  if (list == NULL)
-    python_failed("building the list of Tag blocks");
-  for (int i = 0; i < n; i++) {
-    PyObject *block = PyBytes_FromStringAndSize((const char *)blocks[i], session->block_bytes);
-    if (block == NULL)
-      python_failed("building the list of Tag blocks");
-    PyList_SET_ITEM(list, i, block);
-  }
-  PyObject *ret = PyObject_CallMethod(session->obj, "on_blocks", "(O)", list);
-  Py_DECREF(list);
+  PyObject *ret = PyObject_CallMethod(session->obj, "on_block", "y#", (const char *)block, (Py_ssize_t)session->block_bytes);
   if (ret == NULL)
-    python_failed("ReaderSession.on_blocks()");
+    python_failed("ReaderSession.on_block()");
   int done = PyObject_IsTrue(ret);
   Py_DECREF(ret);
   if (done < 0)
-    python_failed("ReaderSession.on_blocks() result");
+    python_failed("ReaderSession.on_block() result");
   return done;
 }
 

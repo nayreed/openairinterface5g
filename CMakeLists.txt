@@ -1911,8 +1911,8 @@ if (ENABLE_AMBER)
   add_executable(amber-tag ${OPENAIR_DIR}/executables/amber-tag.c)
   target_link_libraries(amber-tag PRIVATE amber_host)
   # librfsimulator.so is loaded at run time
-  add_dependencies(amber-reader rfsimulator)
-  add_dependencies(amber-tag rfsimulator)
+  add_dependencies(amber-reader rfsimulator aiot_phy_shared)
+  add_dependencies(amber-tag rfsimulator aiot_phy_shared)
 endif()
 
 ###################################"

@@ -32,18 +32,15 @@ def service(name, image, command, volumes, depends_on=None):
     return lines
 
 
-def compose(scenario_path, node_ids, image, iq=False):
+def compose(scenario_path, node_ids, image):
     volumes = ["./out:/out"]
     if scenario_path.startswith(OWN_SCENARIOS + "/"):
         volumes.append(f"./scenarios:{OWN_SCENARIOS}:ro")
-    # Amber message mode: to be removed once IQ mode has been checked against it side by side.
-    # Messages need msgmode; a scenario in IQ mode runs on normal rfsim, which adds the Tags' signals up.
-    common = ([] if iq else ["--rfsimulator.options", "msgmode"]) + \
-        ["--amber.scenario", scenario_path, "--amber.output_dir", "/out"]
+    common = ["--amber.scenario", scenario_path, "--amber.output_dir", "/out"]
     lines = [f"# Written by amber-compose for {json.dumps(scenario_path)}", "services:"]
-    lines += service("reader", image, ["amber-reader", "--rfsimulator.serveraddr", "server"] + common, volumes)
+    lines += service("reader", image, ["amber-reader", "--rfsimulator.[0].serveraddr", "server"] + common, volumes)
     for node_id in node_ids:
-        tag = ["amber-tag", "--rfsimulator.serveraddr", "reader", "--amber.node_id", str(node_id)] + common
+        tag = ["amber-tag", "--rfsimulator.[0].serveraddr", "reader", "--amber.node_id", str(node_id)] + common
         lines += service(f"tag{node_id}", image, tag, volumes, ["reader"])
     return "\n".join(lines) + "\n"
 
@@ -60,11 +57,10 @@ def main():
     with contextlib.redirect_stdout(sys.stderr):
         scenario = load_scenario(args.scenario)
         node_ids = list(scenario.NODE_IDS)
-        iq = getattr(scenario, "phy", None) is not None
     for node_id in node_ids:
         if not isinstance(node_id, int) or node_id < 0:
             parser.error(f"node ids must be non-negative integers, the scenario has {node_id!r}")
-    sys.stdout.write(compose(args.scenario, node_ids, args.image, iq))
+    sys.stdout.write(compose(args.scenario, node_ids, args.image))
 
 
 if __name__ == "__main__":

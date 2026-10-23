@@ -75,10 +75,9 @@ The RF simulator is using the configuration module, and its parameters are defin
 |:-------------------------------------|:-------------------------------------------------------------------------------|----:                   |
 |`--rfsimulator.[0].serveraddr <addr>` | IPv4v6 address or DNS name to connect to, or `server` to behave as a IPv4v6 TCP server | 127.0.0.1      |
 |`--rfsimulator.[0].serverport <port>` | port number to connect to or to listen on (eNB, which behaves as a tcp server) | 4043                   |
-|`--rfsimulator.[0].options`           | list of comma separated run-time options: `chanmod`, `saviq`, `msgmode`        | all options disabled   |
+|`--rfsimulator.[0].options`           | list of comma separated run-time options, two are supported: `chanmod`, `saviq`| all options disabled   |
 |`--rfsimulator.[0].options saviq`     | store IQs to a file for future replay                                          | disabled               |
 |`--rfsimulator.[0].options chanmod`   | enable the channel model                                                       | disabled               |
-|`--rfsimulator.[0].options msgmode`   | carry messages instead of signals: samples pass unchanged and a server can read each client separately with `trx_read_peers_func`. Needs one antenna, and no `chanmod`, beams or propagation delay | disabled |
 |`--rfsimulator.[0].IQfile <file>`     | path to a file to store the IQ samples to (only with `saviq`)                  | `/tmp/rfsimulator.iqs` |
 |`--rfsimulator.[0].prop_delay`        | simulated receive-path (gNB: UL, UE: DL) propagation delay in ms               | 0                      |
 |`--rfsimulator.[0].wait_timeout`      | wait timeout when no UE is connected                                           | 1                      |
