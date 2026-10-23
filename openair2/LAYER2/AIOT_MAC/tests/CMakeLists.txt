@@ -8,3 +8,11 @@ foreach(t link reader device)
     add_dependencies(tests test_aiot_mac_${t})
   endif()
 endforeach()
+
+# The Reader of an NR node needs OAI's LOG, so it is not part of aiot_phy's standalone build.
+if(NOT AIOT_STANDALONE)
+  add_executable(test_nr_aiot_reader test_nr_aiot_reader.cpp)
+  target_link_libraries(test_nr_aiot_reader PRIVATE nr_aiot_reader GTest::gtest LOG minimal_lib)
+  add_dependencies(tests test_nr_aiot_reader)
+  add_test(NAME test_nr_aiot_reader COMMAND ./test_nr_aiot_reader)
+endif()

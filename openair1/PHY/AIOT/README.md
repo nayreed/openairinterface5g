@@ -92,7 +92,7 @@ protocols (registration, broadcast, unicast, gen2_q, adaptive_aloha) and the dev
 the PHY and the clock (`aiot_mac.h`). `ctest -R test_aiot_mac` runs its tests, with the Reader and its
 protocols against the device MAC over an ideal air.
 
-`openair2/LAYER2/NR_MAC_gNB/nr_aiot_reader.c` makes the gNB the Reader: it runs that MAC on the
+`openair2/LAYER2/AIOT_MAC/nr_aiot_reader.c` makes the gNB the Reader: it runs that MAC on the
 gNB's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D the
 protocol sends next on the first half-subframe the gNB has not sent yet (`lead_slots` ahead, twice
 as many after one that came too late), opens the D2R windows the MAC asks for, and gives the MAC

@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 extern "C" {
-#include "LAYER2/NR_MAC_gNB/nr_aiot_reader.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
 #include "common/utils/LOG/log.h"
 #include "common/config/config_load_configmodule.h"
 extern configmodule_interface_t *uniqCfg;

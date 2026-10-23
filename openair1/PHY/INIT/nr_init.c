@@ -22,7 +22,7 @@
 #include <math.h>
 #include <complex.h>
 #include "PHY/NR_TRANSPORT/nr_ulsch.h"
-#include "LAYER2/NR_MAC_gNB/nr_aiot_reader.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
 #include "PHY/NR_REFSIG/nr_refsig.h"
 #include "PHY/NR_REFSIG/ul_ref_seq_nr.h"
 #include <string.h>

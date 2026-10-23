@@ -17,7 +17,7 @@ image, such as /opt/amber/tests/scenarios/registration.toml. Every program write
 
 Topology 1 of the Rel-19 study (r2d = d2r = "gnb", cw = "gnb-dl") puts the A-IoT Reader in the gNB:
 the gNB sends the R2D and the carrier in its DL PRBs and receives the D2R in its UL PRBs, with the
-scenario's protocol, link and Tags (openair2/LAYER2/NR_MAC_gNB/nr_aiot_reader.c), and there is no
+scenario's protocol, link and Tags (openair2/LAYER2/AIOT_MAC/nr_aiot_reader.c), and there is no
 amber-reader. A UE as the Reader (topologies 2 to 4) and the other carrier options are not built yet,
 and this script says so.
 """
