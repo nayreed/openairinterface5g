@@ -23,6 +23,8 @@ typedef struct nr_ue_tx_slot nr_ue_tx_slot_t;
 nr_ue_tx_t *nr_ue_tx_new(const nr_aiot_r2d_config_t *r2d);
 void nr_ue_tx_free(nr_ue_tx_t *t);
 nr_aiot_r2d_t *nr_ue_tx_r2d(nr_ue_tx_t *t);
+/* The amplitude the UE's R2D power is set against, AMP: a PUSCH QPSK resource element is AMP / sqrt(2). */
+int nr_ue_tx_amp(void);
 /* A configuration request with TDD, period slots of num_ul[i] uplink symbols (the others downlink). */
 void nr_ue_tx_set_tdd(nr_ue_tx_t *t, int period, const int *num_ul);
 /* What processSlotTX() does for (frame, slot) before its barrier, in slot order. */

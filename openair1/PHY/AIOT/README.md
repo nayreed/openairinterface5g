@@ -118,6 +118,12 @@ lengthens a read to follow its timing drift. `ctest -R test_nr_aiot_d2r` decodes
 the UE's reads and checks that no sample is lost, and decodes a D2R in the guard band with the
 downlink 20 dB above it on every PRB of the carrier.
 
+With `protocol` set in its section the UE is the Reader (topology 4), with the Reader of
+[the MAC](#the-mac) on its R2D and D2R. The UE's own Reader is the only one that schedules its R2D:
+the gNB only keeps the UL PRBs free. The Reader plans each R2D from the radio timestamp of the slot
+the UE mapped last, which carries the UE's timing advance and drift, and opens the D2R windows on the
+timestamps of the UE's reads, the same radio clock.
+
 ## The MAC
 
 `openair2/LAYER2/AIOT_MAC` is the 38.391 MAC, built into the same library: the Reader with its
@@ -125,11 +131,11 @@ protocols (registration, broadcast, unicast, gen2_q, adaptive_aloha) and the dev
 the PHY and the clock (`aiot_mac.h`). `ctest -R test_aiot_mac` runs its tests, with the Reader and its
 protocols against the device MAC over an ideal air.
 
-`openair2/LAYER2/AIOT_MAC/nr_aiot_reader.c` makes the gNB the Reader: it runs that MAC on the
-gNB's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D the
-protocol sends next on the first half-subframe the gNB has not sent yet (`lead_slots` ahead, twice
-as many after one that came too late), opens the D2R windows the MAC asks for, and gives the MAC
-their outcomes. It needs both the R2D and the D2R, and is set in the same `aiot` section (or with
+`openair2/LAYER2/AIOT_MAC/nr_aiot_reader.c` makes the gNB or the UE the Reader: it runs that MAC on
+the node's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D
+the protocol sends next on the first half-subframe the node has not sent yet (`lead_slots` ahead,
+twice as many after one that came too late), opens the D2R windows the MAC asks for, and gives the
+MAC their outcomes. It needs both the R2D and the D2R, and is set in the same `aiot` section (or with
 `--aiot.protocol registration --aiot.nodes 0-3 ...`):
 
 ```

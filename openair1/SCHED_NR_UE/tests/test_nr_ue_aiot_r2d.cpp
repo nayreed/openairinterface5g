@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cmath>
 #include <random>
 #include <vector>
 extern "C" {
@@ -24,9 +25,9 @@ const int kSlotsPerFrame = 10, kSym = 14, kSlotSamples = AIOT_SAMPLES_PER_MS; //
 
 struct Ue {
   nr_ue_tx_t *t;
-  explicit Ue(int prb_start, int n_rb_max = 3)
+  explicit Ue(int prb_start, int n_rb_max = 3, double offset_db = 0)
   {
-    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, 0, 0};
+    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, 0};
     t = nr_ue_tx_new(&cfg);
   }
   ~Ue()
@@ -136,6 +137,30 @@ TEST(NrUeAiotR2D, SlotsTakenInOrderAreSentInAnyOrder)
   const std::vector<aiot_r2d_frame_t> fr = Decode(air[1]);
   ASSERT_EQ(fr.size(), 1u);
   EXPECT_TRUE(std::equal(tb.begin(), tb.end(), fr[0].bits));
+}
+
+// The R2D leaves the UE at the power it is given: with half its chips on, its samples have the EPRE
+// of a PUSCH QPSK resource element (AMP^2 / 2) plus the offset, over the UE's IDFT, on its K of the
+// symbol's 384 subcarriers. amber-compose sets the gain from the UE to each Tag from this level.
+TEST(NrUeAiotR2D, SendsAtThePowerItIsGiven)
+{
+  std::mt19937 gen(4);
+  const double amp = nr_ue_tx_amp();
+  for (int m : {2, 6, 12, 24})
+    for (double offset : {0.0, 20.0}) {
+      const int n_rb = aiot_n_rb_min(m);
+      Ue ue(11, 3, offset);
+      std::vector<uint8_t> tb = RandomBits(gen, 200);
+      const int n_sym = nr_aiot_r2d_schedule(ue.r2d(), 0, 1, 0, tb.data(), 200, m, n_rb);
+      ASSERT_GT(n_sym, 0);
+      const std::vector<c16_t> air = Send(ue, 0, 1 + (n_sym + kSym - 1) / kSym + 1);
+      const size_t start = kSlotSamples, end = start + aiot_r2d_n_samples(n_sym);
+      double sum = 0;
+      for (size_t i = start; i < end; i++)
+        sum += (double)air[i].r * air[i].r + (double)air[i].i * air[i].i;
+      const double want_db = 10 * log10(amp * amp / 2 * 12 * n_rb / 384) + offset;
+      EXPECT_NEAR(10 * log10(sum / (end - start)), want_db, 0.5) << "M = " << m << ", offset " << offset;
+    }
 }
 
 // With TDD the UE sends R2D only in slots whose symbols are all uplink: one that would span a

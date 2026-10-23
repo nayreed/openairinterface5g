@@ -441,6 +441,8 @@ typedef struct PHY_VARS_NR_UE_s {
   /// Ambient IoT D2R (TS 38.291 §6.1) in the UE's DL PRBs, from the same section; NULL: none
   nr_aiot_d2r_config_t aiot_d2r_cfg;
   nr_aiot_d2r_t *aiot_d2r;
+  /// Ambient IoT Reader: the Reader MAC on aiot_r2d and aiot_d2r (NULL: the UE is no Reader)
+  struct nr_aiot_reader *aiot_reader;
 
   // Sidelink parameters
   sl_nr_sidelink_mode_t sl_mode;

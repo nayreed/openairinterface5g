@@ -3,7 +3,7 @@
  */
 
 /*! \file nr_aiot_reader.h
- * \brief An NR node (a gNB) as an Ambient IoT Reader: the 38.391 Reader MAC (openair2/LAYER2/AIOT_MAC)
+ * \brief An NR node (a gNB or a UE) as an Ambient IoT Reader: the 38.391 Reader MAC (openair2/LAYER2/AIOT_MAC)
  * and its protocol, driving the node's R2D transmissions (nr_aiot_r2d) and D2R reception (nr_aiot_d2r).
  *
  * It does what Amber's Reader does over its own air, on the node's: it takes the R2D the protocol

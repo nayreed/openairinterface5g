@@ -100,6 +100,11 @@ nr_aiot_r2d_t *nr_ue_tx_r2d(nr_ue_tx_t *t)
   return &t->ue.aiot_r2d;
 }
 
+int nr_ue_tx_amp(void)
+{
+  return AMP;
+}
+
 void nr_ue_tx_set_tdd(nr_ue_tx_t *t, int period, const int *num_ul)
 {
   AssertFatal(period > 0 && period <= MAX_TDD_PERIOD, "TDD period %d\n", period);
