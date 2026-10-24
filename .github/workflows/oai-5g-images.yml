@@ -61,7 +61,8 @@ jobs:
   # and turns on GFNI when the build machine has it. -march=haswell (AVX2 with PCLMUL, which OAI's
   # CRC code needs) and GFNI off let the images run on any x86 host with AVX2, which is also what
   # oai-amber needs. build_oai splits BUILD_OPTION on spaces, so a C_FLAGS here can hold one flag
-  # only, and replaces the build image's -Werror.
+  # only, and replaces the build image's -Werror; CMAKE_COMPILE_WARNING_AS_ERROR puts -Werror back
+  # on every target.
   build:
     needs: ran-base
     runs-on: ubuntu-24.04
@@ -93,7 +94,7 @@ jobs:
           DOCKER_BUILDKIT: "1"
         run: |
           docker build --target ran-build --tag ran-build:latest --file docker/Dockerfile.build.ubuntu \
-            --build-arg BUILD_OPTION="--cmake-opt -DCMAKE_C_FLAGS=-march=haswell --cmake-opt -DCMAKE_CXX_FLAGS=-march=haswell --cmake-opt -DGFNI=OFF" .
+            --build-arg BUILD_OPTION="--cmake-opt -DCMAKE_C_FLAGS=-march=haswell --cmake-opt -DCMAKE_CXX_FLAGS=-march=haswell --cmake-opt -DGFNI=OFF --cmake-opt -DCMAKE_COMPILE_WARNING_AS_ERROR=ON" .
           docker build --target oai-gnb --tag oai-gnb:latest --file docker/Dockerfile.gNB.ubuntu \
             --label org.opencontainers.image.revision="$GITHUB_SHA" .
           docker build --target oai-nr-ue --tag oai-nr-ue:latest --file docker/Dockerfile.nrUE.ubuntu \
