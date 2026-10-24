@@ -776,6 +776,50 @@ static int get_prb_blacklist(uint16_t *prbbl, int idx)
   return num_prbbl;
 }
 
+/* The A-IoT keys the L1s section had before the "aiot" section: a file that still sets one stops the
+ * gNB, rather than run without the R2D or D2R it asks for. */
+static void aiot_check_removed_keys(const paramdef_t *params, int np)
+{
+  const char *ints[] = {L1_AIOT_R2D_PRB_START_REMOVED,
+                        L1_AIOT_R2D_N_RB_REMOVED,
+                        L1_AIOT_R2D_CARRIER_REMOVED,
+                        L1_AIOT_D2R_PRB_START_REMOVED,
+                        L1_AIOT_D2R_N_RB_REMOVED,
+                        L1_AIOT_D2R_SIC_REMOVED};
+  const char *doubles[] = {L1_AIOT_R2D_POWER_OFFSET_DB_REMOVED, L1_AIOT_D2R_NOISE_COUNTS_REMOVED};
+  const char *set = NULL;
+  for (int i = 0; i < sizeofArray(ints) && !set; i++)
+    if (*gpd(params, np, ints[i])->iptr != L1_AIOT_REMOVED_UNSET)
+      set = ints[i];
+  for (int i = 0; i < sizeofArray(doubles) && !set; i++)
+    if (*gpd(params, np, doubles[i])->dblptr != L1_AIOT_REMOVED_UNSET)
+      set = doubles[i];
+  if (set) {
+    LOG_E(NR_PHY, "%s removed from the L1s section, set aiot.%s in the aiot section instead\n", set, set + strlen("aiot_"));
+    exit(EXIT_FAILURE);
+  }
+}
+
+/* The PRBs of an A-IoT link must be in the gNB's PRB blacklist of that direction, so that its
+ * schedulers leave them alone; else the gNB stops with the first one that is not. */
+static void aiot_check_blacklisted(const char *link, const char *key, const char *dir, int idx, int prb_start, int n_rb)
+{
+  uint16_t prbbl[MAX_BWP_SIZE] = {0};
+  get_prb_blacklist(prbbl, idx);
+  for (int rb = prb_start; rb < prb_start + n_rb; rb++) {
+    if (rb >= MAX_BWP_SIZE || !prbbl[rb]) {
+      LOG_E(NR_PHY,
+            "A-IoT %s PRB %d (aiot.%s_prb_start, aiot.%s_n_rb) is not in gNBs.[0].%s_prbblacklist\n",
+            link,
+            rb,
+            key,
+            key,
+            dir);
+      exit(EXIT_FAILURE);
+    }
+  }
+}
+
 /* L1 needs bf_method for DAS. Only a PNF legitimately has no MACRLCs section to read it
  * from, and it cannot do DAS at all; anywhere else a missing section would silently cost
  * the operator the beamforming they asked for. */
@@ -862,23 +906,12 @@ void RCconfig_NR_L1(void)
         LOG_I(NR_PHY, "L1 configured for a distributed antenna system (DAS)\n");
       // the Ambient IoT R2D and D2R of the "aiot" section; the schedulers must leave their PRBs alone
       // (with an nFAPI PNF, the VNF's file must blacklist them too: this checks only the file this L1 reads)
+      aiot_check_removed_keys(params, np);
       nr_aiot_config_phy(&gNB->aiot_r2d_cfg, &gNB->aiot_d2r_cfg);
-      if (gNB->aiot_r2d_cfg.prb_start >= 0) {
-        uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
-        get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
-        for (int rb = gNB->aiot_r2d_cfg.prb_start; rb < gNB->aiot_r2d_cfg.prb_start + gNB->aiot_r2d_cfg.n_rb_max; rb++)
-          AssertFatal(rb < MAX_BWP_SIZE && dlprbbl[rb],
-                      "A-IoT R2D PRB %d (aiot.r2d_prb_start, aiot.r2d_n_rb) is not in gNBs.[0].dl_prbblacklist\n",
-                      rb);
-      }
-      if (gNB->aiot_d2r_cfg.prb_start >= 0) {
-        uint16_t ulprbbl[MAX_BWP_SIZE] = {0};
-        get_prb_blacklist(ulprbbl, GNB_ULPRBBLACKLIST_IDX);
-        for (int rb = gNB->aiot_d2r_cfg.prb_start; rb < gNB->aiot_d2r_cfg.prb_start + gNB->aiot_d2r_cfg.n_rb; rb++)
-          AssertFatal(rb < MAX_BWP_SIZE && ulprbbl[rb],
-                      "A-IoT D2R PRB %d (aiot.d2r_prb_start, aiot.d2r_n_rb) is not in gNBs.[0].ul_prbblacklist\n",
-                      rb);
-      }
+      if (gNB->aiot_r2d_cfg.prb_start >= 0)
+        aiot_check_blacklisted("R2D", "r2d", "dl", GNB_DLPRBBLACKLIST_IDX, gNB->aiot_r2d_cfg.prb_start, gNB->aiot_r2d_cfg.n_rb_max);
+      if (gNB->aiot_d2r_cfg.prb_start >= 0)
+        aiot_check_blacklisted("D2R", "d2r", "ul", GNB_ULPRBBLACKLIST_IDX, gNB->aiot_d2r_cfg.prb_start, gNB->aiot_d2r_cfg.n_rb);
       // Midhaul configuration
       if (strcmp(*gpd(params, np, L1_TRANSPORT_N_PREFERENCE)->strptr, "local_mac") == 0) {
         // do nothing
