@@ -8,13 +8,18 @@
 
 #include "nr_aiot_reader.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <math.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include "aiot_node_msg.h"
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
 
@@ -43,6 +48,10 @@ struct nr_aiot_reader {
   int table_cols;
   double *rows;
   int ended; /* the protocol's end is logged */
+  int sock; /* to the data destination, -1: none */
+  struct sockaddr_in dest;
+  uint32_t seq; /* Tag data messages so far */
+  int send_errno; /* the last error the socket gave */
   pthread_mutex_t lock; /* step() and stats() */
   nr_aiot_reader_stats_t stats;
   pthread_t thread;
@@ -155,6 +164,37 @@ int nr_aiot_reader_parse_t_bit(nr_aiot_reader_config_t *cfg, const char *s)
     return -1;
   cfg->link.t_bit_num = num;
   cfg->link.t_bit_den = den;
+  return 0;
+}
+
+/* "a.b.c.d:port" into addr. Returns 0 or -1. */
+static int parse_dest(const char *s, struct sockaddr_in *addr)
+{
+  char host[32];
+  const char *colon = strrchr(s, ':');
+  if (!colon || colon == s || colon - s >= (int)sizeof(host))
+    return -1;
+  memcpy(host, s, colon - s);
+  host[colon - s] = 0;
+  char *end;
+  const long port = strtol(colon + 1, &end, 10);
+  if (end == colon + 1 || *end || port < 1 || port > 65535)
+    return -1;
+  memset(addr, 0, sizeof(*addr));
+  addr->sin_family = AF_INET;
+  addr->sin_port = htons((uint16_t)port);
+  return inet_pton(AF_INET, host, &addr->sin_addr) == 1 ? 0 : -1;
+}
+
+int nr_aiot_reader_parse_data_dest(nr_aiot_reader_config_t *cfg, const char *s)
+{
+  cfg->data_dest[0] = 0;
+  if (!s || !*s)
+    return 0;
+  struct sockaddr_in addr;
+  if (strlen(s) >= sizeof(cfg->data_dest) || parse_dest(s, &addr) != 0)
+    return -1;
+  snprintf(cfg->data_dest, sizeof(cfg->data_dest), "%s", s);
   return 0;
 }
 
@@ -279,6 +319,33 @@ static int read_sdu(const aiot_mac_d2r_msg_t *m, int *node, int *value)
   return 1;
 }
 
+/* One message heard from a Tag, as Tag data to the data destination. The socket does not block: a
+ * datagram it cannot take is counted and lost, and the next one's seq shows the gap. */
+static void send_tag_data(nr_aiot_reader_t *r, const aiot_reader_heard_t *h, const aiot_reader_answer_t *a)
+{
+  aiot_tag_data_t m = {.seq = r->seq++, .after = h->sent.kind, .answer = *a};
+  uint8_t buf[AIOT_NODE_MSG_MAX_BYTES];
+  const int n = aiot_node_msg_pack_tag_data(&m, buf, sizeof(buf));
+  if (n < 0) {
+    LOG_E(NR_MAC, "A-IoT Reader: cannot pack the Tag data of seq %u (%d)\n", m.seq, n);
+    r->stats.data_unsent++;
+    return;
+  }
+  if (sendto(r->sock, buf, n, MSG_DONTWAIT, (const struct sockaddr *)&r->dest, sizeof(r->dest)) == n) {
+    r->stats.data_sent++;
+    return;
+  }
+  const int e = errno;
+  if (r->stats.data_unsent++ == 0 || e != r->send_errno)
+    LOG_W(NR_MAC,
+          "A-IoT Reader: Tag data seq %u not sent to %s: %s (%lu not sent so far)\n",
+          m.seq,
+          r->cfg.data_dest,
+          strerror(e),
+          (unsigned long)r->stats.data_unsent);
+  r->send_errno = e;
+}
+
 static void record(nr_aiot_reader_t *r, const aiot_reader_heard_t *h)
 {
   char detail[256];
@@ -293,6 +360,8 @@ static void record(nr_aiot_reader_t *r, const aiot_reader_heard_t *h)
   }
   for (int i = 0; i < h->n_answers; i++) {
     const aiot_reader_answer_t *a = &h->answers[i];
+    if (r->sock >= 0)
+      send_tag_data(r, h, a);
     int node = -1, value = -1;
     char id[16] = "";
     if (a->kind == AIOT_ANSWER_MSG1) {
@@ -390,6 +459,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
     r->cfg.params[i].name = r->cfg.param_names[i];
   r->r2d = r2d;
   r->d2r = d2r;
+  r->sock = -1;
   r->lead = cfg->lead_slots > 0 ? cfg->lead_slots : 2;
   pthread_mutex_init(&r->lock, NULL);
   r->outcomes = malloc(sizeof(*r->outcomes) * MAX_OUTCOMES);
@@ -407,6 +477,19 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
     snprintf(err, err_len, "the R2D needs %d PRBs, and the node reserves %d (aiot.r2d_n_rb)", r->n_rb, r2d->cfg.n_rb_max);
     nr_aiot_reader_free(r);
     return NULL;
+  }
+  if (r->cfg.data_dest[0]) {
+    if (parse_dest(r->cfg.data_dest, &r->dest) != 0) {
+      snprintf(err, err_len, "the data destination \"%s\" is not ipv4:port (aiot.data_dest)", r->cfg.data_dest);
+      nr_aiot_reader_free(r);
+      return NULL;
+    }
+    r->sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (r->sock < 0) {
+      snprintf(err, err_len, "no socket for the data destination: %s", strerror(errno));
+      nr_aiot_reader_free(r);
+      return NULL;
+    }
   }
   if (r->cfg.output_dir[0]) {
     mkdir(r->cfg.output_dir, 0777);
@@ -446,6 +529,8 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r)
   }
   if (r->mac)
     collect(r);
+  if (r->sock >= 0)
+    close(r->sock);
   if (r->tx_csv)
     fclose(r->tx_csv);
   if (r->rx_csv)
@@ -544,6 +629,12 @@ int nr_aiot_reader_step(nr_aiot_reader_t *r)
           (unsigned long)r->stats.r2d_sent,
           (unsigned long)r->stats.answers,
           (unsigned long)r->stats.collisions);
+    if (r->sock >= 0)
+      LOG_I(NR_MAC,
+            "A-IoT Reader: %lu Tag data messages sent to %s, %lu not sent\n",
+            (unsigned long)r->stats.data_sent,
+            r->cfg.data_dest,
+            (unsigned long)r->stats.data_unsent);
   }
   if (acted)
     flush_files(r);

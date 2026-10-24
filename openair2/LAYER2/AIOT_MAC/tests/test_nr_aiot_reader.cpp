@@ -8,7 +8,11 @@
 // D2R each Tag sends is backscatter of the carrier, at the centre of UL PRBs 15-21, in int16 counts
 // with noise, and the gNB's D2R receiver gets it slot by slot.
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -22,6 +26,7 @@
 #include <vector>
 extern "C" {
 #include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
+#include "LAYER2/AIOT_MAC/aiot_node_msg.h"
 #include "common/utils/LOG/log.h"
 #include "common/config/config_load_configmodule.h"
 extern configmodule_interface_t *uniqCfg;
@@ -125,7 +130,8 @@ struct Room {
   int64_t slot = 0; // the air's slot: the UL the gNB receives next, the DL the Tags hear next
   int64_t clock; // the node's TX slot k starts at air sample k kSlot + clock
 
-  Room(const char *protocol, const char *params, int n_tags, const char *name, int64_t tx_clock = 0) : clock(tx_clock)
+  Room(const char *protocol, const char *params, int n_tags, const char *name, int64_t tx_clock = 0, const char *data_dest = "")
+      : clock(tx_clock)
   {
     nr_aiot_r2d_config_t rc = {0, 3, 0.0};
     EXPECT_EQ(nr_aiot_r2d_init(&r2d, &rc, 10, kSym, kFft, kPrb, kAmp), 0);
@@ -138,6 +144,7 @@ struct Room {
     cfg.link = RoomLink();
     dir = std::string("/tmp/test_nr_aiot_reader_") + name;
     snprintf(cfg.output_dir, sizeof(cfg.output_dir), "%s", dir.c_str());
+    EXPECT_EQ(nr_aiot_reader_parse_data_dest(&cfg, data_dest), 0) << data_dest;
     for (int i = 0; i < n_tags; i++) {
       auto t = std::make_unique<Tag>();
       t->id = i;
@@ -377,6 +384,95 @@ TEST(NrAiotReader, Gen2QReadsEveryTagAndKeepsItsTable)
   EXPECT_EQ(q[0][0], "time_s");
 }
 
+// The UE of topology 2 sends what its Reader hears to the network: one datagram of Tag data for
+// each row of reader_rx.csv that is a message from a Tag, in the same order, with the same values.
+TEST(NrAiotReader, SendsEachTagMessageToTheDataDestination)
+{
+  const int sink = socket(AF_INET, SOCK_DGRAM, 0);
+  ASSERT_GE(sink, 0);
+  sockaddr_in addr = {};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(bind(sink, (sockaddr *)&addr, sizeof(addr)), 0);
+  socklen_t len = sizeof(addr);
+  ASSERT_EQ(getsockname(sink, (sockaddr *)&addr, &len), 0);
+  const int big = 4 << 20;
+  setsockopt(sink, SOL_SOCKET, SO_RCVBUF, &big, sizeof(big));
+  const std::string dest = "127.0.0.1:" + std::to_string(ntohs(addr.sin_port));
+
+  std::vector<std::vector<std::string>> rx;
+  {
+    Room room("registration", "", 4, "data_dest", 0, dest.c_str());
+    ASSERT_NE(room.reader, nullptr);
+    room.Run(600);
+    nr_aiot_reader_free(room.reader); // what is left goes out too
+    room.reader = nullptr;
+    rx = room.Csv("reader_rx.csv");
+  }
+  std::vector<aiot_tag_data_t> got;
+  uint8_t buf[AIOT_NODE_MSG_MAX_BYTES + 1];
+  ssize_t n;
+  while ((n = recv(sink, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
+    aiot_tag_data_t m;
+    ASSERT_EQ(aiot_node_msg_parse_tag_data(buf, (int)n, &m), 0) << n << " bytes";
+    got.push_back(m);
+  }
+  close(sink);
+
+  const std::map<std::string, int> kinds = {{"paging_cbra", AIOT_R2D_PAGING_CBRA},
+                                            {"paging_cfa", AIOT_R2D_PAGING_CFA},
+                                            {"access_trigger", AIOT_R2D_ACCESS_TRIGGER},
+                                            {"random_id_response", AIOT_R2D_RANDOM_ID_RESPONSE},
+                                            {"r2d_data", AIOT_R2D_UPPER_LAYER_DATA},
+                                            {"nack_feedback", AIOT_R2D_NACK_FEEDBACK}};
+  std::vector<std::vector<std::string>> heard;
+  for (size_t i = 1; i < rx.size(); i++)
+    if (rx[i][2] != "collision")
+      heard.push_back(rx[i]);
+  ASSERT_GT(heard.size(), 30u);
+  ASSERT_EQ(got.size(), heard.size());
+  int data = 0;
+  for (size_t i = 0; i < got.size(); i++) {
+    const aiot_tag_data_t &m = got[i];
+    const aiot_reader_answer_t &a = m.answer;
+    const std::vector<std::string> &row = heard[i];
+    EXPECT_EQ(m.seq, i);
+    EXPECT_EQ(a.start, std::llround(std::stod(row[0]) * kSlot)) << row[0];
+    EXPECT_EQ(m.after, kinds.at(row[1])) << row[1];
+    EXPECT_EQ(row[2], a.kind == AIOT_ANSWER_MSG1 ? "msg1" : "data");
+    EXPECT_EQ(std::to_string(a.r_sfs), row[6]);
+    EXPECT_EQ(std::to_string(a.slot), row[7]);
+    EXPECT_NEAR(10 * std::log10(a.rssi_w / (32767.0 * 32767.0)), std::stod(row[8]), 0.005);
+    if (a.kind == AIOT_ANSWER_MSG1) {
+      EXPECT_EQ(std::to_string(a.message.random_id), row[5]);
+      continue;
+    }
+    data++;
+    ASSERT_EQ(a.message.sdu_len, 3);
+    EXPECT_EQ(std::to_string(a.message.sdu[0] << 8 | a.message.sdu[1]), row[3]);
+    EXPECT_EQ(std::to_string(a.message.sdu[2]), row[4]);
+    EXPECT_EQ(a.as_id >= 0 ? std::to_string(a.as_id) : "", row[5]);
+  }
+  EXPECT_GT(data, 4);
+}
+
+// Nobody listens at the destination: each message is sent or counted as not sent, and every Tag
+// still registers.
+TEST(NrAiotReader, GoesOnWhenNobodyListensAtTheDataDestination)
+{
+  Room room("registration", "", 2, "data_dest_lost", 0, "0.0.0.0:9");
+  ASSERT_NE(room.reader, nullptr);
+  room.Run(300);
+  const nr_aiot_reader_stats_t st = nr_aiot_reader_stats(room.reader);
+  EXPECT_GT(st.answers, 4u);
+  EXPECT_EQ(st.data_sent + st.data_unsent, st.answers);
+  for (auto &t : room.tags) {
+    aiot_device_state_t s;
+    aiot_device_state(t->mac, &s);
+    EXPECT_GE(s.as_id, 0) << "Tag " << t->id << " has no AS ID";
+  }
+}
+
 TEST(NrAiotReader, ParsesItsSettings)
 {
   nr_aiot_reader_config_t c = {};
@@ -400,6 +496,13 @@ TEST(NrAiotReader, ParsesItsSettings)
   EXPECT_EQ(c.link.t_bit_num, 2);
   EXPECT_EQ(c.link.t_bit_den, 1);
   EXPECT_EQ(nr_aiot_reader_parse_t_bit(&c, "x"), -1);
+  EXPECT_EQ(nr_aiot_reader_parse_data_dest(&c, "10.0.1.1:38391"), 0);
+  EXPECT_STREQ(c.data_dest, "10.0.1.1:38391");
+  EXPECT_EQ(nr_aiot_reader_parse_data_dest(&c, ""), 0);
+  EXPECT_STREQ(c.data_dest, "");
+  for (const char *bad :
+       {"10.0.1.1", "10.0.1.1:", "10.0.1.1:0", "10.0.1.1:65536", "10.0.1:38391", "host:1", ":38391", "10.0.1.1:1x"})
+    EXPECT_EQ(nr_aiot_reader_parse_data_dest(&c, bad), -1) << bad;
 }
 
 int main(int argc, char **argv)

@@ -17,7 +17,9 @@
  * It runs in its own thread, woken by each slot the D2R receiver takes; building an R2D's resource
  * elements happens there, not in the node's slot processing. What it sent and heard goes to
  * reader_tx.csv and reader_rx.csv in an output folder, with the columns of Amber's Reader, and each
- * Tag's data is logged.
+ * Tag's data is logged. With a data destination, each message heard from a Tag also goes there, in
+ * one UDP datagram of Tag data (aiot_node_msg.h): a UE that reads the Tags sends them to the network
+ * over its own user plane (topology 2).
  */
 
 #ifndef NR_AIOT_READER_H
@@ -45,6 +47,7 @@ typedef struct nr_aiot_reader_config {
   aiot_link_config_t link;
   int lead_slots; /* slots between the slot the node sent last and an R2D's first; doubles when late */
   char output_dir[256]; /* "": no CSV files */
+  char data_dest[64]; /* "ipv4:port" for each message heard from a Tag, as Tag data; "": none */
 } nr_aiot_reader_config_t;
 
 typedef struct nr_aiot_reader nr_aiot_reader_t;
@@ -54,6 +57,8 @@ typedef struct {
   uint64_t too_late; /* R2Ds that had to wait for a later slot */
   uint64_t answers; /* D2R messages heard */
   uint64_t collisions;
+  uint64_t data_sent; /* Tag data datagrams sent to the data destination */
+  uint64_t data_unsent; /* and those the socket refused */
 } nr_aiot_reader_stats_t;
 
 /* Parses "name=value,name=value" into cfg->params. Returns 0 or -1. */
@@ -64,6 +69,8 @@ int nr_aiot_reader_parse_nodes(nr_aiot_reader_config_t *cfg, const char *s);
 int nr_aiot_reader_parse_r_sfs(nr_aiot_reader_config_t *cfg, const char *s);
 /* Parses a bit duration in tau, "2", "1", "1/2" ... "1/96", into cfg->link. Returns 0 or -1. */
 int nr_aiot_reader_parse_t_bit(nr_aiot_reader_config_t *cfg, const char *s);
+/* Parses a data destination "10.0.1.1:38391" (empty: none) into cfg->data_dest. Returns 0 or -1. */
+int nr_aiot_reader_parse_data_dest(nr_aiot_reader_config_t *cfg, const char *s);
 
 /* A Reader on the node's R2D transmitter and D2R receiver. Returns NULL with the reason in err. */
 nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,

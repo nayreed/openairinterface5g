@@ -122,7 +122,9 @@ With `protocol` set in its section the UE is the Reader (topology 4), with the R
 [the MAC](#the-mac) on its R2D and D2R. The UE's own Reader is the only one that schedules its R2D:
 the gNB only keeps the UL PRBs free. The Reader plans each R2D from the radio timestamp of the slot
 the UE mapped last, which carries the UE's timing advance and drift, and opens the D2R windows on the
-timestamps of the UE's reads, the same radio clock.
+timestamps of the UE's reads, the same radio clock. With `data_dest` too, the UE also sends each
+message it hears from a Tag to the network over its own user plane (topology 2; see
+[the MAC](#the-mac)).
 
 ## The MAC
 
@@ -148,6 +150,7 @@ aiot = {
   r_sfs = "1,2,4,8";             # the R_SFS a paging offers
   lead_slots = 2;
   output_dir = "/tmp/aiot";      # reader_tx.csv, reader_rx.csv and the protocol's tables; "": none
+  data_dest = "";                # ipv4:port for each message heard from a Tag, as Tag data; "": none
 };
 ```
 
@@ -156,6 +159,15 @@ with Amber's defaults.) The records have the columns of Amber's Reader, so Amber
 and each Tag's data is logged. `ctest -R test_nr_aiot_reader` closes the loop: the gNB's grid, OFDM,
 Tags running the device MAC, and the D2R receiver, under a carrier wave 26 dB above the Tags; with
 registration every Tag registers, and gen2_q reads every Tag.
+
+With `data_dest`, each message the Reader hears from a Tag (a Msg1 or data, each row of
+`reader_rx.csv` but the collisions) also goes there in one UDP datagram of Tag data. A UE that reads
+the Tags gives the network's end of its user plane, and the network has them (topology 2).
+`openair2/LAYER2/AIOT_MAC/aiot_node_msg.h` is the one encoder and decoder of the messages between
+nodes, in the same library, so Amber decodes Tag data with it too (`amber.sink`): 40 bytes and the
+SDU, big-endian, with a sequence number that shows a lost datagram. The socket never blocks the
+Reader: a datagram it cannot take is counted and lost. `ctest -R test_aiot_mac_node_msg` checks the
+layout byte by byte, and `test_nr_aiot_reader` that the datagrams are the rows of `reader_rx.csv`.
 
 ## Tests
 

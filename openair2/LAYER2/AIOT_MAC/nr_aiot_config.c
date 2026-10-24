@@ -46,6 +46,7 @@
   {"d2r_tbs",     "D2R transport block for data, bytes", 0, .iptr=NULL, .defintval=5, TYPE_INT, 0}, \
   {"lead_slots",  "slots between the slot the node sent last and an R2D's first", 0, .iptr=NULL, .defintval=2, TYPE_INT, 0}, \
   {"output_dir",  "folder for reader_tx.csv and reader_rx.csv; empty: none", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
+  {"data_dest",   "ipv4:port to send each message heard from a Tag to, one UDP datagram of Tag data each (aiot_node_msg.h); empty: none. A UE gives the network's end of its user plane", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
 }
 // clang-format on
 
@@ -67,7 +68,8 @@ enum {
   P_I_ADD,
   P_TBS,
   P_LEAD,
-  P_DIR
+  P_DIR,
+  P_DATA_DEST
 };
 
 void nr_aiot_config_phy(nr_aiot_r2d_config_t *r2d, nr_aiot_d2r_config_t *d2r)
@@ -123,12 +125,15 @@ nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *
   cfg.link.d2r_tbs = *p[P_TBS].iptr;
   cfg.lead_slots = *p[P_LEAD].iptr;
   snprintf(cfg.output_dir, sizeof(cfg.output_dir), "%s", *p[P_DIR].strptr ? *p[P_DIR].strptr : "");
+  AssertFatal(nr_aiot_reader_parse_data_dest(&cfg, *p[P_DATA_DEST].strptr) == 0,
+              "aiot.data_dest \"%s\" is not ipv4:port\n",
+              *p[P_DATA_DEST].strptr);
   char err[256] = "";
   nr_aiot_reader_t *r = nr_aiot_reader_new(&cfg, r2d, d2r, err, sizeof(err));
   AssertFatal(r, "A-IoT Reader: %s\n", err);
   AssertFatal(nr_aiot_reader_start(r) == 0, "A-IoT Reader: cannot start its thread\n");
   LOG_I(NR_MAC,
-        "A-IoT Reader: protocol %s for %d Tags, M = %d, T_bit = %d/%d tau, %d R_SFS%s%s\n",
+        "A-IoT Reader: protocol %s for %d Tags, M = %d, T_bit = %d/%d tau, %d R_SFS%s%s%s%s\n",
         cfg.protocol,
         cfg.n_nodes,
         cfg.link.m_chip_symb,
@@ -136,6 +141,8 @@ nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *
         cfg.link.t_bit_den,
         cfg.link.n_r_sfs,
         cfg.output_dir[0] ? ", records in " : "",
-        cfg.output_dir);
+        cfg.output_dir,
+        cfg.data_dest[0] ? ", Tag data to " : "",
+        cfg.data_dest);
   return r;
 }
