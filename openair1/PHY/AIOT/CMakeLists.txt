@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 #
 # The Rel-19 Ambient IoT PHY (TS 38.291), and the MAC (TS 38.391: its PDUs here, its procedures and
-# the Reader's protocols in openair2/LAYER2/AIOT_MAC) as a plain C library.
+# the Reader's protocols in openair2/LAYER2/AIOT_MAC, with the messages between nodes) as a plain C
+# library.
 # It builds inside OAI (openair1/PHY) or on its own:
 #   cmake -S openair1/PHY/AIOT -B build-aiot -G Ninja && ninja -C build-aiot && ctest --test-dir build-aiot
 # -DAIOT_BUILD_TESTS=OFF builds the library alone, without C++ or GTest.
@@ -32,6 +33,7 @@ add_library(aiot_phy STATIC
   ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_mac_reader.c
   ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_mac_device.c
   ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_protocols.c
+  ${OAI_ROOT}/openair2/LAYER2/AIOT_MAC/aiot_node_msg.c
   ${OAI_ROOT}/openair1/PHY/CODING/crc_byte.c
   ${OAI_ROOT}/openair1/PHY/CODING/ccoding_byte_lte.c
   ${OAI_ROOT}/openair1/PHY/CODING/viterbi_lte.c
