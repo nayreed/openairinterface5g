@@ -82,6 +82,16 @@ docker build --tag oai-amber:latest --file docker/Dockerfile.amber.ubuntu .
 
 The last image holds `rfsim_hub`, `amber-reader`, `amber-tag` and Amber.
 
+Or use the three images the `oai-amber image` workflow publishes from `aiot-rfsim`
+(`.github/workflows/amber-image.yml`), after it has run each room with them:
+
+```bash
+export REGISTRY=ghcr.io/nayreed/ TAG=latest AMBER_IMG=ghcr.io/nayreed/oai-amber:latest
+docker pull ${REGISTRY}oai-gnb:$TAG && docker pull ${REGISTRY}oai-nr-ue:$TAG && docker pull $AMBER_IMG
+```
+
+`docker/scripts/aiot_check_room.sh` runs a room with them and checks it as this README describes.
+
 ## Run
 
 From this folder:
