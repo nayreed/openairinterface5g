@@ -96,7 +96,7 @@ for name in rfsim5g-oai-gnb rfsim5g-oai-nr-ue; do
 done
 
 # The Reader's records: data from every Tag.
-if ! docker run --rm -v "$volume:/out:ro" "$AMBER_IMG" python3 - "$sim_time_ms" <<'PY'
+if ! docker run --rm -i -v "$volume:/out:ro" "$AMBER_IMG" python3 - "$sim_time_ms" <<'PY'
 import sys
 from amber.summary import summarize
 s = summarize("/out", int(sys.argv[1]))
