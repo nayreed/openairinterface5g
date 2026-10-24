@@ -43,6 +43,7 @@ typedef struct {
   uint64_t r2d_too_late; /* of those, the ones whose first slot the UE had already sent */
   uint64_t r2d_refused; /* and the ones nr_aiot_r2d_schedule() refused otherwise */
   int64_t r2d_ahead_min, r2d_ahead_sum; /* slots from the slot the UE had sent last to each R2D's first */
+  uint64_t probes; /* probe windows the Reader sent, each answered at once */
   uint64_t windows; /* windows the Reader gave */
   uint64_t windows_late; /* of those, the ones that came after the receiver had passed their start */
   uint64_t windows_refused; /* and the ones the UE could not open: answered at once, empty */

@@ -81,6 +81,7 @@ typedef struct {
   /* the R2Ds sent after the remote R2D first answered: */
   int64_t r2d_ahead_min, r2d_ahead_sum; /* slots it had in hand when each R2D reached it */
   int64_t r2d_rtt_max, r2d_rtt_sum; /* A-IoT samples of the cell from each R2D sent to its R2D done */
+  uint64_t probes; /* probe windows sent to the remote D2R before it first answered, instead of R2Ds */
   uint64_t windows_remote; /* windows sent to the remote D2R */
   uint64_t outcomes_remote; /* their outcomes back */
   uint64_t windows_lost; /* windows given up as empty, their outcome not back in time */

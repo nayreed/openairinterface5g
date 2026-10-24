@@ -30,7 +30,11 @@ is [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md).
   the CW node sends the carrier). It has no D2R receiver: with `--aiot.remote_d2r 10.0.1.2:38392` it
   sends each D2R window the MAC opens, with its start as frame, slot and sample, to the UE's end of
   its user plane, one UDP datagram each, and waits for the window's outcome from the UE
-  ([openair1/PHY/AIOT/README.md](../../../openair1/PHY/AIOT/README.md#a-split-reader)). It leaves
+  ([openair1/PHY/AIOT/README.md](../../../openair1/PHY/AIOT/README.md#a-split-reader)). Until the UE
+  has its user plane, nothing the gNB sends it arrives, so the gNB sends no R2D until the UE answers:
+  it sends one probe window every 100 slots, which the UE answers at once with an empty outcome, and
+  starts the protocol with the first answer. A Tag answers a paging only once, so an R2D sent before
+  would cost that Tag its registration. It leaves
   DL PRBs 0 to 2 free for the R2D (`dl_prbblacklist`), and UL PRBs 15 to 21 where the carrier and the
   Tags' D2R are in the UL band (`ul_prbblacklist`). It grants the UE's UL at least once a frame,
   also when the UE has sent no scheduling request (`MACRLCs.[0].ulsch_max_frame_inactivity 0`, which
@@ -87,9 +91,10 @@ it, and how long after the window's end its outcome came back, both in the cell'
 A-IoT Reader: split D2R: 234 windows, 227 outcomes back, 1 late, 5 given up; lead 5 slots; the UE had -0.14 ms in hand at least, 6.47 on average; an outcome came 19.31 ms after its window on average, 35.59 at most (before it answered: 1 outcomes back, 1 late)
 ```
 
-That is the last report before the Tags left. The UE connects about 1 s into the run. The 5
-windows the gNB opened before had no outcome back within 200 slots of their end and were given up;
-their outcomes came once the UE had its user plane. After that a window reached the UE 6.5 ms
+That is the last report before the Tags left. The UE connects about 1 s into the run. In this run
+the gNB still sent R2D before the UE had its user plane: the 5 windows it opened then had no outcome
+back within 200 slots of their end and were given up. It now sends only probe windows until the UE
+answers (see [What each node does](#what-each-node-does)). After the UE connected, a window reached the UE 6.5 ms
 before its start on average. One was 0.14 ms late, which grew the lead from 2 slots to 5, and the
 UE decoded it on what was left. An outcome came back 19 ms after its window's end on average and
 36 ms at most: the UE's processing, its wait for a UL grant (at most a frame), the PUSCH, and the
@@ -124,7 +129,10 @@ Every Tag registers and sends data at the levels of the link budget, as the UE h
 topology 4. The room sends half of topology 1's R2D: the MAC plans the next R2D once it has the
 window's outcome, and that comes up the UE's UL, 13 ms more from one R2D's end to the next's
 start. Tags 0, 2 and 3 send their first data about 550 ms later, as the UE connects at about 1 s
-and the windows before were given up 200 slots after their end. It runs slower than
+and the windows before were given up 200 slots after their end. That run was lucky: a Tag paged
+before the UE connected had answered into a window nobody heard, and does not answer the same paging
+again, so in 6 of 10 runs on the CI a Tag never registered. The gNB now sends no R2D until the
+UE answers a probe window. It runs slower than
 [topology 3 with the R2D from the UE](../5g_rfsimulator_aiot_t3b/README.md) (21.7 ms), where the
 gNB's own receiver has each D2R at once and only the R2D goes through the tunnel, down, ahead of
 time.

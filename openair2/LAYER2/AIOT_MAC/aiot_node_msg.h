@@ -69,6 +69,9 @@
  *   bytes 26-33  expect.params: t_bit_num, t_bit_den, r_sfs, r_block, r_code, l_amble, i_add, modulation
  *   then         expect.r_sfs, a byte each
  *
+ *   A window whose expect.tag is AIOT_NODE_PROBE_TAG opens nothing: it asks whether the UE is there.
+ *   The UE answers it at once with an empty outcome of that tag.
+ *
  * AIOT_NODE_MSG_OUTCOME, from the UE:
  *
  *   bytes 4-11   tag, the window's
@@ -98,6 +101,7 @@ extern "C" {
 #define AIOT_NODE_R2D_DONE_BYTES 12
 #define AIOT_NODE_WINDOW_FIXED_BYTES 34 /* a window without its R_SFS list */
 #define AIOT_NODE_OUTCOME_FIXED_BYTES 20 /* an outcome without its D2Rs */
+#define AIOT_NODE_PROBE_TAG (-1) /* the tag of a window that only asks whether the UE is there */
 #define AIOT_NODE_D2R_FIXED_BYTES 15 /* a decoded D2R of an outcome, without its bits */
 #define AIOT_NODE_MAX_WINDOWS 64 /* D2R windows of a split Reader open at a time, at the gNB and at the UE */
 #define AIOT_NODE_SPLIT_MAX_BYTES /* the longest split message: an outcome with every D2R the receiver can decode */ \

@@ -675,7 +675,9 @@ TEST(NrAiotReader, SplitEveryTagRegistersWithTheD2rAtTheUe)
   EXPECT_EQ(ps.windows, st.windows_remote);
   EXPECT_EQ(ps.windows_late + ps.windows_refused, 0u);
   EXPECT_GT(st.window_ahead_min, 0);
-  EXPECT_EQ(st.outcomes_early, 1u); // the first window's, opened before the UE answered
+  EXPECT_EQ(st.probes, 1u); // answered in the next slot: the protocol starts then
+  EXPECT_EQ(ps.probes, 1u);
+  EXPECT_EQ(st.outcomes_early, 0u); // no window is opened before the UE answered
   EXPECT_EQ(st.windows_late + st.windows_early_late, 0u);
   EXPECT_EQ(nr_aiot_d2r_stats(room.ue_d2r).late, 0u);
   EXPECT_EQ(st.collisions, 0u);
@@ -710,19 +712,43 @@ TEST(NrAiotReader, SplitLeadGrowsUntilTheWindowsReachTheUeInTime)
   room.ExpectEveryTagRegistered();
 }
 
-// A UE that does not answer: each window is given up as empty, a while after its end, and the
-// protocol goes on.
+// A UE that answers only from slot 350 on, as one that gets its user plane late: until then the gNB
+// sends no R2D, only a probe window every 100 slots, so that no Tag answers into a window the UE
+// never gets. Once the UE answers one, the protocol starts and every Tag registers.
+TEST(NrAiotReader, SplitSendsNoR2dUntilTheUeThatReceivesTheD2rAnswers)
+{
+  Room room("registration", "", 4, "split_d2r_up", 0, "", Split::kRemoteD2r);
+  ASSERT_NE(room.reader, nullptr);
+  room.serve = false;
+  room.Run(350);
+  nr_aiot_reader_stats_t st = nr_aiot_reader_stats(room.reader);
+  EXPECT_EQ(st.r2d_sent, 0u);
+  EXPECT_EQ(st.windows_remote, 0u);
+  EXPECT_EQ(st.probes, 4u); // slots 0, 100, 200 and 300
+  room.serve = true;
+  room.Run(1200);
+  st = nr_aiot_reader_stats(room.reader);
+  EXPECT_EQ(st.probes, 4u);
+  EXPECT_GT(st.r2d_sent, 8u);
+  EXPECT_EQ(st.windows_lost, 0u);
+  EXPECT_EQ(st.outcomes_early, 0u);
+  room.ExpectEveryTagRegistered();
+}
+
+// A UE that stops answering once the protocol has started: each window is given up as empty, a while
+// after its end, and the protocol goes on.
 TEST(NrAiotReader, SplitGivesUpTheWindowsWhoseOutcomeDoesNotComeBack)
 {
   Room room("registration", "", 2, "split_d2r_lost", 0, "", Split::kRemoteD2r);
   ASSERT_NE(room.reader, nullptr);
+  room.Run(20);
+  const nr_aiot_reader_stats_t before = nr_aiot_reader_stats(room.reader);
+  EXPECT_GE(before.r2d_sent, 1u);
   room.serve = false;
   room.Run(1000);
   const nr_aiot_reader_stats_t st = nr_aiot_reader_stats(room.reader);
-  EXPECT_GE(st.r2d_sent, 3u);
+  EXPECT_GE(st.r2d_sent, before.r2d_sent + 3);
   EXPECT_GE(st.windows_lost, 3u);
-  EXPECT_EQ(st.outcomes_remote, 0u);
-  EXPECT_EQ(st.answers, 0u);
 }
 
 // The UE serves only what it has, and answers a window it cannot open with an empty outcome at once.
