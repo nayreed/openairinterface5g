@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "rfsim_hub.h"
+#include "common/utils/utils.h"
 
 /// samples per flag of hub_node_t.nonzero
 #define GROUP 64
@@ -68,44 +69,43 @@ static bool refuse(char *why, size_t why_len, const char *fmt, ...)
  * (+ HUB_PASS_HALF through a pass band), and a transmitter sends at most its lookahead past what it
  * has received. Following these waits around a cycle of links, the needed position drops by the sum
  * of (lookahead + delay - HUB_PASS_HALF for a pass band) along the cycle. If that sum is below one
- * block, the cycle waits on itself. Returns the smallest sum over
- * all cycles, or INT64_MAX when there is no cycle, and a node on the smallest cycle in *on_cycle. */
+ * block, the cycle waits on itself. Returns the smallest sum over all cycles, or INT64_MAX when there
+ * is no cycle, and a node on the smallest cycle in *on_cycle.
+ *
+ * A link through a pass band can weigh less than nothing, so this is Floyd-Warshall, not Dijkstra:
+ * w[i][j] is the lightest walk from i to j, and w[i][i] the lightest cycle through i. A cycle below 0
+ * is reported as soon as it is found, before the walks around it run away. */
 static int64_t smallest_cycle(const hub_room_t *room, int *on_cycle)
 {
-  const hub_conf_t *c = &room->conf;
-  int64_t best = INT64_MAX;
-  int64_t *dist = malloc(c->num_nodes * sizeof(*dist));
-  bool *done = malloc(c->num_nodes * sizeof(*done));
-  for (int s = 0; s < c->num_nodes; s++) {
-    for (int i = 0; i < c->num_nodes; i++) {
-      dist[i] = INT64_MAX;
-      done[i] = false;
+  const int n = room->conf.num_nodes;
+  int64_t(*w)[n] = malloc_or_fail(sizeof(int64_t[n][n]));
+  for (int i = 0; i < n; i++)
+    for (int j = 0; j < n; j++)
+      w[i][j] = INT64_MAX;
+  for (int u = 0; u < n; u++)
+    for (int k = 0; k < room->nodes[u].num_out; k++) {
+      const hub_link_t *l = &room->links[room->nodes[u].out[k]];
+      w[u][l->rx] = cmin(w[u][l->rx], room->conf.nodes[u].lookahead + l->delay - l->ahead);
     }
-    dist[s] = 0;
-    for (;;) {
-      int u = -1;
-      for (int i = 0; i < c->num_nodes; i++)
-        if (!done[i] && dist[i] != INT64_MAX && (u < 0 || dist[i] < dist[u]))
-          u = i;
-      if (u < 0)
-        break;
-      done[u] = true;
-      for (int k = 0; k < room->nodes[u].num_out; k++) {
-        const hub_link_t *l = &room->links[room->nodes[u].out[k]];
-        int64_t d = dist[u] + c->nodes[u].lookahead + l->delay - l->ahead;
-        if (l->rx == s) {
-          if (d < best) {
-            best = d;
-            *on_cycle = s;
-          }
-        } else if (d < dist[l->rx]) {
-          dist[l->rx] = d;
-        }
+  int64_t best = INT64_MAX;
+  for (int k = 0; k < n && best >= 0; k++)
+    for (int i = 0; i < n && best >= 0; i++) {
+      if (w[i][k] == INT64_MAX)
+        continue;
+      for (int j = 0; j < n; j++)
+        if (w[k][j] != INT64_MAX && w[i][k] + w[k][j] < w[i][j])
+          w[i][j] = w[i][k] + w[k][j];
+      if (w[i][i] < 0) {
+        best = w[i][i];
+        *on_cycle = i;
       }
     }
-  }
-  free(dist);
-  free(done);
+  for (int i = 0; i < n && best >= 0; i++)
+    if (w[i][i] < best) {
+      best = w[i][i];
+      *on_cycle = i;
+    }
+  free(w);
   return best;
 }
 
@@ -123,7 +123,7 @@ static double bessel_i0(double x)
  * whose gain is 1 in the band, moved to centre. */
 static cf_t *pass_taps(double centre, double width)
 {
-  cf_t *h = malloc(PASS_TAPS * sizeof(*h));
+  cf_t *h = malloc_or_fail(PASS_TAPS * sizeof(*h));
   double lp[PASS_TAPS], sum = 0;
   for (int j = 0; j < PASS_TAPS; j++) {
     const int n = j - HUB_PASS_HALF;
@@ -174,15 +174,15 @@ hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len)
 {
   if (!check_conf(conf, why, why_len))
     return NULL;
-  hub_room_t *room = calloc(1, sizeof(*room));
+  hub_room_t *room = calloc_or_fail(1, sizeof(*room));
   room->conf = *conf;
-  room->conf.nodes = malloc(conf->num_nodes * sizeof(*conf->nodes));
+  room->conf.nodes = malloc_or_fail(conf->num_nodes * sizeof(*conf->nodes));
   memcpy(room->conf.nodes, conf->nodes, conf->num_nodes * sizeof(*conf->nodes));
-  room->conf.links = malloc((conf->num_links + 1) * sizeof(*conf->links));
+  room->conf.links = malloc_or_fail((conf->num_links + 1) * sizeof(*conf->links));
   memcpy(room->conf.links, conf->links, conf->num_links * sizeof(*conf->links));
-  room->links = calloc(conf->num_links + 1, sizeof(*room->links));
-  room->nodes = calloc(conf->num_nodes, sizeof(*room->nodes));
-  room->acc = malloc(conf->quantum * sizeof(*room->acc));
+  room->links = calloc_or_fail(conf->num_links + 1, sizeof(*room->links));
+  room->nodes = calloc_or_fail(conf->num_nodes, sizeof(*room->nodes));
+  room->acc = malloc_or_fail(conf->quantum * sizeof(*room->acc));
   for (int l = 0; l < conf->num_links; l++) {
     const hub_link_conf_t *k = &conf->links[l];
     room->links[l] = (hub_link_t){
@@ -202,8 +202,8 @@ hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len)
   bool ok = true;
   for (int i = 0; i < conf->num_nodes && ok; i++) {
     hub_node_t *n = &room->nodes[i];
-    n->in = malloc((conf->num_links + 1) * sizeof(int));
-    n->out = malloc((conf->num_links + 1) * sizeof(int));
+    n->in = malloc_or_fail((conf->num_links + 1) * sizeof(int));
+    n->out = malloc_or_fail((conf->num_links + 1) * sizeof(int));
     int64_t longest_delay = 0;
     for (int l = 0; l < conf->num_links; l++) {
       if (room->links[l].rx == i)
@@ -232,8 +232,8 @@ hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len)
                   need);
       break;
     }
-    n->history = calloc(conf->history, sizeof(*n->history));
-    n->nonzero = calloc(conf->history / GROUP, 1);
+    n->history = calloc_or_fail(conf->history, sizeof(*n->history));
+    n->nonzero = calloc_or_fail(conf->history / GROUP, 1);
     if (conf->nodes[i].lead)
       n->written = conf->nodes[i].lookahead;
   }
@@ -334,6 +334,29 @@ void hub_room_write(hub_room_t *room, int node, uint64_t timestamp, const c16_t 
     nd->written = ts + n;
 }
 
+/* The link's frequency shift, from the receiver's sample rx_time on: (cr, ci) turns by (dr, di) per
+ * sample. A run is at most GROUP samples, so the recurrence keeps its precision. */
+typedef struct {
+  double cr, ci, dr, di;
+} rotator_t;
+
+static rotator_t rotator_at(double shift, int64_t rx_time)
+{
+  double cycles = shift * (double)rx_time;
+  cycles -= floor(cycles);
+  return (rotator_t){cos(2 * M_PI * cycles), sin(2 * M_PI * cycles), cos(2 * M_PI * shift), sin(2 * M_PI * shift)};
+}
+
+/* acc += g x, turned by the rotator, which then moves on one sample */
+static inline void rotator_add(rotator_t *r, float g, double xr, double xi, cf_t *acc)
+{
+  acc->r += g * (float)(xr * r->cr - xi * r->ci);
+  acc->i += g * (float)(xr * r->ci + xi * r->cr);
+  const double t = r->cr * r->dr - r->ci * r->di;
+  r->ci = r->cr * r->di + r->ci * r->dr;
+  r->cr = t;
+}
+
 /* Adds run samples of link l, from the transmitter's sample start on, to acc. The receiver's time of
  * acc[0] is rx_time: a shift rotates by the receiver's time, so it is continuous across blocks. */
 static void add_run(const hub_room_t *room, const hub_link_t *l, int64_t start, int64_t run, int64_t rx_time, cf_t *acc)
@@ -347,18 +370,9 @@ static void add_run(const hub_room_t *room, const hub_link_t *l, int64_t start, 
     }
     return;
   }
-  double cycles = l->shift * (double)rx_time;
-  cycles -= floor(cycles);
-  double cr = cos(2 * M_PI * cycles), ci = sin(2 * M_PI * cycles);
-  const double dr = cos(2 * M_PI * l->shift), di = sin(2 * M_PI * l->shift);
-  for (int64_t m = 0; m < run; m++) {
-    acc[m].r += g * (float)(src[m].r * cr - src[m].i * ci);
-    acc[m].i += g * (float)(src[m].r * ci + src[m].i * cr);
-    // a run is at most GROUP samples, so the rotation recurrence keeps its precision
-    double t = cr * dr - ci * di;
-    ci = cr * di + ci * dr;
-    cr = t;
-  }
+  rotator_t rot = rotator_at(l->shift, rx_time);
+  for (int64_t m = 0; m < run; m++)
+    rotator_add(&rot, g, src[m].r, src[m].i, &acc[m]);
 }
 
 /* As add_run(), through the link's pass band: each sample is the filter's output at the
@@ -368,10 +382,8 @@ static void add_run_filtered(const hub_room_t *room, const hub_link_t *l, int64_
 {
   const c16_t *h = room->nodes[l->tx].history;
   const int64_t mask = room->conf.history - 1;
-  double cycles = l->shift * (double)rx_time;
-  cycles -= floor(cycles);
-  double cr = cos(2 * M_PI * cycles), ci = sin(2 * M_PI * cycles);
-  const double dr = cos(2 * M_PI * l->shift), di = sin(2 * M_PI * l->shift);
+  rotator_t rot = rotator_at(l->shift, rx_time);
+  /* PASS_TAPS multiplies per sample: a few links through a band at 5.76 Msps fit a core */
   for (int64_t m = 0; m < run; m++) {
     const int64_t newest = start + m + HUB_PASS_HALF;
     float vr = 0, vi = 0;
@@ -380,11 +392,7 @@ static void add_run_filtered(const hub_room_t *room, const hub_link_t *l, int64_
       vr += l->taps[j].r * x.r - l->taps[j].i * x.i;
       vi += l->taps[j].r * x.i + l->taps[j].i * x.r;
     }
-    acc[m].r += l->gain * (float)(vr * cr - vi * ci);
-    acc[m].i += l->gain * (float)(vr * ci + vi * cr);
-    double t = cr * dr - ci * di;
-    ci = cr * di + ci * dr;
-    cr = t;
+    rotator_add(&rot, l->gain, vr, vi, &acc[m]);
   }
 }
 
