@@ -71,6 +71,9 @@ docker run --rm -v 5g_rfsimulator_aiot_t2_amber.out:/out alpine \
 
 ## First run, against topology 4
 
+> These numbers come from a run made before the review fixes (the R2D now gives way to the NR channels in
+> its slot, and a split Reader's lead stops at 64 slots); they have not been measured again since.
+
 Over the scenario's 8 s, with the same Tags. The topology 4 column is a run of the
 [topology 4 room](../5g_rfsimulator_aiot_t4/README.md) on the same build.
 

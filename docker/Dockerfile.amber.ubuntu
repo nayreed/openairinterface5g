@@ -47,13 +47,19 @@ RUN pip3 install --no-cache-dir --target /opt/oai-amber/python \
 
 # Amber's dev branch by default. Docker caches this step by its text, so a rebuild with the same
 # AMBER_REF does not fetch newer commits: pass a commit (as the workflow does) or use --no-cache.
-# The commit used is recorded in /opt/amber/AMBER_COMMIT.
+# The commit used is recorded in /opt/amber/AMBER_COMMIT. This tree needs an Amber with Tag data
+# (amber/sink.py, the carrier node's session): Amber's pull request that adds them must be merged
+# into dev before this one, or AMBER_REF must name a commit that has them.
 ARG AMBER_REPO=https://github.com/nayreed/Amber
 ARG AMBER_REF=dev
 RUN git clone --quiet ${AMBER_REPO} /opt/amber && \
     git -C /opt/amber checkout --quiet ${AMBER_REF} && \
     git -C /opt/amber rev-parse HEAD > /opt/amber/AMBER_COMMIT && \
-    rm -rf /opt/amber/.git
+    rm -rf /opt/amber/.git && \
+    { test -f /opt/amber/amber/sink.py || { \
+        echo "Amber ${AMBER_REF} ($(cat /opt/amber/AMBER_COMMIT)) has no amber/sink.py: merge Amber's Tag data" \
+             "(nayreed/Amber, ambient-iot) into dev first, or pass --build-arg AMBER_REF=<a commit that has it>" >&2; \
+        exit 1; }; }
 
 WORKDIR /oai-ran
 COPY . .
@@ -114,12 +120,13 @@ RUN ldconfig && \
     python3 -c "from amber.phy import aiot; assert aiot.crc([1, 0, 1], 6)" && \
     python3 -c "from amber import mac, sink; assert mac.node_msg_type(b'') is None" && \
     echo "---- each checked-in 5G room is what amber-compose writes from its scenario ----" && \
+    mkdir -p /tmp/conf_files && cp /opt/oai-amber/etc/cells/* /tmp/conf_files/ && \
     for room in /tmp/rooms/*; do \
       new=/tmp/new/${room##*/} && mkdir -p "$new" && cp "$room/scenario.toml" "$new/" && \
-      amber-compose --image oai-amber:latest "$new/scenario.toml" "$new" && \
+      amber-compose --image oai-amber:latest "$new/scenario.toml" "$new" --cells-dir ../../conf_files && \
       diff -r --exclude=README.md "$room" "$new" || exit 1; \
     done && \
-    rm -r /tmp/rooms /tmp/new
+    rm -r /tmp/rooms /tmp/new /tmp/conf_files
 
 WORKDIR /opt/oai-amber
 # The image amber-compose names in the compose files it writes

@@ -77,6 +77,9 @@ docker logs -f rfsim5g-oai-gnb | grep A-IoT
 
 ## The tunnel's delay
 
+> These numbers come from a run made before the review fixes (the R2D now gives way to the NR channels in
+> its slot, and a split Reader's lead stops at 64 slots); they have not been measured again since.
+
 The gNB logs, once a second of the cell, how much time the UE had in hand when each window reached
 it, and how long after the window's end its outcome came back, both in the cell's time:
 
@@ -97,6 +100,9 @@ Without the UL grant once a frame, the outcome waits for the UE's scheduling req
 34 ms after its window on average, and the gNB sent 171 R2D in the 8 s.
 
 ## First run, against topology 1
+
+> These numbers come from a run made before the review fixes (the R2D now gives way to the NR channels in
+> its slot, and a split Reader's lead stops at 64 slots); they have not been measured again since.
 
 Over the scenario's 8 s, with the same Tags. The topology 1 column is a run of the
 [topology 1 CW room](../5g_rfsimulator_aiot_t1_cw_ul/README.md), with the same carrier, on the same

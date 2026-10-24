@@ -81,6 +81,9 @@ the gNB stops. The records are in the `amber.out` volume.
 
 ## First run, against Amber's own Reader
 
+> These numbers come from a run made before the review fixes (the R2D now gives way to the NR channels in
+> its slot, and a split Reader's lead stops at 64 slots); they have not been measured again since.
+
 Over the scenario's 8 s, with the same Tags (Amber's Reader in process, `amber.iq.run`):
 
 | | Amber's Reader | the gNB |
