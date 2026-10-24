@@ -82,6 +82,7 @@ struct Air {
   int64_t last_d2r_end = 0;
   int unmatched = 0; /* D2Rs no window of the Reader caught */
   int late_r2d = 0; /* R2Ds that started before a D2R had ended */
+  int lose_ridr = 0; /* the next Random ID Responses whose answers the air loses */
 
   Air(const char *protocol, std::vector<aiot_param_t> params, int n_nodes, const aiot_link_config_t &cfg = default_link())
   {
@@ -140,6 +141,7 @@ struct Air {
     const int n_exp = aiot_reader_r2d_sent(reader, start, end, end, exp, 16);
     EXPECT_GE(n_exp, 0);
     std::vector<bool> used(sent.size());
+    const bool lost = msg.kind == AIOT_R2D_RANDOM_ID_RESPONSE && lose_ridr > 0 && lose_ridr--;
     for (int k = 0; k < n_exp; k++) {
       const aiot_d2r_expect_t &e = exp[k];
       auto o = std::make_unique<aiot_d2r_outcome_t>();
@@ -156,7 +158,8 @@ struct Air {
               sent[j].at + (int64_t)aiot_frame_bits(e.a_bits, &sent[j].s.params) * aiot_bit_samples(&sent[j].s.params);
           last_d2r_end = std::max(last_d2r_end, d2r_end);
         }
-        if (here.size() == 1) {
+        if (lost) {
+        } else if (here.size() == 1) {
           aiot_d2r_result_t &res = o->decoded[o->n_decoded++];
           const aiot_device_send_t &s = sent[here[0]].s;
           std::copy(s.bits, s.bits + s.n_bits, res.bits);
@@ -311,6 +314,21 @@ TEST(Reader, RegistrationGivesEveryNodeAnAsIdAndPollsIt)
       EXPECT_EQ(h->answers[0].as_id, h->sent.as_id);
     }
   EXPECT_GT(polls, 6);
+}
+
+// The data a Tag sends after its Random ID Response is lost (a collision, a fade, or a split
+// Reader's window given up). The Tag keeps its AS ID and ignores later pagings of the same
+// Transaction ID, so the Reader must poll the AS IDs it gave, not only those it heard.
+TEST(Reader, RegistrationPollsATagWhoseFirstDataWasLost)
+{
+  Air air("registration", {{"occasions_exp", 3}}, 6);
+  air.lose_ridr = 1;
+  air.run(120);
+  EXPECT_EQ(air.lose_ridr, 0);
+  EXPECT_EQ(air.unmatched, 0);
+  const std::vector<int> from = air.data_from();
+  for (auto &n : air.nodes)
+    EXPECT_NE(std::find(from.begin(), from.end(), n->id), from.end()) << "no data from node " << n->id;
 }
 
 TEST(Reader, Gen2QKeepsItsTable)
