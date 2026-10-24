@@ -118,4 +118,5 @@ receiver missed no sample.
 * The CW node sends without a break, also while the UE sends R2D (see the topology 1 CW room).
 * Only the CW node's carrier is built. A carrier from the UE itself (`cw = "ue-ul"`, case 2-2) needs
   the UE to cancel its own carrier in its D2R receiver.
-* The Tags' data stays in the UE. The relay to the gNB is topology 2.
+* The Tags' data stays in the UE. The same room with the UE sending it to the gNB is
+  [topology 2](../5g_rfsimulator_aiot_t2/README.md).

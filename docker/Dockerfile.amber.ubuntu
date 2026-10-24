@@ -100,6 +100,7 @@ COPY ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot/ /tmp/rooms/5g_rfsimulator_aiot/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1/ /tmp/rooms/5g_rfsimulator_aiot_t1/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1_cw_ul/ /tmp/rooms/5g_rfsimulator_aiot_t1_cw_ul/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t2/ /tmp/rooms/5g_rfsimulator_aiot_t2/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t4/ /tmp/rooms/5g_rfsimulator_aiot_t4/
 
 # Fail here rather than at run time if a library is missing.
@@ -109,6 +110,7 @@ RUN ldconfig && \
     ! ldd amber-reader amber-tag rfsim_hub /usr/local/lib/librfsimulator.so /usr/local/lib/libparams_libconfig.so | grep "not found" && \
     python3 -c "import amber.session" && \
     python3 -c "from amber.phy import aiot; assert aiot.crc([1, 0, 1], 6)" && \
+    python3 -c "from amber import mac, sink; assert mac.node_msg_type(b'') is None" && \
     echo "---- each checked-in 5G room is what amber-compose writes from its scenario ----" && \
     for room in /tmp/rooms/*; do \
       new=/tmp/new/${room##*/} && mkdir -p "$new" && cp "$room/scenario.toml" "$new/" && \

@@ -147,7 +147,9 @@ topologies of the Rel-19 study. As checked in, a standalone Reader does all thre
 instead, a CW node sends the carrier in the UL band:
 [5g_rfsimulator_aiot_t1_cw_ul](../5g_rfsimulator_aiot_t1_cw_ul/README.md). With `r2d = d2r = "ue"`
 and that carrier the UE is the Reader, for itself (topology 4):
-[5g_rfsimulator_aiot_t4](../5g_rfsimulator_aiot_t4/README.md). The other topologies and carriers are
+[5g_rfsimulator_aiot_t4](../5g_rfsimulator_aiot_t4/README.md). With `relay = true` as well, the UE
+sends what it reads to the gNB over its own user plane (topology 2):
+[5g_rfsimulator_aiot_t2](../5g_rfsimulator_aiot_t2/README.md). Topology 3 and the other carriers are
 not built yet, and `amber-compose` refuses those scenarios with that reason.
 
 ## Timing
