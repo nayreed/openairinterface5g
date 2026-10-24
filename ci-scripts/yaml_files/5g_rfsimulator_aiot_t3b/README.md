@@ -5,7 +5,7 @@
 [[_TOC_]]
 
 This folder is a room of topology 3 of the Rel-19 A-IoT study: the gNB is the Ambient IoT Reader,
-and a UE sends its R2D, the "uplink assistance" of the study. The gNB runs the Reader's MAC and
+and a UE sends its R2D, the "downlink assistance" of the study. The gNB runs the Reader's MAC and
 receives the D2R in its UL band, as in [topology 1](../5g_rfsimulator_aiot_t1_cw_ul/README.md); the
 UE sends each R2D the gNB gives it, in its UL, as in [topology 4](../5g_rfsimulator_aiot_t4/README.md).
 Its [scenario.toml](scenario.toml) is the topology 1 CW room's, with
