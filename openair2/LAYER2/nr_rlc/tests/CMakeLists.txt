@@ -23,3 +23,8 @@ target_link_libraries(benchmark_nr_rlc_am_entity PRIVATE benchmark::benchmark nr
 add_dependencies(tests benchmark_nr_rlc_am_entity)
 add_test(NAME benchmark_nr_rlc_am_entity
   COMMAND ./benchmark_nr_rlc_am_entity)
+
+add_executable(test_nr_rlc_um_entity test_nr_rlc_um_entity.cpp)
+target_link_libraries(test_nr_rlc_um_entity PRIVATE nr_rlc_core GTest::gtest minimal_lib)
+add_dependencies(tests test_nr_rlc_um_entity)
+add_test(NAME test_nr_rlc_um_entity COMMAND ./test_nr_rlc_um_entity)
