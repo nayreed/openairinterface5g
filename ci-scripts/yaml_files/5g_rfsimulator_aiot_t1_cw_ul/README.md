@@ -104,4 +104,7 @@ only the UE's preamble.
 * The carrier is a clean tone, without the phase noise of Amber's Reader's own leak.
 * As in topology 1, the hub's shifts carry the Tags' reflection to the gNB's UL band, and with an
   nFAPI split the gNB's L1 has no Reader.
-* A UE as the Reader, with the same CW node, is [topology 4](../5g_rfsimulator_aiot_t4/README.md).
+* A UE as the Reader, with the same CW node, is [topology 4](../5g_rfsimulator_aiot_t4/README.md). A
+  UE that sends the gNB's R2D or receives its D2R is topology 3:
+  [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md) and
+  [5g_rfsimulator_aiot_t3a](../5g_rfsimulator_aiot_t3a/README.md).

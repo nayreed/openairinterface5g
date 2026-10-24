@@ -23,8 +23,11 @@ Tags reflect comes from the gNB's own DL (cw = "gnb-dl"), or from a CW node in t
 puts the Reader in the UE instead: the UE sends the R2D in its UL PRBs and receives the D2R, with a
 CW node in the UL band (cw = "cw-node-ul"). Topology 2 (the same with relay = true) is that room with
 the UE sending each Tag message it hears to the gNB over its user plane (aiot.data_dest), where
-amber.sink, in the gNB's network, writes them to tag_data.csv. Topology 3 and the other carrier
-options are not built yet, and this script says so.
+amber.sink, in the gNB's network, writes them to tag_data.csv. Topology 3 splits the Reader: the
+gNB runs its MAC, and the UE sends the R2D in its UL PRBs (r2d = "ue", d2r = "gnb") or receives the
+D2R (r2d = "gnb", d2r = "ue"), told what and when over the gNB's user plane to it
+(openair2/LAYER2/AIOT_MAC/nr_aiot_peer.h), with a CW node in the UL band (cw = "cw-node-ul"). The
+other carrier options are not built yet, and this script says so.
 """
 
 import argparse
@@ -155,6 +158,34 @@ UE_D2R_HZ = prbs_hz(UE_D2R_PRB_START, D2R_N_RB)
 # Topology 2: the room of topology 4, and the UE sends what it hears from the Tags to the gNB's end of
 # its user plane, the gNB's tunnel (--noS1: oaitun_enb1, 10.0.1.1), where amber.sink listens.
 SINK_ADDR = "10.0.1.1"
+
+
+# Topology 3, the split: the gNB runs the Reader's MAC and the UE sends its R2D ("3b": the UE's R2D of
+# topology 4, the gNB's D2R of topology 1) or receives its D2R ("3a": the gNB's R2D of topology 1, the
+# UE's D2R of topology 4). The gNB tells the UE what to send and when over the gNB's end of the UE's
+# user plane, to the UE's end (--noS1: oaitun_ue1, 10.0.1.2), where the UE serves the split on
+# PEER_PORT. Only the carrier of a CW node in the UL band is built.
+PEER_ADDR = "10.0.1.2"
+PEER_PORT = 38392
+T3_CARRIERS = ("cw-node-ul",)
+# The UE's answers go up its UL: with a grant at least every frame instead of every 10 frames, when it
+# has sent no scheduling request, an outcome is back at the gNB about 19 ms after its window's end
+# rather than 34 (OAI's tutorials do the same for a low user plane latency).
+T3_UL_INACTIVITY_FRAMES = 0
+
+
+def split_of(network):
+    """In topology 3, "r2d" when the UE sends the R2D (3b) and "d2r" when it receives the D2R (3a);
+    else None."""
+    if network.topology != 3:
+        return None
+    return "r2d" if network.r2d == "ue" else "d2r"
+
+
+def wrap_hz(f):
+    """A frequency of the hub's 5.76 Msps samples, in [-fs/2, fs/2)."""
+    fs = FFT_SIZE * SCS_HZ
+    return (f + fs / 2) % fs - fs / 2
 
 
 def ue_reader(phy):
@@ -302,24 +333,94 @@ def hub_conf_t4(scenario_path, node_ids, scenario):
     return hub_file(scenario_path, about, nodes, links)
 
 
-def reader_options(scenario, node_ids, reader):
-    """The options of the Reader node, reader = "gnb" (topology 1) or "ue" (topologies 2 and 4): its
-    R2D, its carrier with cw = "gnb-dl", its D2R and its Reader (aiot); in topology 2, where the UE
-    sends what it hears."""
-    phy = scenario.phy
-    if reader == "gnb":
-        prb_start, n_rb, _, _ = gnb_reader(phy)
-        d2r_prb_start = D2R_PRB_START
+def hub_conf_t3(scenario_path, node_ids, scenario):
+    """The room of topology 3: the gNB, the UE that sends the R2D or receives the D2R, the Tags and the
+    CW node. Each half has the links of the room it comes from: the R2D and the carrier at each Tag of
+    topology 4 (the UE's R2D) or topology 1 (the gNB's), and the D2R of topology 1 (at the gNB) or
+    topology 4 (at the UE)."""
+    tags = [f"tag{n}" for n in node_ids]
+    width = max(len(t) for t in ["gnb"] + tags) + 3
+    split = split_of(scenario.network)
+    d2r_at = "gnb" if split == "r2d" else "ue"
+
+    nodes = ["    # sl_ahead (6 slots) ahead, and its first write comes after its first read" +
+             ("; its receiver" if d2r_at == "gnb" else ""),
+             *(["    # has the thermal noise of Amber's Reader"] if d2r_at == "gnb" else []),
+             hub_node(width, *GNB_NODE, noise=ADC_NOISE_COUNTS if d2r_at == "gnb" else None),
+             "    # the UE's rx-to-tx distance" + ("; its receiver has the thermal noise of Amber's Reader" if d2r_at == "ue" else ""),
+             hub_node(width, *UE_NODE, noise=ADC_NOISE_COUNTS if d2r_at == "ue" else None),
+             "    # amber-tag reads block n, then answers it"]
+    nodes += [hub_node(width, t, FIRST_TAG_PORT + i, 0) for i, t in enumerate(tags)]
+    nodes += ["    # amber-reader --amber.role carrier writes block n, then reads block n",
+              hub_node(width, "cw", CW_PORT, 5760)]
+    links = ["    # the 5G cell", hub_link("gnb", "ue"), hub_link("ue", "gnb"), ""]
+    if split == "r2d":
+        _, _, ul_shift_hz, ue_to_tag_db, cw_at_tag_hz = ue_reader(scenario.phy)
+        links += ["    # the UE's UL at each Tag, the R2D's \"on\" chips at the Tag's DC as strong as Amber's Reader's carrier"]
+        links += [hub_link("ue", t, ue_to_tag_db, ul_shift_hz) for t in tags]
+        links += ["    # the CW node's carrier at each Tag, as strong as Amber's Reader's there, at UL PRB 18: 0.9 MHz over",
+                  "    # the Tag's DC"]
+        links += [hub_link("cw", t, 0.0, cw_at_tag_hz) for t in tags]
+        links += ["    # each Tag's D2R at the gNB, around the carrier's reflection at UL PRB 18's centre, at the level",
+                  "    # Amber gives it: only UL PRBs 15-21, as from a Tag next to the carrier"]
+        links += [hub_link(t, "gnb", 0.0, round(UL_SHIFT_HZ - cw_at_tag_hz, 3), prbs_hz(D2R_PRB_START, D2R_N_RB)) for t in tags]
+        links += ["    # the carrier at the gNB, in UL PRB 18, as strong as Amber's Reader's own carrier leak",
+                  hub_link("cw", "gnb", cw_leak_db(scenario), UL_SHIFT_HZ),
+                  "    # the CW node hears the gNB, and does nothing with it: every node hears someone",
+                  hub_link("gnb", "cw")]
+        about = [f"# the Ambient IoT Reader of {len(tags)} Tags and the UE sends its R2D, all at 5.76 Msps. The UE sends",
+                 "# the R2D in UL PRBs 12-14, a CW node the carrier at UL PRB 18, and the gNB receives the D2R in UL",
+                 "# PRBs 15-21. The gNB leaves UL PRBs 12-21 free (ul_prbblacklist)."]
     else:
-        prb_start, n_rb, _, _, _ = ue_reader(phy)
-        d2r_prb_start = UE_D2R_PRB_START
+        _, _, dl_shift_hz, gnb_to_tag_db = gnb_reader(scenario.phy)
+        links += ["    # the gNB's DL at each Tag, the R2D's \"on\" chips at the Tag's DC as strong as Amber's Reader's carrier"]
+        links += [hub_link("gnb", t, gnb_to_tag_db, dl_shift_hz) for t in tags]
+        links += ["    # the CW node's carrier at each Tag, as strong as Amber's Reader's there, 0.9 MHz under the Tag's DC"]
+        links += [hub_link("cw", t, 0.0, CW_AT_TAG_HZ) for t in tags]
+        links += ["    # each Tag's D2R at the UE, at the level Amber gives it, moved into the guard band of the UE's DL",
+                  "    # (PRBs 25-31, fs / 2), the carrier's reflection at its centre: only those PRBs, as from a Tag next",
+                  "    # to the carrier"]
+        links += [hub_link(t, "ue", 0.0, wrap_hz(UE_D2R_HZ - CW_AT_TAG_HZ), UE_D2R_HZ) for t in tags]
+        links += ["    # the carrier at the UE, in the same PRBs, as strong as Amber's Reader's own carrier leak",
+                  hub_link("cw", "ue", cw_leak_db(scenario), UE_D2R_HZ),
+                  "    # the CW node hears the UE, and does nothing with it: every node hears someone",
+                  hub_link("ue", "cw")]
+        about = [f"# the Ambient IoT Reader of {len(tags)} Tags and the UE receives its D2R, all at 5.76 Msps. The gNB sends",
+                 "# the R2D in DL PRBs 0-2, a CW node the carrier at UL PRB 18, and the UE receives the D2R in the guard",
+                 "# band of its DL. The gNB leaves DL PRBs 0-2 and UL PRBs 15-21 free (dl_prbblacklist, ul_prbblacklist)."]
+    about = ["# rfsim_hub room, topology 3: the 25-PRB n28 cell of gnb.conf (gNB) and nr-ue.conf (UE), the gNB"] + about
+    return hub_file(scenario_path, about, nodes, links)
+
+
+def r2d_options(scenario, node):
+    """The R2D options of node, "gnb" or "ue": its PRBs, power, and its carrier with cw = "gnb-dl"."""
+    if node == "gnb":
+        prb_start, n_rb, _, _ = gnb_reader(scenario.phy)
+    else:
+        prb_start, n_rb, _, _, _ = ue_reader(scenario.phy)
+    return [f"--aiot.r2d_prb_start {prb_start}", f"--aiot.r2d_n_rb {n_rb}", f"--aiot.r2d_power_offset_dB {R2D_OFFSET_DB}",
+            f"--aiot.r2d_carrier {int(scenario.network.cw == 'gnb-dl')}"]
+
+
+def d2r_options(scenario, node):
+    """The D2R receiver options of node, "gnb" (UL PRBs 15-21) or "ue" (the guard band of its DL)."""
+    return [f"--aiot.d2r_prb_start {D2R_PRB_START if node == 'gnb' else UE_D2R_PRB_START}", f"--aiot.d2r_n_rb {D2R_N_RB}",
+            f"--aiot.d2r_noise_counts {ADC_NOISE_COUNTS}", f"--aiot.d2r_sic {int(scenario.enable_sic)}"]
+
+
+def reader_options(scenario, node_ids, reader):
+    """The options of the Reader node, reader = "gnb" (topologies 1 and 3) or "ue" (topologies 2 and
+    4): its R2D, its carrier with cw = "gnb-dl", its D2R and its Reader (aiot); in topology 2, where the
+    UE sends what it hears; in topology 3, the UE that sends the R2D or receives the D2R in its stead."""
+    phy = scenario.phy
+    split = split_of(scenario.network)
+    r2d_node = "ue" if split == "r2d" else reader
+    n_rb = (gnb_reader(phy) if r2d_node == "gnb" else ue_reader(phy))[1]
     protocol = scenario.protocol
     params = ",".join(f"{k}={v!r}" for k, v in protocol.params.items())
-    opts = [f"--aiot.r2d_prb_start {prb_start}", f"--aiot.r2d_n_rb {n_rb}",
-            f"--aiot.r2d_power_offset_dB {R2D_OFFSET_DB}", f"--aiot.r2d_carrier {int(scenario.network.cw == 'gnb-dl')}",
-            f"--aiot.d2r_prb_start {d2r_prb_start}", f"--aiot.d2r_n_rb {D2R_N_RB}",
-            f"--aiot.d2r_noise_counts {ADC_NOISE_COUNTS}", f"--aiot.d2r_sic {int(scenario.enable_sic)}",
-            f"--aiot.protocol {protocol.name}"]
+    opts = ((r2d_options(scenario, reader) if split != "r2d" else []) +
+            (d2r_options(scenario, reader) if split != "d2r" else []) +
+            [f"--aiot.protocol {protocol.name}"])
     if params:
         opts.append(f"--aiot.params {params}")
     opts += [f"--aiot.nodes {','.join(str(n) for n in node_ids)}",
@@ -330,7 +431,16 @@ def reader_options(scenario, node_ids, reader):
              f"--aiot.d2r_tbs {phy.d2r_tbs}", "--aiot.output_dir /out"]
     if scenario.network.relay:
         opts.append(f"--aiot.data_dest {SINK_ADDR}:{SINK_PORT}")
+    if split:
+        opts.append(f"--aiot.remote_{split} {PEER_ADDR}:{PEER_PORT}")
     return opts
+
+
+def peer_options(scenario):
+    """The options of the UE of topology 3: the R2D it sends, or the D2R it receives, and its port."""
+    split = split_of(scenario.network)
+    return (r2d_options(scenario, "ue") if split == "r2d" else d2r_options(scenario, "ue")) + \
+        [f"--aiot.serve_port {PEER_PORT}"]
 
 
 def hub_conf(scenario_path, node_ids):
@@ -373,18 +483,22 @@ def subnet(n_tags):
     return "192.168.71.128/26" if n_tags <= 64 - 2 - 5 else "192.168.71.128/25"
 
 
-def prb_blacklists(reader):
+def prb_blacklists(reader, split=None):
     """The DL and UL PRBs the gNB leaves free for A-IoT, with reader the Reader node: no DL PRB in
-    topologies 2 and 4, where the UE's D2R is in the guard band of its DL."""
-    if reader == "ue":
+    topologies 2 and 4, where the UE's D2R is in the guard band of its DL, nor in topology 3 with the
+    UE's R2D. With the gNB's R2D, DL PRBs 0-2, and UL PRBs 15-21, where the gNB's D2R is, or with the
+    UE's D2R, the CW node's carrier."""
+    if reader == "ue" or split == "r2d":
         return [], list(T4_UL_PRBS)
     return [0, 1, 2], list(range(D2R_PRB_START, D2R_PRB_START + D2R_N_RB))
 
 
-def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw_node=False, relay=False):
-    """The 5G room; with reader "gnb" (topology 1) or "ue" (topologies 2 and 4), that node is the
-    Reader, with reader_opts, and there is no Reader of Amber's; with cw_node, amber-reader is the CW
-    node; with relay (topology 2), amber.sink takes the UE's Tag data in the gNB's network."""
+def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw_node=False, relay=False, split=None,
+                 peer_opts=()):
+    """The 5G room; with reader "gnb" (topologies 1 and 3) or "ue" (topologies 2 and 4), that node is
+    the Reader, with reader_opts, and there is no Reader of Amber's; with cw_node, amber-reader is the
+    CW node; with relay (topology 2), amber.sink takes the UE's Tag data in the gNB's network; with
+    split (topology 3), the UE sends the gNB's R2D or receives its D2R, with peer_opts."""
     def cmd(words):  # a command as one YAML flow list
         return json.dumps(words)
 
@@ -396,17 +510,21 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         amber_volumes.append(f".:{ROOM}:ro")
     amber = ["--amber.block_bytes", "23040", "--amber.output_dir", "/out", "--amber.scenario", scenario_path]
     rfsim = lambda port: ["--rfsimulator.[0].serveraddr", HUB_ADDR, "--rfsimulator.[0].serverport", str(port)]
-    dl_free, ul_free = prb_blacklists(reader)
+    dl_free, ul_free = prb_blacklists(reader, split)
     gnb_opts = " ".join(["-E --do-ra --rfsim --noS1"] + rfsim(GNB_PORT) +
                         prbs("dl_prbblacklist", dl_free) + prbs("ul_prbblacklist", ul_free) +
                         [f"--L1s.[0].prach_dtx_threshold {PRACH_THRESHOLD}"] +
+                        ([f"--MACRLCs.[0].ulsch_max_frame_inactivity {T3_UL_INACTIVITY_FRAMES}"] if split else []) +
                         (list(reader_opts) if reader == "gnb" else []) + LOG)
     ue_opts = " ".join(["-E --do-ra --rfsim --noS1 --reconfig-file etc/rrc/reconfig.raw --rbconfig-file etc/rrc/rbconfig.raw"]
-                       + rfsim(UE_PORT) + (list(reader_opts) if reader == "ue" else []) + LOG)
+                       + rfsim(UE_PORT) + (list(reader_opts) if reader == "ue" else list(peer_opts)) + LOG)
     whose = {"gnb": "whose gNB is the Ambient IoT Reader of {} Tags (topology 1),",
              "ue": ("whose UE is the Ambient IoT Reader of {} Tags and sends their data to the gNB (topology 2),"
                     if relay else "whose UE is the Ambient IoT Reader of {} Tags (topology 4),"),
              None: "and an Ambient IoT Reader with {} Tags in one shared air,"}[reader]
+    if split:
+        whose = ("whose gNB is the Ambient IoT Reader of {} Tags and whose UE " +
+                 ("sends its R2D" if split == "r2d" else "receives its D2R") + " (topology 3),")
     lines = [
         "# SPDX-License-Identifier: MIT",
         f"# Written by amber-compose from {json.dumps(scenario_path)}",
@@ -526,9 +644,11 @@ def cell_file(name):
 
 
 def reader_node(network):
-    """The node this script makes the Reader: "gnb" (topology 1), "ue" (topologies 2 and 4), or None
-    for a standalone Reader of Amber's."""
+    """The node this script makes the Reader: "gnb" (topologies 1 and 3: in 3 its MAC), "ue"
+    (topologies 2 and 4), or None for a standalone Reader of Amber's."""
     if network.topology == 1 and network.cw in T1_CARRIERS:
+        return "gnb"
+    if network.topology == 3 and network.cw in T3_CARRIERS:
         return "gnb"
     if network.topology in (2, 4) and network.cw in T4_CARRIERS:
         return "ue"
@@ -545,14 +665,14 @@ def not_built(network, phy=None):
     if network.topology in (2, 4) and network.cw not in T4_CARRIERS:
         return (f'topology {network.topology} with cw = {network.cw!r}: only a CW node in the UL band '
                 '(cw = "cw-node-ul") is built yet')
-    if network.topology not in (1, 2, 4):
-        return (f"topology {network.topology} (r2d = {network.r2d!r}, d2r = {network.d2r!r}"
-                + (", relay = true" if network.relay else "") + ") is not built yet")
-    node, prbs = {"gnb": ("gNB", "DL PRBs 0 to 2"), "ue": ("UE", "UL PRBs 12 to 14")}[reader_node(network)]
+    if network.topology == 3 and network.cw not in T3_CARRIERS:
+        return (f'topology 3 with cw = {network.cw!r}: only a CW node in the UL band (cw = "cw-node-ul") is '
+                'built yet')
+    names = {"gnb": ("gNB", "DL PRBs 0 to 2"), "ue": ("UE", "UL PRBs 12 to 14")}
     if phy is not None and phy.modulation != "bpsk":
-        return f"the {node}'s D2R receiver takes BPSK, the scenario's Tags send {phy.modulation}"
+        return f"the {names[network.d2r][0]}'s D2R receiver takes BPSK, the scenario's Tags send {phy.modulation}"
     if phy is not None and phy.rb > 3:
-        return f"the {node}'s R2D has {prbs}, the scenario's R2D needs {phy.rb}"
+        return f"the {names[network.r2d][0]}'s R2D has {names[network.r2d][1]}, the scenario's R2D needs {phy.rb}"
     return None
 
 
@@ -592,11 +712,13 @@ def main():
             parser.error(f"a 5G room's network has addresses for {MAX_ROOM_TAGS} Tags, the scenario has {len(node_ids)}")
         gnb_conf, ue_conf = CELLS[network.cell]
         reader = reader_node(network)
+        split = split_of(network)
         if reader:
-            hub = hub_conf_t1 if reader == "gnb" else hub_conf_t4
+            hub = hub_conf_t3 if split else hub_conf_t1 if reader == "gnb" else hub_conf_t4
             files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image, reader,
                                                          reader_options(scenario, node_ids, reader),
-                                                         network.cw == "cw-node-ul", network.relay),
+                                                         network.cw == "cw-node-ul", network.relay, split,
+                                                         peer_options(scenario) if split else ()),
                      "rfsim_hub.conf": hub(scenario_path, node_ids, scenario)}
         else:
             files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image),
@@ -609,10 +731,12 @@ def main():
         shutil.copyfile(src, os.path.join(room, name))
     print(f"amber-compose: wrote {', '.join(list(files) + list(copies))} in {args.dir}: "
           f"{len(node_ids)} Tags" + (f", 5G cell {network.cell}" if network.cell else "") +
-          {"gnb": ", the gNB as the Reader (topology 1)",
-           "ue": (", the UE as the Reader, relaying to the gNB (topology 2)" if network.relay else
-                  ", the UE as the Reader (topology 4)"),
-           None: ""}[reader_node(network)] +
+          ({"r2d": ", the gNB as the Reader and the UE sending its R2D (topology 3)",
+            "d2r": ", the gNB as the Reader and the UE receiving its D2R (topology 3)"}.get(split_of(network)) or
+           {"gnb": ", the gNB as the Reader (topology 1)",
+            "ue": (", the UE as the Reader, relaying to the gNB (topology 2)" if network.relay else
+                   ", the UE as the Reader (topology 4)"),
+            None: ""}[reader_node(network)]) +
           (", a CW node in the UL band" if network.cw == "cw-node-ul" else ""), file=sys.stderr)
 
 

@@ -149,8 +149,12 @@ instead, a CW node sends the carrier in the UL band:
 and that carrier the UE is the Reader, for itself (topology 4):
 [5g_rfsimulator_aiot_t4](../5g_rfsimulator_aiot_t4/README.md). With `relay = true` as well, the UE
 sends what it reads to the gNB over its own user plane (topology 2):
-[5g_rfsimulator_aiot_t2](../5g_rfsimulator_aiot_t2/README.md). Topology 3 and the other carriers are
-not built yet, and `amber-compose` refuses those scenarios with that reason.
+[5g_rfsimulator_aiot_t2](../5g_rfsimulator_aiot_t2/README.md). With the gNB and the UE each at one end
+the gNB runs the Reader's MAC and the UE does the other half of its radio work (topology 3): with
+`r2d = "gnb"` and `d2r = "ue"` the UE receives the D2R,
+[5g_rfsimulator_aiot_t3a](../5g_rfsimulator_aiot_t3a/README.md), and with `r2d = "ue"` and
+`d2r = "gnb"` it sends the R2D, [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md). The
+other carriers are not built yet, and `amber-compose` refuses those scenarios with that reason.
 
 ## Timing
 

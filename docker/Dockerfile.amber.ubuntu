@@ -101,6 +101,8 @@ COPY ci-scripts/yaml_files/5g_rfsimulator_aiot/ /tmp/rooms/5g_rfsimulator_aiot/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1/ /tmp/rooms/5g_rfsimulator_aiot_t1/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1_cw_ul/ /tmp/rooms/5g_rfsimulator_aiot_t1_cw_ul/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t2/ /tmp/rooms/5g_rfsimulator_aiot_t2/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t3a/ /tmp/rooms/5g_rfsimulator_aiot_t3a/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t3b/ /tmp/rooms/5g_rfsimulator_aiot_t3b/
 COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t4/ /tmp/rooms/5g_rfsimulator_aiot_t4/
 
 # Fail here rather than at run time if a library is missing.
