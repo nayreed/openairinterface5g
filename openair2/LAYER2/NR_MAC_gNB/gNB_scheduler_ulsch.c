@@ -792,6 +792,7 @@ static void nr_rx_ra_sdu(gNB_MAC_INST *mac,
     if (!transition_ra_connected_nr_ue(mac, UE)) {
       LOG_E(NR_MAC, "cannot add UE %04x: list is full\n", UE->rnti);
       delete_nr_ue_data(mac, UE);
+      return;
     } else {
       LOG_A(NR_MAC, "(rnti 0x%04x) CFRA procedure succeeded!\n", UE->rnti);
     }
@@ -917,8 +918,14 @@ static void nr_rx_ra_sdu(gNB_MAC_INST *mac,
     return;
   }
 
-  if (cfra)
-    return; // rest not relevant for CFRA
+  if (cfra) {
+    // In CFRA the RA procedure ends with the RAR (38.321 5.1.4), so this PUSCH, on the RAR's grant, is the
+    // UE's first ordinary MAC PDU: it may carry a BSR and data that was waiting for the UL (with --do-ra,
+    // what the UE sent on its tunnel while it had no UL yet). Decode it as any other.
+    *rlc_rnti = UE->rnti;
+    nr_process_mac_pdu(mac, cell, UE, frame, slot, sdu, sdu_len, harq_pid, data_ind, num_data_ind);
+    return;
+  }
 
   // UE Contention Resolution Identity
   // Store the first 48 bits belonging to the uplink CCCH SDU within Msg3 to fill in Msg4
