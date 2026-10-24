@@ -19,7 +19,7 @@ fi
 image=$1
 scenario=${2:-/opt/amber/tests/scenarios/registration.toml}
 work=$(mktemp -d)
-compose=(docker compose -f "$work/compose.yaml")
+compose=(docker compose -f "$work/docker-compose.yaml")
 
 cleanup() {
   "${compose[@]}" down --remove-orphans > /dev/null 2>&1 || true
@@ -84,10 +84,12 @@ if trace:
 
 print(f"Prepared seeded TOML scenario: {destination} (seed={seed})")
 PY
-scenario_for_compose="/scenarios/$scenario_rel"
+# The work folder is amber-compose's DIR, which the containers see as /room: the staged scenario
+# is inside it, so the compose file mounts it there, and ./out is $work/out.
+scenario_for_compose="/room/scenarios/$scenario_rel"
 
-docker run --rm -v "$work/scenarios:/scenarios:ro" "$image" \
-  amber-compose --image "$image" "$scenario_for_compose" > "$work/compose.yaml"
+docker run --rm -v "$work:/room" "$image" \
+  amber-compose --image "$image" "$scenario_for_compose" /room
 
 # Compose waits until the Reader and all Tags have stopped.
 "${compose[@]}" up
@@ -102,7 +104,7 @@ for id in $("${compose[@]}" ps --all --quiet); do
 done
 [ "$failed" = 0 ]
 
-docker run --rm -v "$work:/work" -v "$work/scenarios:/scenarios:ro" "$image" \
-  python3 -m amber.run "$scenario_for_compose" /work/ref
+docker run --rm -v "$work:/room" "$image" \
+  python3 -m amber.run "$scenario_for_compose" /room/ref
 diff -r "$work/ref" "$work/out"
 echo "$scenario: the containers match amber.run ($(find "$work/out" -type f | wc -l) files)"
