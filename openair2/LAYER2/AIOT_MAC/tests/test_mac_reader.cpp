@@ -69,9 +69,10 @@ uint32_t draw(void *user, uint32_t n)
   return std::uniform_int_distribution<uint32_t>(0, n - 1)(static_cast<Node *>(user)->rng);
 }
 
-void deliver(void *user, const uint8_t *, int)
+int deliver(void *user, const uint8_t *, int)
 {
   static_cast<Node *>(user)->delivered++;
+  return 0;
 }
 
 struct Air {
@@ -91,7 +92,7 @@ struct Air {
       auto n = std::make_unique<Node>();
       n->id = 0x100 + i;
       n->rng.seed(1000 + i);
-      aiot_device_upper_t up = {n.get(), matched, nullptr, deliver, next_sdu, draw};
+      aiot_device_upper_t up = {n.get(), matched, nullptr, deliver, next_sdu, draw, nullptr};
       n->mac = aiot_device_new(&up, AIOT_BPSK);
       ids.push_back(n->id);
       nodes.push_back(std::move(n));
@@ -481,4 +482,105 @@ TEST(Reader, ManualSendsWhatIsPushed)
   if (air.heard.size() > 2) {
     EXPECT_EQ(air.heard[2]->sent.kind, AIOT_R2D_RANDOM_ID_RESPONSE);
   }
+}
+
+namespace {
+
+std::vector<uint8_t> security_of(const aiot_mac_r2d_msg_t &m)
+{
+  return std::vector<uint8_t>(m.security_param, m.security_param + AIOT_MAC_SECURITY_PARAM_BITS);
+}
+
+/* The first R2D of a Reader, asked for twice: both asks must give the same message and bits. */
+aiot_reader_r2d_t first_r2d(aiot_reader_t *r)
+{
+  aiot_reader_r2d_t a, b;
+  EXPECT_EQ(aiot_reader_next_r2d(r, 0, &a), 1);
+  EXPECT_EQ(aiot_reader_next_r2d(r, 0, &b), 1);
+  EXPECT_EQ(a.n_bits, b.n_bits);
+  EXPECT_EQ(std::vector<uint8_t>(a.bits, a.bits + a.n_bits), std::vector<uint8_t>(b.bits, b.bits + b.n_bits));
+  EXPECT_EQ(security_of(a.msg), security_of(b.msg));
+  return a;
+}
+
+} // namespace
+
+// Every paging the protocol builds carries SPPI 1 and 128 bits of the Reader's own generator: the
+// bits in the packed R2D, in the message it reports, and in the record of what was sent.
+TEST(Reader, ProtocolPagingsCarryASecurityParameter)
+{
+  Air air("broadcast", {{"occasions_exp", 2}}, 3);
+  const aiot_reader_r2d_t first = first_r2d(air.reader);
+  ASSERT_EQ(first.msg.kind, AIOT_R2D_PAGING_CBRA);
+  EXPECT_EQ(first.msg.has_security_param, 1);
+  aiot_mac_r2d_msg_t parsed;
+  ASSERT_EQ(aiot_mac_parse_r2d(first.bits, first.n_bits, &parsed), 0);
+  ASSERT_EQ(parsed.has_security_param, 1);
+  EXPECT_EQ(security_of(parsed), security_of(first.msg));
+  int ones = 0;
+  for (uint8_t b : security_of(first.msg))
+    ones += b;
+  EXPECT_GT(ones, 32);
+  EXPECT_LT(ones, 96);
+
+  air.run(40);
+  std::vector<std::vector<uint8_t>> sec;
+  for (auto &h : air.heard)
+    if (h->sent.kind == AIOT_R2D_PAGING_CBRA || h->sent.kind == AIOT_R2D_PAGING_CFA) {
+      EXPECT_EQ(h->sent.has_security_param, 1);
+      sec.push_back(security_of(h->sent));
+    } else {
+      EXPECT_EQ(h->sent.has_security_param, 0);
+    }
+  ASSERT_GE(sec.size(), 2u);
+  EXPECT_EQ(sec[0], security_of(first.msg)) << "the record is what was packed";
+  EXPECT_NE(sec[0], sec[1]);
+
+  Air again("broadcast", {{"occasions_exp", 2}}, 3);
+  EXPECT_EQ(security_of(first_r2d(again.reader).msg), security_of(first.msg));
+  Air seeded("broadcast", {{"occasions_exp", 2}}, 3);
+  aiot_reader_seed(seeded.reader, 7);
+  const aiot_reader_r2d_t other = first_r2d(seeded.reader);
+  EXPECT_EQ(other.msg.has_security_param, 1);
+  EXPECT_NE(security_of(other.msg), security_of(first.msg));
+
+  Air cfa("unicast", {}, 2);
+  const aiot_reader_r2d_t page = first_r2d(cfa.reader);
+  ASSERT_EQ(page.msg.kind, AIOT_R2D_PAGING_CFA);
+  EXPECT_EQ(page.msg.has_security_param, 1);
+}
+
+// A message the caller pushes is sent as built: SPPI 0 stays 0, given bits stay as given.
+TEST(Reader, PushedPagingKeepsItsSecurityParameter)
+{
+  Air air("manual", {}, 2);
+  aiot_link_config_t c = default_link();
+  aiot_mac_r2d_msg_t cfa = {};
+  cfa.kind = AIOT_R2D_PAGING_CFA;
+  ASSERT_EQ(aiot_link_cfa(&c, 0, 0, &cfa.sched), 0);
+  cfa.has_paging_id = 1;
+  cfa.paging_id_len = 16;
+  aiot_paging_id_of_node(0x100, cfa.paging_id);
+
+  ASSERT_EQ(aiot_reader_push(air.reader, &cfa, 0), 0);
+  aiot_reader_r2d_t out = first_r2d(air.reader);
+  EXPECT_EQ(out.msg.has_security_param, 0);
+  aiot_mac_r2d_msg_t parsed;
+  ASSERT_EQ(aiot_mac_parse_r2d(out.bits, out.n_bits, &parsed), 0);
+  EXPECT_EQ(parsed.has_security_param, 0);
+  ASSERT_TRUE(air.step());
+  EXPECT_EQ(air.heard.back()->sent.has_security_param, 0);
+
+  cfa.has_security_param = 1;
+  for (int i = 0; i < AIOT_MAC_SECURITY_PARAM_BITS; i++)
+    cfa.security_param[i] = i % 3 == 0;
+  ASSERT_EQ(aiot_reader_push(air.reader, &cfa, 0), 0);
+  out = first_r2d(air.reader);
+  ASSERT_EQ(out.msg.has_security_param, 1);
+  EXPECT_EQ(security_of(out.msg), security_of(cfa));
+  ASSERT_EQ(aiot_mac_parse_r2d(out.bits, out.n_bits, &parsed), 0);
+  ASSERT_EQ(parsed.has_security_param, 1);
+  EXPECT_EQ(security_of(parsed), security_of(cfa));
+  ASSERT_TRUE(air.step());
+  EXPECT_EQ(security_of(air.heard.back()->sent), security_of(cfa));
 }

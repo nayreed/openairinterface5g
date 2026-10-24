@@ -73,7 +73,7 @@ aiot_sched_info_t RandomSched(std::mt19937 &gen, aiot_sched_variant_t v)
   s.t_bit_den = dur[row][1];
   if (v == AIOT_SCHED_R2D_DATA || v == AIOT_SCHED_PAGING_CFA) {
     s.n_sfs = 1;
-    const int max = v == AIOT_SCHED_R2D_DATA ? 128 : dur[row][2];
+    const int max = dur[row][2]; // Table 6.2.1.6-1 (CR 0009): the Unicast value is limited too
     for (s.r_sfs[0] = 1; s.r_sfs[0] < max && gen() % 2;)
       s.r_sfs[0] *= 2;
   } else {
@@ -92,6 +92,43 @@ aiot_sched_info_t RandomSched(std::mt19937 &gen, aiot_sched_variant_t v)
   s.d2r_tbs = v == AIOT_SCHED_PAGING_CBRA ? 0 : 1 + gen() % AIOT_MAC_MAX_TBS;
   EXPECT_EQ(aiot_mac_sched_validate(&s), 0);
   return s;
+}
+
+// The Security Parameter of the hand-built Paging PDUs: bit i is 1 when i is a multiple of 3.
+void SetSecurity(aiot_mac_r2d_msg_t &m)
+{
+  m.has_security_param = 1;
+  for (int i = 0; i < AIOT_MAC_SECURITY_PARAM_BITS; i++)
+    m.security_param[i] = i % 3 == 0;
+}
+
+void PutSecurity(Bits &b)
+{
+  for (int i = 0; i < AIOT_MAC_SECURITY_PARAM_BITS; i++)
+    b.push_back(i % 3 == 0);
+}
+
+// A Paging message of the given kind: no Security Parameter unless sppi, id_len Paging ID bits
+// (alternating 1 0 1 0 ...) when has_id.
+aiot_mac_r2d_msg_t Paging(aiot_r2d_kind_t kind, bool sppi, int id_len, bool has_id = true)
+{
+  aiot_mac_r2d_msg_t m;
+  memset(&m, 0, sizeof(m));
+  m.kind = kind;
+  m.sched = Sched(kind == AIOT_R2D_PAGING_CBRA ? AIOT_SCHED_PAGING_CBRA : AIOT_SCHED_PAGING_CFA);
+  if (sppi)
+    SetSecurity(m);
+  m.has_paging_id = has_id;
+  m.paging_id_len = has_id ? id_len : 0;
+  for (int i = 0; i < m.paging_id_len; i++)
+    m.paging_id[i] = (i & 1) ^ 1;
+  return m;
+}
+
+void PutPagingId(Bits &b, int len)
+{
+  for (int i = 0; i < len; i++)
+    b.push_back((i & 1) ^ 1);
 }
 
 void ExpectSameSched(const aiot_sched_info_t &a, const aiot_sched_info_t &b)
@@ -115,6 +152,12 @@ aiot_mac_r2d_msg_t RandomR2d(std::mt19937 &gen, aiot_r2d_kind_t kind)
   aiot_mac_r2d_msg_t m;
   memset(&m, 0, sizeof(m));
   m.kind = kind;
+  auto security = [&]() {
+    m.has_security_param = gen() % 2;
+    if (m.has_security_param)
+      for (auto &x : m.security_param)
+        x = gen() & 1;
+  };
   auto paging_id = [&](int max_len) {
     m.has_paging_id = 1;
     m.paging_id_len = gen() % (max_len + 1);
@@ -127,12 +170,14 @@ aiot_mac_r2d_msg_t RandomR2d(std::mt19937 &gen, aiot_r2d_kind_t kind)
       m.transaction_id = gen() % 64;
       m.num_access_occasions_code = gen() % 16;
       m.k_bit = gen() % 2;
+      security();
       if (gen() % 2)
-        paging_id(255);
+        paging_id(AIOT_MAC_MAX_PAGING_ID_BITS);
       break;
     case AIOT_R2D_PAGING_CFA:
       m.sched = RandomSched(gen, AIOT_SCHED_PAGING_CFA);
-      paging_id(255);
+      security();
+      paging_id(AIOT_MAC_MAX_PAGING_ID_BITS);
       break;
     case AIOT_R2D_RANDOM_ID_RESPONSE: {
       m.sched = RandomSched(gen, AIOT_SCHED_RANDOM_ID_RESPONSE);
@@ -151,7 +196,7 @@ aiot_mac_r2d_msg_t RandomR2d(std::mt19937 &gen, aiot_r2d_kind_t kind)
         for (int i = 0; i < m.sdu_len; i++)
           m.sdu[i] = gen() & 0xff;
       } else {
-        m.received_data_size = gen() % 128;
+        m.received_data_size = gen() % (AIOT_MAC_MAX_RECEIVED_DATA_SIZE + 1);
       }
       break;
     case AIOT_R2D_NACK_FEEDBACK:
@@ -172,6 +217,12 @@ void ExpectSameR2d(const aiot_mac_r2d_msg_t &a, const aiot_mac_r2d_msg_t &b)
     return;
   if (a.kind != AIOT_R2D_NACK_FEEDBACK)
     ExpectSameSched(a.sched, b.sched);
+  if (a.kind == AIOT_R2D_PAGING_CBRA || a.kind == AIOT_R2D_PAGING_CFA) {
+    ASSERT_EQ(a.has_security_param, b.has_security_param);
+    if (a.has_security_param) {
+      EXPECT_EQ(memcmp(a.security_param, b.security_param, AIOT_MAC_SECURITY_PARAM_BITS), 0);
+    }
+  }
   switch (a.kind) {
     case AIOT_R2D_PAGING_CBRA:
       EXPECT_EQ(a.transaction_id, b.transaction_id);
@@ -290,10 +341,13 @@ TEST(MacPdu, SchedulingInfoRoundTrip)
   s.r_sfs[0] = 16; // larger than 1/8 tau allows
   EXPECT_EQ(aiot_mac_sched_validate(&s), AIOT_EINVAL);
   s = Sched(AIOT_SCHED_R2D_DATA);
-  s.r_sfs[0] = 16; // the Unicast field is not limited by the bit duration...
-  EXPECT_EQ(aiot_mac_sched_validate(&s), 0);
+  s.r_sfs[0] = 16; // the Unicast field is limited by the bit duration as the Broadcast one (CR 0009)
+  EXPECT_EQ(aiot_mac_sched_validate(&s), AIOT_EINVAL);
   aiot_d2r_params_t p;
-  EXPECT_EQ(aiot_mac_to_d2r_params(&s, 16, AIOT_BPSK, &p), AIOT_EINVAL); // ...but the D2R is
+  EXPECT_EQ(aiot_mac_to_d2r_params(&s, 16, AIOT_BPSK, &p), AIOT_EINVAL);
+  s.r_sfs[0] = 8;
+  EXPECT_EQ(aiot_mac_sched_validate(&s), 0);
+  EXPECT_EQ(aiot_mac_to_d2r_params(&s, 8, AIOT_BPSK, &p), 0);
   s.r_sfs[0] = 4;
   ASSERT_EQ(aiot_mac_to_d2r_params(&s, 4, AIOT_OOK, &p), 0);
   EXPECT_EQ(p.t_bit_num * 8, p.t_bit_den);
@@ -427,9 +481,338 @@ TEST(MacPdu, Boundaries)
     b[0] = (t >> 2) & 1, b[1] = (t >> 1) & 1, b[2] = t & 1;
     EXPECT_EQ(aiot_mac_parse_r2d(b, 16, &m), AIOT_EINVAL) << t;
   }
+  // SPPI is a flag, and the Security Parameter holds bits
+  aiot_mac_r2d_msg_t pg = Paging(AIOT_R2D_PAGING_CBRA, true, 8);
+  EXPECT_GT(aiot_mac_pack_r2d(&pg, bits, (int)sizeof(bits)), 0);
+  pg.has_security_param = 2;
+  EXPECT_EQ(aiot_mac_pack_r2d(&pg, bits, (int)sizeof(bits)), AIOT_EINVAL);
+  pg.kind = AIOT_R2D_PAGING_CFA;
+  pg.sched = Sched(AIOT_SCHED_PAGING_CFA);
+  EXPECT_EQ(aiot_mac_pack_r2d(&pg, bits, (int)sizeof(bits)), AIOT_EINVAL);
+  pg.has_security_param = 1;
+  EXPECT_GT(aiot_mac_pack_r2d(&pg, bits, (int)sizeof(bits)), 0);
+  pg.security_param[77] = 2;
+  EXPECT_EQ(aiot_mac_pack_r2d(&pg, bits, (int)sizeof(bits)), AIOT_EINVAL);
+  pg.has_security_param = 0; // not looked at without SPPI
+  EXPECT_GT(aiot_mac_pack_r2d(&pg, bits, (int)sizeof(bits)), 0);
   const uint8_t trigger[3] = {0, 1, 0};
   EXPECT_EQ(aiot_mac_parse_r2d(trigger, 3, &m), 0);
   EXPECT_EQ(m.kind, AIOT_R2D_ACCESS_TRIGGER);
   EXPECT_EQ(aiot_mac_parse_r2d(trigger, 2, &m), AIOT_EINVAL);
   EXPECT_EQ(aiot_mac_parse_r2d(NULL, 0, &m), AIOT_EINVAL);
+}
+
+// Figure 6.2.1.1-1 (V19.4.0): SPPI and the Security Parameter follow the R2D TBS, the Paging ID
+// Length has 10 bits. Body without Paging ID: 3 + 7 + 1 + 128 + 1 + 6 + 1 + 4 + 18 + 1 = 170 bits,
+// 22 bytes with 6 Fill Bits.
+TEST(MacPdu, PagingCbraLayout)
+{
+  aiot_mac_r2d_msg_t m = Paging(AIOT_R2D_PAGING_CBRA, true, 0, false);
+  m.transaction_id = 37;
+  m.num_access_occasions_code = 5;
+  m.k_bit = 1;
+  Bits want;
+  Put(want, AIOT_MAC_R2D_TYPE_PAGING, 3);
+  Put(want, 22, 7);
+  Put(want, 1, 1); // SPPI
+  PutSecurity(want);
+  Put(want, 1, 1); // AT = CBRA
+  Put(want, 37, 6);
+  Put(want, 0, 1); // PIPI
+  Put(want, 5, 4);
+  Bits sched = Pack(m.sched);
+  ASSERT_EQ((int)sched.size(), 18);
+  want.insert(want.end(), sched.begin(), sched.end());
+  Put(want, 1, 1); // K
+  ASSERT_EQ((int)want.size(), 170);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 170);
+  EXPECT_EQ(aiot_mac_r2d_natural_bytes(&m), 22);
+  Put(want, 0, 6); // Fill Bits
+  ASSERT_EQ((int)want.size(), 176);
+  EXPECT_EQ(Pack(m), want);
+
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(want.data(), (int)want.size(), &back), 0);
+  EXPECT_EQ(back.kind, AIOT_R2D_PAGING_CBRA);
+  EXPECT_EQ(back.r2d_tbs, 22);
+  EXPECT_EQ(back.has_security_param, 1);
+  EXPECT_EQ(memcmp(back.security_param, m.security_param, AIOT_MAC_SECURITY_PARAM_BITS), 0);
+  EXPECT_EQ(back.transaction_id, 37);
+  EXPECT_EQ(back.has_paging_id, 0);
+  EXPECT_EQ(back.num_access_occasions_code, 5);
+  EXPECT_EQ(back.k_bit, 1);
+  ExpectSameR2d(m, back);
+
+  // a 20-bit Paging ID, its length on 10 bits: 170 + 10 + 20 = 200 bits, 25 bytes, no Fill Bits
+  m = Paging(AIOT_R2D_PAGING_CBRA, true, 20);
+  m.transaction_id = 37;
+  m.num_access_occasions_code = 5;
+  m.k_bit = 1;
+  want.clear();
+  Put(want, AIOT_MAC_R2D_TYPE_PAGING, 3);
+  Put(want, 25, 7);
+  Put(want, 1, 1);
+  PutSecurity(want);
+  Put(want, 1, 1);
+  Put(want, 37, 6);
+  Put(want, 1, 1); // PIPI
+  Put(want, 20, 10); // Paging ID Length
+  PutPagingId(want, 20);
+  Put(want, 5, 4);
+  want.insert(want.end(), sched.begin(), sched.end());
+  Put(want, 1, 1);
+  ASSERT_EQ((int)want.size(), 200);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 200);
+  EXPECT_EQ(Pack(m), want);
+  ASSERT_EQ(aiot_mac_parse_r2d(want.data(), (int)want.size(), &back), 0);
+  EXPECT_EQ(back.r2d_tbs, 25);
+  EXPECT_EQ(back.paging_id_len, 20);
+  ExpectSameR2d(m, back);
+
+  // SPPI = 1 but the PDU ends inside the Security Parameter
+  Bits cut;
+  Put(cut, AIOT_MAC_R2D_TYPE_PAGING, 3);
+  Put(cut, 4, 7);
+  Put(cut, 1, 1);
+  Put(cut, 0, 21);
+  EXPECT_EQ(aiot_mac_parse_r2d(cut.data(), (int)cut.size(), &back), AIOT_EINVAL);
+}
+
+// Figure 6.2.1.1-2: 3 + 7 + 1 + 128 + 1 + 10 + 16 + 24 = 190 bits, 24 bytes with 2 Fill Bits
+TEST(MacPdu, PagingCfaLayout)
+{
+  aiot_mac_r2d_msg_t m = Paging(AIOT_R2D_PAGING_CFA, true, 16);
+  Bits want;
+  Put(want, AIOT_MAC_R2D_TYPE_PAGING, 3);
+  Put(want, 24, 7);
+  Put(want, 1, 1); // SPPI
+  PutSecurity(want);
+  Put(want, 0, 1); // AT = CFA
+  Put(want, 16, 10); // Paging ID Length
+  PutPagingId(want, 16);
+  Bits sched = Pack(m.sched);
+  ASSERT_EQ((int)sched.size(), 24);
+  want.insert(want.end(), sched.begin(), sched.end());
+  ASSERT_EQ((int)want.size(), 190);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 190);
+  EXPECT_EQ(aiot_mac_r2d_natural_bytes(&m), 24);
+  Put(want, 0, 2); // Fill Bits
+  EXPECT_EQ(Pack(m), want);
+
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(want.data(), (int)want.size(), &back), 0);
+  EXPECT_EQ(back.kind, AIOT_R2D_PAGING_CFA);
+  EXPECT_EQ(back.r2d_tbs, 24);
+  EXPECT_EQ(back.has_security_param, 1);
+  EXPECT_EQ(back.paging_id_len, 16);
+  ExpectSameR2d(m, back);
+}
+
+// SPPI = 0 is a valid format: no Security Parameter, 128 bits shorter
+TEST(MacPdu, PagingWithoutSecurityParameter)
+{
+  // CBRA, no Paging ID: 3 + 7 + 1 + 1 + 6 + 1 + 4 + 18 + 1 = 42 bits, 6 bytes
+  aiot_mac_r2d_msg_t m = Paging(AIOT_R2D_PAGING_CBRA, false, 0, false);
+  m.transaction_id = 9;
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 42);
+  Bits b = Pack(m);
+  ASSERT_EQ((int)b.size(), 48);
+  EXPECT_EQ(b[10], 0); // SPPI
+  EXPECT_EQ(b[11], 1); // AT directly after it
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  EXPECT_EQ(back.has_security_param, 0);
+  EXPECT_EQ(back.r2d_tbs, 6);
+  EXPECT_EQ(back.transaction_id, 9);
+  ExpectSameR2d(m, back);
+
+  // CFA, 12-bit Paging ID: 3 + 7 + 1 + 1 + 10 + 12 + 24 = 58 bits, 8 bytes
+  m = Paging(AIOT_R2D_PAGING_CFA, false, 12);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 58);
+  b = Pack(m);
+  ASSERT_EQ((int)b.size(), 64);
+  EXPECT_EQ(b[10], 0);
+  EXPECT_EQ(b[11], 0);
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  EXPECT_EQ(back.has_security_param, 0);
+  EXPECT_EQ(back.r2d_tbs, 8);
+  ExpectSameR2d(m, back);
+}
+
+// The Paging ID Length has 10 bits (up to 1023); what fits in 125 bytes (1000 bits) is limited by
+// the other fields: CFA 46 + L (SPPI 0) or 174 + L (SPPI 1), CBRA 170 + 10 + L (SPPI 1)
+TEST(MacPdu, PagingIdLengthTenBits)
+{
+  aiot_mac_r2d_msg_t m = Paging(AIOT_R2D_PAGING_CFA, false, 300);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 346);
+  Bits b = Pack(m);
+  ASSERT_EQ((int)b.size(), 8 * 44); // 346 bits
+  Bits len;
+  Put(len, 300, 10);
+  EXPECT_TRUE(std::equal(len.begin(), len.end(), b.begin() + 12));
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  EXPECT_EQ(back.paging_id_len, 300);
+  ExpectSameR2d(m, back);
+
+  m = Paging(AIOT_R2D_PAGING_CFA, false, 954);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 1000);
+  b = Pack(m);
+  ASSERT_EQ((int)b.size(), 8 * AIOT_MAC_MAX_TBS);
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  EXPECT_EQ(back.r2d_tbs, AIOT_MAC_MAX_TBS);
+  ExpectSameR2d(m, back);
+  m = Paging(AIOT_R2D_PAGING_CFA, false, 955);
+  EXPECT_EQ(aiot_mac_r2d_natural_bytes(&m), AIOT_EINVAL);
+  uint8_t bits[AIOT_MAC_MAX_PDU_BITS];
+  EXPECT_EQ(aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits)), AIOT_EINVAL);
+
+  m = Paging(AIOT_R2D_PAGING_CFA, true, 826);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 1000);
+  b = Pack(m);
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  ExpectSameR2d(m, back);
+  m = Paging(AIOT_R2D_PAGING_CFA, true, 827);
+  EXPECT_EQ(aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits)), AIOT_EINVAL);
+
+  m = Paging(AIOT_R2D_PAGING_CBRA, true, 820);
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 1000);
+  b = Pack(m);
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  ExpectSameR2d(m, back);
+  m = Paging(AIOT_R2D_PAGING_CBRA, true, 821);
+  EXPECT_EQ(aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits)), AIOT_EINVAL);
+
+  // the field itself holds 1023 at most
+  m = Paging(AIOT_R2D_PAGING_CFA, false, AIOT_MAC_MAX_PAGING_ID_BITS);
+  EXPECT_EQ(aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits)), AIOT_EINVAL); // 1069 bits
+  m.paging_id_len = AIOT_MAC_MAX_PAGING_ID_BITS + 1;
+  EXPECT_EQ(aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits)), AIOT_EINVAL);
+}
+
+// 6.2.1.1: the MAC entity ignores the values of the Fill Bits (CR 0016)
+TEST(MacPdu, PagingFillBitsIgnored)
+{
+  for (aiot_r2d_kind_t kind : {AIOT_R2D_PAGING_CBRA, AIOT_R2D_PAGING_CFA}) {
+    for (bool sppi : {false, true}) {
+      aiot_mac_r2d_msg_t m = Paging(kind, sppi, 20);
+      m.transaction_id = 5;
+      const int body = aiot_mac_r2d_body_bits(&m);
+      const int nat = aiot_mac_r2d_natural_bytes(&m);
+      ASSERT_GT(body, 0);
+      m.r2d_tbs = nat + 2;
+      Bits b = Pack(m);
+      ASSERT_EQ((int)b.size(), 8 * (nat + 2));
+      for (int i = body; i < (int)b.size(); i++)
+        EXPECT_EQ(b[i], 0) << i; // packed as zeros
+      Bits ones = b;
+      for (int i = body; i < (int)ones.size(); i++)
+        ones[i] = 1;
+      aiot_mac_r2d_msg_t back, back1;
+      ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+      ASSERT_EQ(aiot_mac_parse_r2d(ones.data(), (int)ones.size(), &back1), 0);
+      ExpectSameR2d(m, back);
+      ExpectSameR2d(back, back1);
+      EXPECT_EQ(back1.r2d_tbs, nat + 2);
+    }
+  }
+  // Random ID Response: the 4 Fill Bits of 52 bits in 7 bytes
+  aiot_mac_r2d_msg_t m;
+  memset(&m, 0, sizeof(m));
+  m.kind = AIOT_R2D_RANDOM_ID_RESPONSE;
+  m.sched = Sched(AIOT_SCHED_RANDOM_ID_RESPONSE);
+  m.n_entries = 1;
+  m.entries[0] = {0x1234, -1, -1};
+  const int body = aiot_mac_r2d_body_bits(&m);
+  ASSERT_EQ(body, 52); // 3 + 7 + 24 + 1 + 16 + 1
+  Bits b = Pack(m);
+  ASSERT_EQ((int)b.size(), 56);
+  for (int i = body; i < 56; i++)
+    b[i] = 1;
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), 56, &back), 0);
+  ExpectSameR2d(m, back);
+}
+
+// 6.2.1.4: Received Data Size is {0..125}
+TEST(MacPdu, ReceivedDataSizeRange)
+{
+  aiot_mac_r2d_msg_t m;
+  memset(&m, 0, sizeof(m));
+  m.kind = AIOT_R2D_UPPER_LAYER_DATA;
+  m.sched = Sched(AIOT_SCHED_R2D_DATA);
+  m.as_id = 7;
+  uint8_t bits[AIOT_MAC_MAX_PDU_BITS];
+  for (int rds : {0, 1, AIOT_MAC_MAX_RECEIVED_DATA_SIZE}) {
+    m.received_data_size = rds;
+    Bits b = Pack(m);
+    ASSERT_EQ((int)b.size(), 56);
+    aiot_mac_r2d_msg_t back;
+    ASSERT_EQ(aiot_mac_parse_r2d(b.data(), 56, &back), 0);
+    EXPECT_EQ(back.received_data_size, rds);
+  }
+  for (int rds : {126, 127, 128, -1}) {
+    m.received_data_size = rds;
+    EXPECT_EQ(aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits)), AIOT_EINVAL) << rds;
+  }
+  // hand-built CI = 0 PDUs: 3 + 7 + 16 + 19 + 1 + 3 + 7 = 56 bits
+  Bits sched = Pack(m.sched);
+  ASSERT_EQ((int)sched.size(), 19);
+  for (int rds : {125, 126, 127}) {
+    Bits b;
+    Put(b, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, 3);
+    Put(b, 7, 7);
+    Put(b, 7, 16);
+    b.insert(b.end(), sched.begin(), sched.end());
+    Put(b, 0, 1); // CI
+    Put(b, 0, 3); // R
+    Put(b, rds, 7);
+    ASSERT_EQ((int)b.size(), 56);
+    aiot_mac_r2d_msg_t back;
+    EXPECT_EQ(aiot_mac_parse_r2d(b.data(), 56, &back), rds <= 125 ? 0 : AIOT_EINVAL) << rds;
+    if (rds <= 125) {
+      EXPECT_EQ(back.received_data_size, rds);
+    }
+  }
+}
+
+// Table 6.2.1.6-1 (CR 0009): the Unicast R_SFS is limited by the Bit Duration like the Broadcast ones
+TEST(MacPdu, UnicastFrequencyLimitedByBitDuration)
+{
+  const int dur[8][3] = {{2, 1, 128}, {1, 1, 64}, {1, 2, 32}, {1, 4, 16}, {1, 8, 8}, {1, 16, 4}, {1, 32, 2}, {1, 96, 1}};
+  for (int row = 0; row < 8; row++) {
+    aiot_sched_info_t s = Sched(AIOT_SCHED_R2D_DATA);
+    s.t_bit_num = dur[row][0];
+    s.t_bit_den = dur[row][1];
+    s.i_bit = 0;
+    s.r_sfs[0] = dur[row][2];
+    EXPECT_EQ(aiot_mac_sched_validate(&s), 0) << row;
+    Bits b(32);
+    EXPECT_EQ(aiot_mac_sched_pack(&s, b.data(), 32), 19) << row;
+    s.r_sfs[0] = 2 * dur[row][2];
+    EXPECT_EQ(aiot_mac_sched_validate(&s), AIOT_EINVAL) << row;
+    EXPECT_EQ(aiot_mac_sched_pack(&s, b.data(), 32), AIOT_EINVAL) << row;
+
+    // a hand-built field: Bit Duration row, Frequency codepoint log2(max) (valid) or one above
+    int log2max = 0;
+    while ((1 << log2max) < dur[row][2])
+      log2max++;
+    for (int cp : {log2max, log2max + 1}) {
+      if (cp > 7)
+        continue; // not a 3-bit codepoint
+      Bits h;
+      Put(h, row, 3);
+      Put(h, cp, 3);
+      Put(h, 0, 1); // Block
+      Put(h, 0, 1); // FEC
+      Put(h, 0, 2); // Interval
+      Put(h, 0, 1);
+      Put(h, 0, 1);
+      Put(h, 0, 7); // D2R TBS 1
+      ASSERT_EQ((int)h.size(), 19);
+      aiot_sched_info_t back;
+      EXPECT_EQ(aiot_mac_sched_parse(h.data(), 19, AIOT_SCHED_R2D_DATA, &back), cp == log2max ? 0 : AIOT_EINVAL)
+          << row << " cp " << cp;
+    }
+  }
 }

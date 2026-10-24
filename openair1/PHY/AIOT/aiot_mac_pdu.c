@@ -3,7 +3,7 @@
  */
 
 /*! \file aiot_mac_pdu.c
- * \brief 3GPP TS 38.391 V19.0.0 clause 6: Rel-19 Ambient IoT MAC PDUs.
+ * \brief 3GPP TS 38.391 V19.4.0 clause 6: Rel-19 Ambient IoT MAC PDUs.
  */
 
 #include <string.h>
@@ -12,6 +12,8 @@
 
 #define MAX_TBS AIOT_MAC_MAX_TBS
 #define RIDR_ENTRY_MIN_BITS 17 /* Echoed Random ID (16) + AIPI (1) */
+#define PAGING_ID_LEN_BITS 10 /* Paging ID Length field of the Paging message (V19.4.0) */
+#define SEC_BITS AIOT_MAC_SECURITY_PARAM_BITS
 #define SCRATCH_BITS 2048 /* above any PDU body: the largest valid one is 8 * 125 bits plus checks */
 
 /* ---------------------------------------------------------------------------------------------
@@ -191,8 +193,8 @@ int aiot_mac_sched_validate(const aiot_sched_info_t *s)
       return AIOT_EINVAL;
     if (r_sfs_index(r) < 0)
       return AIOT_EINVAL;
-    /* 38.391 gates the values by bit duration only for the Broadcast field */
-    if (r > bit_dur[row].max_r_sfs && s->variant != AIOT_SCHED_R2D_DATA)
+    /* Table 6.2.1.6-1 (CR 0009): the Unicast value is limited by the Bit Duration as the Broadcast ones */
+    if (r > bit_dur[row].max_r_sfs)
       return AIOT_EINVAL;
   }
   if ((s->variant == AIOT_SCHED_PAGING_CFA || s->variant == AIOT_SCHED_R2D_DATA) && s->n_sfs != 1)
@@ -306,7 +308,7 @@ int aiot_mac_to_d2r_params(const aiot_sched_info_t *s, int r_sfs, aiot_mod_t mod
     found |= s->r_sfs[i] == r_sfs;
   if (!found)
     return AIOT_EINVAL;
-  /* D2RParams.__post_init__: a Unicast R_SFS may be outside the set allowed for the bit duration */
+  /* D2RParams.__post_init__: the same Bit Duration limit as in aiot_mac_sched_validate */
   int row = bit_dur_index(s->t_bit_num, s->t_bit_den);
   if (r_sfs > bit_dur[row].max_r_sfs)
     return AIOT_EINVAL;
@@ -352,6 +354,11 @@ int aiot_mac_freq_index_to_r_sfs(int freq_index)
  * R2D messages (6.2.1)
  * ------------------------------------------------------------------------------------------- */
 
+static int security_ok(const aiot_mac_r2d_msg_t *m)
+{
+  return flag_ok(m->has_security_param) && (!m->has_security_param || bits_clean(m->security_param, SEC_BITS));
+}
+
 static int paging_id_ok(const aiot_mac_r2d_msg_t *m)
 {
   if (m->paging_id_len < 0 || m->paging_id_len > AIOT_MAC_MAX_PAGING_ID_BITS)
@@ -370,15 +377,20 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         return AIOT_EINVAL;
       if (m->has_paging_id && !paging_id_ok(m))
         return AIOT_EINVAL;
+      if (!security_ok(m))
+        return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
       put(&w, tbs, 7);
+      put(&w, m->has_security_param, 1); /* SPPI */
+      if (m->has_security_param)
+        put_bits(&w, m->security_param, SEC_BITS);
       put(&w, 1, 1); /* AT = 1 */
       put(&w, m->transaction_id, 6);
       if (!m->has_paging_id) {
         put(&w, 0, 1); /* PIPI */
       } else {
         put(&w, 1, 1);
-        put(&w, m->paging_id_len, 8);
+        put(&w, m->paging_id_len, PAGING_ID_LEN_BITS);
         put_bits(&w, m->paging_id, m->paging_id_len);
       }
       put(&w, m->num_access_occasions_code, 4);
@@ -390,10 +402,15 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
     case AIOT_R2D_PAGING_CFA: /* Figure 6.2.1.1-2 */
       if (!m->has_paging_id || !paging_id_ok(m) || m->sched.variant != AIOT_SCHED_PAGING_CFA)
         return AIOT_EINVAL;
+      if (!security_ok(m))
+        return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
       put(&w, tbs, 7);
+      put(&w, m->has_security_param, 1); /* SPPI */
+      if (m->has_security_param)
+        put_bits(&w, m->security_param, SEC_BITS);
       put(&w, 0, 1); /* AT = 0 */
-      put(&w, m->paging_id_len, 8);
+      put(&w, m->paging_id_len, PAGING_ID_LEN_BITS);
       put_bits(&w, m->paging_id, m->paging_id_len);
       if (aiot_mac_sched_validate(&m->sched) < 0)
         return AIOT_EINVAL;
@@ -439,7 +456,8 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
     case AIOT_R2D_UPPER_LAYER_DATA: /* Figures 6.2.1.4-1 and -2 */
       if (m->sched.variant != AIOT_SCHED_R2D_DATA)
         return AIOT_EINVAL;
-      if (m->has_sdu ? (m->sdu_len < 0 || m->sdu_len > MAX_TBS) : (m->received_data_size < 0 || m->received_data_size > 127))
+      if (m->has_sdu ? (m->sdu_len < 0 || m->sdu_len > MAX_TBS)
+                     : (m->received_data_size < 0 || m->received_data_size > AIOT_MAC_MAX_RECEIVED_DATA_SIZE))
         return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, 3);
       put(&w, tbs, 7);
@@ -520,7 +538,8 @@ int aiot_mac_pack_r2d(const aiot_mac_r2d_msg_t *m, uint8_t *bits, int cap)
   int tbs = m->r2d_tbs == 0 ? nat : m->r2d_tbs;
   if (tbs < 1 || tbs > MAX_TBS || tbs < nat)
     return AIOT_EINVAL;
-  /* the paging messages may carry extra zero Fill Bits ("future extensions"), the others may not */
+  /* the paging messages may carry extra Fill Bits ("future extensions"), packed as zeros and ignored on
+   * parse (6.2.1.1, CR 0016), the others may not */
   int fill_larger = m->kind == AIOT_R2D_PAGING_CBRA || m->kind == AIOT_R2D_PAGING_CFA;
   if (tbs > nat && !fill_larger)
     return AIOT_EINVAL;
@@ -560,6 +579,16 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
   m->r2d_tbs = tbs;
 
   if (mtype == AIOT_MAC_R2D_TYPE_PAGING) {
+    int sppi = rd_take(&r, 1);
+    if (sppi < 0)
+      return AIOT_EINVAL;
+    if (sppi) { /* SPPI = 0 is allowed by the format, though this release sets it to 1 */
+      const uint8_t *sp = rd_take_bits(&r, SEC_BITS);
+      if (!sp)
+        return AIOT_EINVAL;
+      m->has_security_param = 1;
+      memcpy(m->security_param, sp, SEC_BITS);
+    }
     int at = rd_take(&r, 1);
     if (at < 0)
       return AIOT_EINVAL;
@@ -571,7 +600,7 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
       if (m->transaction_id < 0 || pipi < 0)
         return AIOT_EINVAL;
       if (pipi) {
-        int len = rd_take(&r, 8);
+        int len = rd_take(&r, PAGING_ID_LEN_BITS);
         const uint8_t *p = len < 0 ? NULL : rd_take_bits(&r, len);
         if (!p)
           return AIOT_EINVAL;
@@ -589,7 +618,7 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
       return m->k_bit < 0 ? AIOT_EINVAL : 0;
     }
     m->kind = AIOT_R2D_PAGING_CFA;
-    int len = rd_take(&r, 8);
+    int len = rd_take(&r, PAGING_ID_LEN_BITS);
     const uint8_t *p = len < 0 ? NULL : rd_take_bits(&r, len);
     if (!p)
       return AIOT_EINVAL;
@@ -647,7 +676,7 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
     if (rd_take(&r, 3) < 0)
       return AIOT_EINVAL;
     m->received_data_size = rd_take(&r, 7);
-    if (m->received_data_size < 0 || rd_left(&r)) /* CI = 0 is 7 bytes */
+    if (m->received_data_size < 0 || m->received_data_size > AIOT_MAC_MAX_RECEIVED_DATA_SIZE || rd_left(&r)) /* CI = 0 is 7 bytes */
       return AIOT_EINVAL;
     return 0;
   }

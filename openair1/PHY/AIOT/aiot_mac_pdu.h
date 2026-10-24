@@ -3,7 +3,7 @@
  */
 
 /*! \file aiot_mac_pdu.h
- * \brief The Rel-19 Ambient IoT MAC PDUs, 3GPP TS 38.391 V19.0.0 clause 6: packer and parser.
+ * \brief The Rel-19 Ambient IoT MAC PDUs, 3GPP TS 38.391 V19.4.0 clause 6: packer and parser.
  *
  * Conventions are those of aiot_phy.h: bits are uint8_t 0/1, first element = first bit (MSB first),
  * caller buffers come with a capacity, negative AIOT_E* codes are errors, nothing is global.
@@ -11,7 +11,8 @@
  *
  * Optional values: 0 for "TBS not given" (r2d_tbs, d2r_tbs), 0 for
  * "absent" (sched.x, sched.d2r_tbs), -1 for an absent optional field (entry.assigned_as_id,
- * entry.freq_index) and an explicit has_ flag for the optional Paging ID and Data SDU.
+ * entry.freq_index) and an explicit has_ flag for the optional Paging ID, Data SDU and the
+ * Security Parameter of a Paging message (has_security_param: SPPI, 0 or 1).
  */
 
 #ifndef AIOT_MAC_PDU_H
@@ -27,7 +28,9 @@ extern "C" {
 
 #define AIOT_MAC_MAX_TBS 125 /* MAX_TBS: largest R2D and D2R transport block, bytes */
 #define AIOT_MAC_MAX_ID_ENTRIES 8 /* MAX_ID_ENTRIES of a Random ID Response */
-#define AIOT_MAC_MAX_PAGING_ID_BITS 255 /* 8-bit Paging ID Length */
+#define AIOT_MAC_MAX_PAGING_ID_BITS 1023 /* 10-bit Paging ID Length (V19.4.0); 125 bytes hold at most 954 (CFA, SPPI 0) */
+#define AIOT_MAC_SECURITY_PARAM_BITS 128 /* Security Parameter: RAND_AIOT_n of TS 33.369 */
+#define AIOT_MAC_MAX_RECEIVED_DATA_SIZE 125 /* Received Data Size {0..125} (6.2.1.4) */
 #define AIOT_MAC_MAX_NACK_IDS 61 /* TBS = 2 + 2 n <= 125 */
 #define AIOT_MAC_MAX_PDU_BITS (8 * AIOT_MAC_MAX_TBS)
 
@@ -109,13 +112,16 @@ typedef struct {
   int r2d_tbs;
   /* paging CBRA, paging CFA, Random ID Response, R2D data (variant must match kind) */
   aiot_sched_info_t sched;
+  /* paging CBRA and CFA: SPPI, and the Security Parameter when SPPI = 1 ("set to 1 in this release") */
+  int has_security_param;
+  uint8_t security_param[AIOT_MAC_SECURITY_PARAM_BITS]; /* bits 0/1, first = MSB */
   /* paging CBRA */
   int transaction_id; /* 0..63 */
   int num_access_occasions_code; /* 0..15: 2^n access occasions */
   int k_bit; /* 0 -> K = 1, 1 -> K = 4 */
   /* paging CBRA (optional, PIPI) and CFA (always) */
   int has_paging_id;
-  int paging_id_len; /* 0..255 bits */
+  int paging_id_len; /* 0..1023 bits (10-bit Paging ID Length) */
   uint8_t paging_id[AIOT_MAC_MAX_PAGING_ID_BITS];
   /* Random ID Response: 1..8 entries, all with or all without freq_index */
   int n_entries;
@@ -125,7 +131,7 @@ typedef struct {
   int has_sdu; /* CI: 1 with a Data SDU, 0 with a Received Data Size */
   int sdu_len;
   uint8_t sdu[AIOT_MAC_MAX_TBS];
-  int received_data_size; /* 0..127, when has_sdu = 0 */
+  int received_data_size; /* 0..125, when has_sdu = 0 */
   /* NACK Feedback: 1..61 AS IDs */
   int n_as_ids;
   int as_ids[AIOT_MAC_MAX_NACK_IDS];

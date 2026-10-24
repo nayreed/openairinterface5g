@@ -4,11 +4,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <random>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -33,6 +35,11 @@ struct Upper {
   std::vector<Bytes> pids_asked;
   std::vector<Bytes> got;
   int selected = 0;
+  bool fail_integrity = false; /* deliver reports an integrity protection failure */
+  bool pending = false; /* next_sdu has nothing yet, due to processing delay */
+  int none_code = AIOT_UPPER_SDU_NONE; /* what next_sdu returns for no data */
+  std::vector<Bytes> secs; /* Security Parameters forwarded, bits 0/1 */
+  std::vector<std::string> events; /* "sec", "selected", "matched" in call order */
 
   explicit Upper(uint32_t seed = 0, std::mt19937 *shared = nullptr) : own(seed), rng(shared ? shared : &own)
   {
@@ -42,25 +49,36 @@ struct Upper {
   {
     auto *s = static_cast<Upper *>(u);
     s->pids_asked.emplace_back(id, id + len);
+    s->events.push_back("matched");
     return !s->has_pid || s->pids_asked.back() == s->pid;
   }
   static void select(void *u)
   {
-    static_cast<Upper *>(u)->selected++;
+    auto *s = static_cast<Upper *>(u);
+    s->selected++;
+    s->events.push_back("selected");
   }
-  static void deliver(void *u, const uint8_t *sdu, int len)
+  static int deliver(void *u, const uint8_t *sdu, int len)
   {
-    static_cast<Upper *>(u)->got.emplace_back(sdu, sdu + len);
+    auto *s = static_cast<Upper *>(u);
+    s->got.emplace_back(sdu, sdu + len);
+    return s->fail_integrity ? AIOT_UPPER_INTEGRITY_FAILURE : 0;
+  }
+  static void security(void *u, const uint8_t *bits, int n_bits)
+  {
+    auto *s = static_cast<Upper *>(u);
+    s->secs.emplace_back(bits, bits + n_bits);
+    s->events.push_back("sec");
   }
   static int next(void *u, uint8_t *sdu, int cap)
   {
     auto *s = static_cast<Upper *>(u);
     if (s->sdus.empty())
-      return -1;
+      return s->pending ? AIOT_UPPER_SDU_PENDING : s->none_code;
     Bytes b = s->sdus.front();
     s->sdus.pop_front();
     if ((int)b.size() > cap)
-      return -1;
+      return AIOT_UPPER_SDU_NONE;
     memcpy(sdu, b.data(), b.size());
     return (int)b.size();
   }
@@ -86,6 +104,7 @@ struct Upper {
     a.deliver = deliver;
     a.next_sdu = next;
     a.draw = draw;
+    a.security_param = security;
     return a;
   }
 };
@@ -151,7 +170,22 @@ aiot_sched_info_t data_sched(int r_sfs = 8, int tbs = 12)
   return sched(AIOT_SCHED_R2D_DATA, {r_sfs}, tbs, 0);
 }
 
-aiot_mac_r2d_msg_t paging_cbra(int tid, const aiot_sched_info_t &s, int code = 0, int k_bit = 0, const Bytes *pid = nullptr)
+/* SPPI 1 and the bits, when given (128 of them, 0/1) */
+void set_security(aiot_mac_r2d_msg_t &m, const Bytes *sec)
+{
+  if (!sec)
+    return;
+  ASSERT_EQ((size_t)AIOT_MAC_SECURITY_PARAM_BITS, sec->size());
+  m.has_security_param = 1;
+  memcpy(m.security_param, sec->data(), sec->size());
+}
+
+aiot_mac_r2d_msg_t paging_cbra(int tid,
+                               const aiot_sched_info_t &s,
+                               int code = 0,
+                               int k_bit = 0,
+                               const Bytes *pid = nullptr,
+                               const Bytes *sec = nullptr)
 {
   aiot_mac_r2d_msg_t m;
   memset(&m, 0, sizeof(m));
@@ -165,9 +199,10 @@ aiot_mac_r2d_msg_t paging_cbra(int tid, const aiot_sched_info_t &s, int code = 0
     m.paging_id_len = (int)pid->size();
     memcpy(m.paging_id, pid->data(), pid->size());
   }
+  set_security(m, sec);
   return m;
 }
-aiot_mac_r2d_msg_t paging_cfa(const Bytes &pid, const aiot_sched_info_t &s)
+aiot_mac_r2d_msg_t paging_cfa(const Bytes &pid, const aiot_sched_info_t &s, const Bytes *sec = nullptr)
 {
   aiot_mac_r2d_msg_t m;
   memset(&m, 0, sizeof(m));
@@ -176,6 +211,7 @@ aiot_mac_r2d_msg_t paging_cfa(const Bytes &pid, const aiot_sched_info_t &s)
   m.has_paging_id = 1;
   m.paging_id_len = (int)pid.size();
   memcpy(m.paging_id, pid.data(), pid.size());
+  set_security(m, sec);
   return m;
 }
 aiot_mac_r2d_msg_t trigger()
@@ -305,6 +341,23 @@ void cbra_to_msg2(Dev &d, TestReader &r, int tid, aiot_device_send_t *msg2, cons
   aiot_device_send_t s1;
   ASSERT_EQ(1, d.on(paging_cbra(tid, cbra_sched()), &s1));
   ASSERT_EQ(1, d.on(r.rid_response({heard_of(s1)}, rs), msg2));
+}
+
+/* The same with K = 4 (the Msg2 window is 4 Access Triggers). */
+void cbra_to_msg2_k4(Dev &d, TestReader &r, int tid, aiot_device_send_t *msg2)
+{
+  aiot_device_send_t s1;
+  ASSERT_EQ(1, d.on(paging_cbra(tid, cbra_sched(), 0, 1), &s1));
+  ASSERT_EQ(1, d.on(r.rid_response({heard_of(s1)}, ridr_sched()), msg2));
+}
+
+/* 128 Security Parameter bits: every third one set, shifted by off. */
+Bytes sec_bits(int off = 0)
+{
+  Bytes b(AIOT_MAC_SECURITY_PARAM_BITS);
+  for (size_t i = 0; i < b.size(); i++)
+    b[i] = (i + off) % 3 == 0;
+  return b;
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -521,8 +574,9 @@ TEST(DeviceMac, Msg2WindowIsKTriggers)
   }
 }
 
-TEST(DeviceMac, TriggerAfterSuccessDoesNotUseUpTheWindow)
+TEST(DeviceMac, TriggerAfterSuccessUsesUpTheWindow)
 {
+  /* 5.3.1.3: the K Access Triggers are counted from the Access Random ID message, success or not */
   Dev d(2);
   TestReader r;
   aiot_device_send_t s, x;
@@ -530,7 +584,89 @@ TEST(DeviceMac, TriggerAfterSuccessDoesNotUseUpTheWindow)
   ASSERT_EQ(1, d.on(r.rid_response({heard_of(s)}, ridr_sched()), &x));
   EXPECT_EQ(4, d.st().msg2_budget);
   EXPECT_EQ(0, d.on(trigger(), &x));
+  EXPECT_EQ(3, d.st().msg2_budget);
+}
+
+TEST(DeviceMac, Msg2WindowAppliesWithAStoredAsId)
+{
+  /* a device that already has its AS ID listens for further Random ID Responses in the window only */
+  for (int in_window = 0; in_window < 2; in_window++) {
+    Dev d(2);
+    TestReader r;
+    aiot_device_send_t m3, x;
+    cbra_to_msg2(d, r, 1, &m3); /* K = 1 */
+    ASSERT_EQ(1, d.st().as_id);
+    if (!in_window) {
+      EXPECT_EQ(0, d.on(trigger(), &x)); /* the one Access Trigger of the window */
+      EXPECT_EQ(0, d.st().msg2_budget);
+    }
+    aiot_mac_r2d_msg_t again = r.rid_response({Heard{0, 0, 0}}, ridr_sched(), false, false);
+    again.entries[0].echoed_random_id = 1; /* the stored AS ID */
+    EXPECT_EQ(in_window ? 1 : 0, d.on(again, &x)) << "in_window=" << in_window;
+  }
+}
+
+TEST(DeviceMac, Msg2WindowEndsAtR2dDataForTheDevice)
+{
+  Dev d(2);
+  TestReader r;
+  aiot_device_send_t m3, x;
+  d.u.sdus = {Bytes{'a'}, Bytes{'b'}};
+  cbra_to_msg2_k4(d, r, 1, &m3);
+  ASSERT_EQ(1, d.st().as_id);
   EXPECT_EQ(4, d.st().msg2_budget);
+  /* data for another AS ID leaves the window as it is */
+  EXPECT_EQ(0, d.on(data_sdu(9, data_sched(), Bytes{'x'}), &x));
+  EXPECT_EQ(4, d.st().msg2_budget);
+  /* data for the device ends it */
+  ASSERT_EQ(1, d.on(data_sdu(1, data_sched(), Bytes{'y'}), &x));
+  EXPECT_EQ(0, d.st().msg2_budget);
+  aiot_mac_r2d_msg_t again = r.rid_response({Heard{0, 0, 0}}, ridr_sched(), false, false);
+  again.entries[0].echoed_random_id = 1;
+  EXPECT_EQ(0, d.on(again, &x));
+  /* also for a Received Data Size */
+  Dev e(2);
+  TestReader r2;
+  e.u.sdus = {Bytes{'a'}, Bytes{'b'}};
+  cbra_to_msg2_k4(e, r2, 1, &m3);
+  ASSERT_EQ(1, e.on(data_received(1, data_sched(), 0), &x));
+  EXPECT_EQ(0, e.st().msg2_budget);
+}
+
+TEST(DeviceMac, Msg2WindowEndsAtANackNamingTheDevice)
+{
+  Dev d(2);
+  TestReader r;
+  aiot_device_send_t s1, m3, x;
+  ASSERT_EQ(1, d.on(paging_cbra(1, cbra_sched(), 0, 1), &s1));
+  ASSERT_EQ(1, d.on(r.rid_response({heard_of(s1)}, ridr_sched()), &m3));
+  ASSERT_EQ(1, d.st().as_id);
+  EXPECT_EQ(4, d.st().msg2_budget);
+  /* a NACK for somebody else leaves the window as it is */
+  EXPECT_EQ(0, d.on(nack({7}), &x));
+  EXPECT_EQ(4, d.st().msg2_budget);
+  /* one naming the device ends it, and releases the AS ID */
+  EXPECT_EQ(0, d.on(nack({7, 1}), &x));
+  EXPECT_EQ(0, d.st().msg2_budget);
+  EXPECT_EQ(-1, d.st().as_id);
+  /* the old Random ID is not answered any more */
+  aiot_mac_r2d_msg_t old = r.rid_response({heard_of(s1)}, ridr_sched());
+  EXPECT_EQ(0, d.on(old, &x));
+  EXPECT_EQ(-1, d.st().as_id);
+}
+
+TEST(DeviceMac, NackNamingTheDeviceEndsTheWindowWithoutNackMonitoring)
+{
+  /* 5.3.1.3 and 5.5.2 are separate: with the monitoring over (R2D data), a NACK keeps the AS ID */
+  Dev d(2);
+  TestReader r;
+  aiot_device_send_t m3, x;
+  cbra_to_msg2_k4(d, r, 1, &m3);
+  ASSERT_EQ(1, d.on(data_sdu(1, data_sched(), Bytes{'y'}), &x));
+  EXPECT_EQ(0, d.st().nack_monitoring);
+  EXPECT_EQ(0, d.on(nack({1}), &x));
+  EXPECT_EQ(1, d.st().as_id);
+  EXPECT_EQ(0, d.st().msg2_budget);
 }
 
 TEST(DeviceMac, Msg2MatchingRules)
@@ -855,6 +991,7 @@ TEST(DeviceMac, NullCallbacksTakeTheDefaults)
   ASSERT_NE(nullptr, d);
   aiot_device_send_t s;
   aiot_mac_r2d_msg_t pg = paging_cbra(1, cbra_sched());
+  pg.has_security_param = 1; /* no callback for it: ignored */
   ASSERT_EQ(1, aiot_device_on_r2d(d, &pg, &s));
   EXPECT_EQ(AIOT_OOK, s.params.modulation);
   EXPECT_EQ(2u, calls);
@@ -1064,10 +1201,171 @@ TEST(DeviceMac, ImplicitAsIdAfterCfaNeedsAnSdu)
   Dev d;
   aiot_device_send_t s;
   ASSERT_EQ(1, d.on(paging_cfa(Bytes(4, 1), sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0)), &s));
-  EXPECT_EQ(0, d.on(data_received(0x55, data_sched(), 3), &s)); /* CI = 0: not taken */
+  EXPECT_EQ(0, d.on(data_received(0x55, data_sched(), 3), &s)); /* CI = 0 and size 3: not taken */
   EXPECT_EQ(-1, d.st().as_id);
   ASSERT_EQ(1, d.on(data_sdu(0x55, data_sched(), Bytes{1}), &s));
   EXPECT_EQ(0x55, d.st().as_id);
+}
+
+TEST(DeviceMac, CfaReceivedDataSizeZeroGivesTheAsId)
+{
+  /* 5.4.3: after CFA, CI = 0 with a Received Data Size of 0 sets the AS ID and starts the D2R */
+  Dev d;
+  aiot_device_send_t s;
+  ASSERT_EQ(1, d.on(paging_cfa(Bytes(4, 1), sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0)), &s));
+  EXPECT_TRUE(parse_upl(s).sdu.empty()); /* the CFA D2R found no data yet */
+  d.u.sdus = {Bytes{4, 5}};
+  ASSERT_EQ(1, d.on(data_received(0x55, data_sched(8, 9), 0), &s));
+  EXPECT_EQ(0x55, d.st().as_id);
+  EXPECT_EQ(AIOT_DATA, s.msg);
+  EXPECT_EQ(9, s.tbs_bytes);
+  EXPECT_EQ((Bytes{4, 5}), parse_upl(s).sdu);
+  EXPECT_TRUE(d.u.got.empty());
+  /* later data for the AS ID goes the usual way */
+  ASSERT_EQ(1, d.on(data_sdu(0x55, data_sched(), Bytes{1}), &s));
+  /* without a CFA, no */
+  Dev e;
+  EXPECT_EQ(0, e.on(data_received(0x55, data_sched(), 0), &s));
+  EXPECT_EQ(-1, e.st().as_id);
+}
+
+TEST(DeviceMac, PendingUpperDataSetsMdi)
+{
+  /* 5.4.2: data not available yet, due to processing delay: MDI 1 and SDU Length 0; ignored: MDI 0 */
+  TestReader r;
+  aiot_device_send_t m3, s;
+  {
+    Dev d;
+    d.u.pending = true;
+    cbra_to_msg2(d, r, 1, &m3);
+    Upl u = parse_upl(m3);
+    EXPECT_TRUE(u.sdu.empty());
+    EXPECT_EQ(1, u.mdi);
+    EXPECT_EQ(12 * 8, u.n_bits);
+    EXPECT_EQ(-1, d.st().sending_len);
+    /* the Reader asks again with a Received Data Size of 0, and the data is there now */
+    d.u.pending = false;
+    d.u.sdus = {Bytes{1, 2, 3}};
+    ASSERT_EQ(1, d.on(data_received(1, data_sched(), 0), &s));
+    u = parse_upl(s);
+    EXPECT_EQ((Bytes{1, 2, 3}), u.sdu);
+    EXPECT_EQ(0, u.mdi);
+  }
+  {
+    Dev d; /* nothing and not pending: MDI 0, whatever the negative value */
+    for (int code : {AIOT_UPPER_SDU_NONE, -7}) {
+      d.u.none_code = code;
+      ASSERT_EQ(1, d.on(paging_cfa(Bytes(4, 1), sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0)), &s));
+      Upl u = parse_upl(s);
+      EXPECT_TRUE(u.sdu.empty());
+      EXPECT_EQ(0, u.mdi) << code;
+    }
+  }
+  {
+    Dev d; /* CFA */
+    d.u.pending = true;
+    ASSERT_EQ(1, d.on(paging_cfa(Bytes(4, 1), sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0)), &s));
+    Upl u = parse_upl(s);
+    EXPECT_TRUE(u.sdu.empty());
+    EXPECT_EQ(1, u.mdi);
+  }
+}
+
+TEST(DeviceMac, IntegrityFailureDeliversButSendsNothing)
+{
+  aiot_device_send_t s;
+  {
+    /* CBRA: the SDU is delivered, no D2R; the monitoring of 5.5.2 and 5.3.1.3 ended all the same */
+    Dev d;
+    TestReader r;
+    d.u.sdus = {Bytes{'a'}, Bytes{'b'}};
+    cbra_to_msg2_k4(d, r, 1, &s);
+    d.u.fail_integrity = true;
+    EXPECT_EQ(0, d.on(data_sdu(1, data_sched(), Bytes{'c', 'm', 'd'}), &s));
+    EXPECT_EQ(std::vector<Bytes>{(Bytes{'c', 'm', 'd'})}, d.u.got);
+    EXPECT_EQ(1, d.st().as_id);
+    EXPECT_EQ(0, d.st().nack_monitoring);
+    EXPECT_EQ(0, d.st().msg2_budget);
+    /* the SDU 'b' was not asked for: the next good one is answered with it */
+    d.u.fail_integrity = false;
+    ASSERT_EQ(1, d.on(data_sdu(1, data_sched(), Bytes{'z'}), &s));
+    EXPECT_EQ((Bytes{'b'}), parse_upl(s).sdu);
+  }
+  {
+    /* CFA: the AS ID is stored, the SDU delivered, no D2R */
+    Dev d;
+    d.u.fail_integrity = true;
+    d.u.sdus = {Bytes{'a'}};
+    ASSERT_EQ(1, d.on(paging_cfa(Bytes(4, 1), sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0)), &s));
+    EXPECT_EQ((Bytes{'a'}), parse_upl(s).sdu);
+    d.u.sdus = {Bytes{'b'}};
+    EXPECT_EQ(0, d.on(data_sdu(0x55, data_sched(), Bytes{'x'}), &s));
+    EXPECT_EQ(std::vector<Bytes>{(Bytes{'x'})}, d.u.got);
+    EXPECT_EQ(0x55, d.st().as_id);
+    d.u.fail_integrity = false;
+    ASSERT_EQ(1, d.on(data_sdu(0x55, data_sched(), Bytes{'y'}), &s));
+    EXPECT_EQ((Bytes{'b'}), parse_upl(s).sdu);
+  }
+}
+
+TEST(DeviceMac, SecurityParameterGoesToTheUpperLayer)
+{
+  const Bytes sec = sec_bits(), sec2 = sec_bits(1);
+  const Bytes mine = {1, 0, 1}, other = {0, 0, 0};
+  aiot_device_send_t s, x;
+  {
+    /* 5.2 CBRA: forwarded before the Paging ID, or before the selection indication */
+    Dev d;
+    TestReader r;
+    d.u.has_pid = true;
+    d.u.pid = mine;
+    ASSERT_EQ(1, d.on(paging_cbra(1, cbra_sched(), 0, 0, &mine, &sec), &s));
+    ASSERT_EQ(1u, d.u.secs.size());
+    EXPECT_EQ(sec, d.u.secs[0]);
+    EXPECT_EQ((std::vector<std::string>{"sec", "matched"}), d.u.events);
+    /* the same Transaction ID, done: not a fresh paging, nothing forwarded */
+    ASSERT_EQ(1, d.on(r.rid_response({heard_of(s)}, ridr_sched()), &x));
+    EXPECT_EQ(0, d.on(paging_cbra(1, cbra_sched(), 0, 0, &mine, &sec2), &x));
+    EXPECT_EQ(1u, d.u.secs.size());
+    /* a new one is */
+    ASSERT_EQ(1, d.on(paging_cbra(2, cbra_sched(), 0, 0, &mine, &sec2), &x));
+    ASSERT_EQ(2u, d.u.secs.size());
+    EXPECT_EQ(sec2, d.u.secs[1]);
+    /* so is the same one after a failed access (no Msg2 before this paging) */
+    ASSERT_EQ(1, d.on(paging_cbra(2, cbra_sched(), 0, 0, &mine, &sec), &x));
+    ASSERT_EQ(3u, d.u.secs.size());
+    EXPECT_EQ(sec, d.u.secs[2]);
+    /* a Paging ID that is not the device's: forwarded all the same */
+    EXPECT_EQ(0, d.on(paging_cbra(3, cbra_sched(), 0, 0, &other, &sec2), &x));
+    ASSERT_EQ(4u, d.u.secs.size());
+    EXPECT_EQ(sec2, d.u.secs[3]);
+  }
+  {
+    Dev d; /* no Paging ID: forwarded, then the device is selected */
+    ASSERT_EQ(1, d.on(paging_cbra(1, cbra_sched(), 0, 0, nullptr, &sec), &s));
+    EXPECT_EQ((std::vector<std::string>{"sec", "selected"}), d.u.events);
+  }
+  {
+    /* 5.2 CFA: forwarded, then the Paging ID is asked; a Paging ID that does not match is no reason not to */
+    Dev d;
+    d.u.has_pid = true;
+    d.u.pid = mine;
+    EXPECT_EQ(0, d.on(paging_cfa(other, sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0), &sec), &s));
+    ASSERT_EQ(1u, d.u.secs.size());
+    EXPECT_EQ(sec, d.u.secs[0]);
+    EXPECT_EQ((std::vector<std::string>{"sec", "matched"}), d.u.events);
+    ASSERT_EQ(1, d.on(paging_cfa(mine, sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0), &sec2), &s));
+    ASSERT_EQ(2u, d.u.secs.size());
+    EXPECT_EQ(sec2, d.u.secs[1]);
+  }
+  {
+    /* SPPI 0: nothing to forward */
+    Dev d;
+    ASSERT_EQ(1, d.on(paging_cbra(1, cbra_sched()), &s));
+    ASSERT_EQ(1, d.on(paging_cfa(mine, sched(AIOT_SCHED_PAGING_CFA, {8}, 6, 0)), &s));
+    EXPECT_TRUE(d.u.secs.empty());
+    EXPECT_EQ(std::count(d.u.events.begin(), d.u.events.end(), "sec"), 0);
+  }
 }
 
 TEST(DeviceMac, WrongMessageKindIsRejected)
