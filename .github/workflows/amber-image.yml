@@ -166,13 +166,8 @@ jobs:
       fail-fast: false
       matrix:
         room:
-          - 5g_rfsimulator_aiot
-          - 5g_rfsimulator_aiot_t1
-          - 5g_rfsimulator_aiot_t1_cw_ul
-          - 5g_rfsimulator_aiot_t2
           - 5g_rfsimulator_aiot_t3a
-          - 5g_rfsimulator_aiot_t3b
-          - 5g_rfsimulator_aiot_t4
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -193,13 +188,14 @@ jobs:
         env:
           TAG: ${{ needs.gnb-ue.outputs.tag }}
           AMBER_IMG: ${{ needs.build.outputs.image }}
+          AIOT_ROOM_DEBUG: "1"
         run: |
           export REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/
           docker/scripts/aiot_check_room.sh "ci-scripts/yaml_files/${{ matrix.room }}" "$RUNNER_TEMP/room"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: room-${{ matrix.room }}
+          name: room-${{ matrix.room }}-${{ matrix.attempt }}
           path: ${{ runner.temp }}/room
           retention-days: 14
 
