@@ -20,6 +20,7 @@
 #include "common/config/config_userapi.h"
 #include "nr_phy_common.h"
 #include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_peer.h"
 #ifdef LDPC_CUDA
 #include "PHY/gpu_compat.h"
 #include "PHY/gpu_alloc.h"
@@ -317,8 +318,10 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue)
 {
   const NR_DL_FRAME_PARMS* fp = &ue->frame_parms;
   phy_term_nr_top();
-  nr_aiot_reader_free(ue->aiot_reader); /* first: it uses the R2D and the D2R */
+  nr_aiot_reader_free(ue->aiot_reader); /* first: they use the R2D and the D2R */
   ue->aiot_reader = NULL;
+  nr_aiot_peer_free(ue->aiot_peer);
+  ue->aiot_peer = NULL;
   nr_aiot_r2d_free(&ue->aiot_r2d);
   nr_aiot_d2r_free(ue->aiot_d2r);
   ue->aiot_d2r = NULL;

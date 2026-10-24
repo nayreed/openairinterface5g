@@ -377,9 +377,14 @@ int main(int argc, char **argv)
         nr_aiot_config_phy(&UE_CC->aiot_r2d_cfg, &UE_CC->aiot_d2r_cfg);
       UE_CC->sl_mode = get_softmodem_params()->sl_mode;
       init_nr_ue_vars(UE_CC, inst);
-      // the Ambient IoT Reader of the "aiot" section, if any, on the R2D and D2R init_nr_ue_vars made
-      if (inst == 0 && CC_id == 0)
+      // the Ambient IoT Reader of the "aiot" section, if any, on the R2D and D2R init_nr_ue_vars made,
+      // or the UE's end of a split Reader in the gNB
+      if (inst == 0 && CC_id == 0) {
         UE_CC->aiot_reader = nr_aiot_reader_from_config(&UE_CC->aiot_r2d, UE_CC->aiot_d2r);
+        UE_CC->aiot_peer = nr_aiot_peer_from_config(&UE_CC->aiot_r2d, UE_CC->aiot_d2r);
+        AssertFatal(!UE_CC->aiot_reader || !UE_CC->aiot_peer,
+                    "aiot.protocol and aiot.serve_port: the UE is the Reader, or serves the gNB's\n");
+      }
 
       if (UE_CC->sl_mode) {
         AssertFatal(UE_CC->sl_mode == 2, "Only Sidelink mode 2 supported. Mode 1 not yet supported\n");
@@ -456,6 +461,8 @@ int main(int argc, char **argv)
         }
         nr_aiot_reader_free(phy_vars->aiot_reader); /* writes what it has left */
         phy_vars->aiot_reader = NULL;
+        nr_aiot_peer_free(phy_vars->aiot_peer); /* logs what it served */
+        phy_vars->aiot_peer = NULL;
       }
     }
   }

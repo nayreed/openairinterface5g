@@ -47,6 +47,11 @@
   {"lead_slots",  "slots between the slot the node sent last and an R2D's first", 0, .iptr=NULL, .defintval=2, TYPE_INT, 0}, \
   {"output_dir",  "folder for reader_tx.csv and reader_rx.csv; empty: none", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
   {"data_dest",   "ipv4:port to send each message heard from a Tag to, one UDP datagram of Tag data each (aiot_node_msg.h); empty: none. A UE gives the network's end of its user plane", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
+  {"remote_r2d",  "a split Reader: ipv4:port of the UE that sends the R2D in its UL (its aiot.serve_port), over the gNB's user plane; the gNB then has no R2D PRBs. Empty: the node sends the R2D", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
+  {"remote_d2r",  "a split Reader: ipv4:port of the UE that receives the D2R in its DL (its aiot.serve_port); the gNB then has no D2R PRBs. Empty: the node receives the D2R", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
+}
+#define AIOT_PEER_PARAMS_DESC { \
+  {"serve_port",  "a UE: the UDP port it serves a split Reader on (the gNB's aiot.remote_r2d or aiot.remote_d2r), with its R2D PRBs or its D2R receiver; 0: none", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
 }
 // clang-format on
 
@@ -69,7 +74,9 @@ enum {
   P_TBS,
   P_LEAD,
   P_DIR,
-  P_DATA_DEST
+  P_DATA_DEST,
+  P_REMOTE_R2D,
+  P_REMOTE_D2R
 };
 
 void nr_aiot_config_phy(nr_aiot_r2d_config_t *r2d, nr_aiot_d2r_config_t *d2r)
@@ -128,12 +135,18 @@ nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *
   AssertFatal(nr_aiot_reader_parse_data_dest(&cfg, *p[P_DATA_DEST].strptr) == 0,
               "aiot.data_dest \"%s\" is not ipv4:port\n",
               *p[P_DATA_DEST].strptr);
+  AssertFatal(nr_aiot_reader_parse_address(cfg.remote_r2d, *p[P_REMOTE_R2D].strptr) == 0,
+              "aiot.remote_r2d \"%s\" is not ipv4:port\n",
+              *p[P_REMOTE_R2D].strptr);
+  AssertFatal(nr_aiot_reader_parse_address(cfg.remote_d2r, *p[P_REMOTE_D2R].strptr) == 0,
+              "aiot.remote_d2r \"%s\" is not ipv4:port\n",
+              *p[P_REMOTE_D2R].strptr);
   char err[256] = "";
   nr_aiot_reader_t *r = nr_aiot_reader_new(&cfg, r2d, d2r, err, sizeof(err));
   AssertFatal(r, "A-IoT Reader: %s\n", err);
   AssertFatal(nr_aiot_reader_start(r) == 0, "A-IoT Reader: cannot start its thread\n");
   LOG_I(NR_MAC,
-        "A-IoT Reader: protocol %s for %d Tags, M = %d, T_bit = %d/%d tau, %d R_SFS%s%s%s%s\n",
+        "A-IoT Reader: protocol %s for %d Tags, M = %d, T_bit = %d/%d tau, %d R_SFS%s%s%s%s%s%s%s%s\n",
         cfg.protocol,
         cfg.n_nodes,
         cfg.link.m_chip_symb,
@@ -143,6 +156,29 @@ nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *
         cfg.output_dir[0] ? ", records in " : "",
         cfg.output_dir,
         cfg.data_dest[0] ? ", Tag data to " : "",
-        cfg.data_dest);
+        cfg.data_dest,
+        cfg.remote_r2d[0] ? ", R2D sent by the UE at " : "",
+        cfg.remote_r2d,
+        cfg.remote_d2r[0] ? ", D2R received by the UE at " : "",
+        cfg.remote_d2r);
   return r;
+}
+
+nr_aiot_peer_t *nr_aiot_peer_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *d2r)
+{
+  paramdef_t p[] = AIOT_PEER_PARAMS_DESC;
+  config_get(config_get_if(), p, sizeofArray(p), AIOT_SECTION);
+  const int port = *p[0].iptr;
+  if (port == 0)
+    return NULL;
+  char err[256] = "";
+  nr_aiot_peer_t *peer = nr_aiot_peer_new(port, r2d, d2r, err, sizeof(err));
+  AssertFatal(peer, "A-IoT peer: %s\n", err);
+  AssertFatal(nr_aiot_peer_start(peer) == 0, "A-IoT peer: cannot start its thread\n");
+  LOG_I(NR_MAC,
+        "A-IoT peer: serving a split Reader on UDP port %d:%s%s\n",
+        port,
+        r2d && r2d->cfg.prb_start >= 0 ? " the R2D it sends, in the UE's UL PRBs" : "",
+        d2r ? " the D2R windows it opens, on the UE's DL" : "");
+  return peer;
 }

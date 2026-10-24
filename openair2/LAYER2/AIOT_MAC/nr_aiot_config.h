@@ -13,6 +13,7 @@
 #include "PHY/NR_TRANSPORT/nr_aiot_r2d.h"
 #include "PHY/NR_TRANSPORT/nr_aiot_d2r.h"
 #include "nr_aiot_reader.h"
+#include "nr_aiot_peer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,6 +26,10 @@ void nr_aiot_config_phy(nr_aiot_r2d_config_t *r2d, nr_aiot_d2r_config_t *d2r);
 /* The Reader of the section, started on the node's R2D and D2R; NULL when aiot.protocol is empty.
  * Stops the node with the reason when the section does not fit. */
 nr_aiot_reader_t *nr_aiot_reader_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *d2r);
+
+/* A UE's end of a split Reader, started on its R2D and D2R; NULL when aiot.serve_port is 0. Stops the
+ * node with the reason when it cannot serve. */
+nr_aiot_peer_t *nr_aiot_peer_from_config(nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *d2r);
 
 #ifdef __cplusplus
 }

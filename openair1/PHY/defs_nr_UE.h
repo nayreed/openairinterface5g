@@ -443,6 +443,8 @@ typedef struct PHY_VARS_NR_UE_s {
   nr_aiot_d2r_t *aiot_d2r;
   /// Ambient IoT Reader: the Reader MAC on aiot_r2d and aiot_d2r (NULL: the UE is no Reader)
   struct nr_aiot_reader *aiot_reader;
+  /// the UE's end of a split Reader whose MAC is in the gNB, on aiot_r2d and aiot_d2r (NULL: none)
+  struct nr_aiot_peer *aiot_peer;
 
   // Sidelink parameters
   sl_nr_sidelink_mode_t sl_mode;

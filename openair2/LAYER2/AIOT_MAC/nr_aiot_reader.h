@@ -20,6 +20,14 @@
  * Tag's data is logged. With a data destination, each message heard from a Tag also goes there, in
  * one UDP datagram of Tag data (aiot_node_msg.h): a UE that reads the Tags sends them to the network
  * over its own user plane (topology 2).
+ *
+ * A split Reader (topology 3) runs in a gNB whose R2D or D2R is a UE's (nr_aiot_peer.h), over the
+ * gNB's user plane to it. With a remote R2D, the gNB sends the UE each R2D, for a half-subframe of the
+ * cell, and plans on as if it had sent it; an R2D the UE gets too late raises the lead, as one of the
+ * node's own would. With a remote D2R, the gNB sends the UE each window, at its time in the cell, and
+ * gives the MAC each outcome the UE sends back; a window whose outcome does not come back is given up
+ * as empty. The node's R2D clock (nr_aiot_r2d_set_slot_time()) runs also without R2D PRBs, and plans
+ * every R2D and window. The Reader logs the delays of the split once a second of the cell.
  */
 
 #ifndef NR_AIOT_READER_H
@@ -48,6 +56,8 @@ typedef struct nr_aiot_reader_config {
   int lead_slots; /* slots between the slot the node sent last and an R2D's first; doubles when late */
   char output_dir[256]; /* "": no CSV files */
   char data_dest[64]; /* "ipv4:port" for each message heard from a Tag, as Tag data; "": none */
+  char remote_r2d[64]; /* "ipv4:port" of the UE that sends the R2D; "": the node sends it */
+  char remote_d2r[64]; /* "ipv4:port" of the UE that receives the D2R; "": the node receives it */
 } nr_aiot_reader_config_t;
 
 typedef struct nr_aiot_reader nr_aiot_reader_t;
@@ -59,6 +69,18 @@ typedef struct {
   uint64_t collisions;
   uint64_t data_sent; /* Tag data datagrams sent to the data destination */
   uint64_t data_unsent; /* and those the socket refused */
+  /* a split Reader */
+  uint64_t r2d_done; /* R2D done messages back from the remote R2D */
+  uint64_t r2d_refused; /* R2Ds it could not send, other than too late */
+  int64_t r2d_ahead_min, r2d_ahead_sum; /* slots it had in hand when each R2D reached it */
+  int64_t r2d_rtt_max, r2d_rtt_sum; /* A-IoT samples of the cell from each R2D sent to its R2D done */
+  uint64_t windows_remote; /* windows sent to the remote D2R */
+  uint64_t outcomes_remote; /* their outcomes back */
+  uint64_t windows_lost; /* windows given up as empty, their outcome not back in time */
+  int64_t window_ahead_min, window_ahead_sum; /* A-IoT samples it had in hand when each window reached it */
+  int64_t outcome_delay_max, outcome_delay_sum; /* A-IoT samples of the cell from each window's end to its outcome */
+  uint64_t peer_unsent; /* messages to a remote end the socket did not take */
+  uint64_t peer_refused; /* datagrams that were no answer the Reader waits for */
 } nr_aiot_reader_stats_t;
 
 /* Parses "name=value,name=value" into cfg->params. Returns 0 or -1. */
@@ -71,8 +93,13 @@ int nr_aiot_reader_parse_r_sfs(nr_aiot_reader_config_t *cfg, const char *s);
 int nr_aiot_reader_parse_t_bit(nr_aiot_reader_config_t *cfg, const char *s);
 /* Parses a data destination "10.0.1.1:38391" (empty: none) into cfg->data_dest. Returns 0 or -1. */
 int nr_aiot_reader_parse_data_dest(nr_aiot_reader_config_t *cfg, const char *s);
+/* Parses an address "10.0.1.2:38392" (empty: none) into dst, of 64 bytes, as cfg->remote_r2d and
+ * cfg->remote_d2r take it. Returns 0 or -1. */
+int nr_aiot_reader_parse_address(char *dst, const char *s);
 
-/* A Reader on the node's R2D transmitter and D2R receiver. Returns NULL with the reason in err. */
+/* A Reader on the node's R2D transmitter and D2R receiver. r2d must be initialised, with PRBs unless
+ * the R2D is remote; d2r is NULL when, and only when, the D2R is remote. Returns NULL with the reason
+ * in err. */
 nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
                                      nr_aiot_r2d_t *r2d,
                                      nr_aiot_d2r_t *d2r,
