@@ -1,0 +1,139 @@
+name: oai-gnb and oai-nr-ue images
+
+# The gNB and UE images the 5G A-IoT rooms run, built as docker/README.md and OAI's CI build them:
+# ran-base (the build dependencies), then ran-build (all of OAI), then oai-gnb and oai-nr-ue.
+#
+# ran-base changes only with docker/Dockerfile.base.ubuntu, cmake_targets/build_oai and
+# cmake_targets/tools/build_helper (OAI's CI rebuilds it on the same files). It is pushed as
+# ghcr.io/<owner>/ran-base:<hash of those files> and pulled by every later run with the same hash,
+# so a run builds it only when one of them changed.
+#
+# oai-gnb and oai-nr-ue are pushed as :<commit> only. This workflow then starts the oai-amber image
+# workflow with that tag, which runs every room with them and, when the rooms pass, moves :latest to
+# them. A room therefore never gets a :latest gNB or UE that has not run the rooms.
+#
+# It runs on a push to aiot-rfsim that changes the gNB or the UE, and by hand. Changes that only
+# touch oai-amber, the rooms or the docs start the oai-amber workflow alone, with the :latest gNB
+# and UE.
+
+on:
+  push:
+    branches: [aiot-rfsim]
+    paths-ignore:
+      - '**.md'
+      - 'doc/**'
+      - 'ci-scripts/**'
+      - 'docker/Dockerfile.amber.ubuntu'
+      - 'docker/scripts/amber_*'
+      - 'docker/scripts/aiot_check_room.sh'
+      - '.github/workflows/amber-image.yml'
+      - '.github/workflows/jenkins-dispatch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oai-5g-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ran-base:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Name ran-base by its inputs
+        id: name
+        run: |
+          hash=$(cat docker/Dockerfile.base.ubuntu cmake_targets/build_oai cmake_targets/tools/build_helper \
+            cmake_targets/tools/uhd-4.5plus-tdd-patch.diff oaienv | sha256sum | cut -c1-12)
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ran-base:$hash" >> "$GITHUB_OUTPUT"
+      - name: Log in to ghcr.io
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build ran-base if no image has these inputs yet
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "$IMAGE exists: not rebuilt"
+            exit 0
+          fi
+          docker build --target ran-base --tag "$IMAGE" --file docker/Dockerfile.base.ubuntu \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" .
+          docker push "$IMAGE"
+
+  # OAI's whole build, from the ran-base above. OAI targets the build machine's CPU (-march=native)
+  # and turns on GFNI when the build machine has it. -march=haswell (AVX2 with PCLMUL, which OAI's
+  # CRC code needs) and GFNI off let the images run on any x86 host with AVX2, which is also what
+  # oai-amber needs. build_oai splits BUILD_OPTION on spaces, so a C_FLAGS here can hold one flag
+  # only, and replaces the build image's -Werror.
+  build:
+    needs: ran-base
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.push.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space for the build images
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune --all --force
+          df -h /
+      - name: Log in to ghcr.io
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull ran-base
+        env:
+          BASE: ${{ needs.ran-base.outputs.image }}
+        run: |
+          docker pull "$BASE"
+          docker tag "$BASE" ran-base:latest
+      - name: Build ran-build, oai-gnb and oai-nr-ue
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          docker build --target ran-build --tag ran-build:latest --file docker/Dockerfile.build.ubuntu \
+            --build-arg BUILD_OPTION="--cmake-opt -DCMAKE_C_FLAGS=-march=haswell --cmake-opt -DCMAKE_CXX_FLAGS=-march=haswell --cmake-opt -DGFNI=OFF" .
+          docker build --target oai-gnb --tag oai-gnb:latest --file docker/Dockerfile.gNB.ubuntu \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" .
+          docker build --target oai-nr-ue --tag oai-nr-ue:latest --file docker/Dockerfile.nrUE.ubuntu \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" .
+          docker image ls
+      - name: Push oai-gnb and oai-nr-ue as :<commit>
+        id: push
+        run: |
+          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
+          tag=${GITHUB_SHA::8}
+          for name in oai-gnb oai-nr-ue; do
+            docker tag "$name:latest" "$registry/$name:$tag"
+            docker push "$registry/$name:$tag"
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # The rooms run in the oai-amber workflow, which builds the oai-amber image they need with them.
+  rooms:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Start the oai-amber workflow with these images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh workflow run amber-image.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f oai_5g_tag="$TAG"
+          echo "Started oai-amber image with oai_5g_tag=$TAG"

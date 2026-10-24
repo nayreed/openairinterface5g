@@ -82,8 +82,10 @@ docker build --tag oai-amber:latest --file docker/Dockerfile.amber.ubuntu .
 
 The last image holds `rfsim_hub`, `amber-reader`, `amber-tag` and Amber.
 
-Or use the three images the `oai-amber image` workflow publishes from `aiot-rfsim`
-(`.github/workflows/amber-image.yml`), after it has run each room with them:
+Or use the three images published from `aiot-rfsim`. The `oai-gnb and oai-nr-ue images` workflow
+(`.github/workflows/oai-5g-images.yml`) builds the gNB and the UE when their code changes, and the
+`oai-amber image` workflow (`.github/workflows/amber-image.yml`) builds oai-amber and runs each room
+with the three. `:latest` moves to an image only after every room has passed with it:
 
 ```bash
 export REGISTRY=ghcr.io/nayreed/ TAG=latest AMBER_IMG=ghcr.io/nayreed/oai-amber:latest
