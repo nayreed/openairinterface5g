@@ -5,11 +5,15 @@ name: oai-amber image
 # publishes it. The gNB and UE images come from the oai-gnb and oai-nr-ue workflow
 # (oai-5g-images.yml); this workflow pulls them and never builds them.
 #
+# It has no push trigger. On a push to aiot-rfsim the oai-gnb and oai-nr-ue workflow starts it:
+# after building a new gNB and UE (oai_5g_tag=<commit>), or straight away with oai_5g_tag=latest
+# when the push changed only oai-amber or the rooms. It also runs on pull requests and by hand.
+#
+#   gnb-ue     the oai-gnb and oai-nr-ue to run the rooms with (:<oai_5g_tag>); nothing else runs
+#              without them
 #   scripts    bash -n and shellcheck on the scripts the images and rooms use
 #   build      the oai-amber image, from the GitHub Actions layer cache
 #   scenarios  two seeded Amber scenarios in docker compose, compared with amber.run
-#   gnb-ue     which oai-gnb and oai-nr-ue to run the rooms with: :<oai_5g_tag> when the oai-gnb
-#              and oai-nr-ue workflow started this run, :latest otherwise
 #   rooms      each room in ci-scripts/yaml_files/5g_rfsimulator_aiot* with those three images
 #              (docker/scripts/aiot_check_room.sh)
 #   publish    on aiot-rfsim, once the rooms pass: oai-amber as :<commit> and :latest, and the gNB
@@ -19,15 +23,6 @@ name: oai-amber image
 #   REGISTRY=ghcr.io/<owner>/ TAG=latest AMBER_IMG=ghcr.io/<owner>/oai-amber:latest docker compose up -d
 
 on:
-  push:
-    branches: [aiot-rfsim]
-    paths:
-      - 'docker/Dockerfile.amber.ubuntu'
-      - 'docker/scripts/amber_*'
-      - 'docker/scripts/aiot_check_room.sh'
-      - 'ci-scripts/yaml_files/5g_rfsimulator_aiot*/**'
-      - 'ci-scripts/conf_files/**'
-      - '.github/workflows/amber-image.yml'
   pull_request:
     branches: [aiot-rfsim]
     paths:
@@ -46,13 +41,45 @@ on:
 permissions:
   contents: read
 
-# A run the oai-gnb and oai-nr-ue workflow started has a group of its own, so a push to aiot-rfsim
-# does not cancel the run that would move the gNB and UE to :latest.
+# A run with a new gNB and UE has a group of its own, so a later run with :latest does not cancel
+# the run that would move the gNB and UE to :latest.
 concurrency:
   group: amber-image-${{ github.ref }}-${{ inputs.oai_5g_tag || 'latest' }}
   cancel-in-progress: true
 
 jobs:
+  gnb-ue:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      tag: ${{ steps.find.outputs.tag }}
+      found: ${{ steps.find.outputs.found }}
+    steps:
+      - name: Find oai-gnb and oai-nr-ue
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.oai_5g_tag || 'latest' }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          for name in oai-gnb oai-nr-ue; do
+            if ! docker manifest inspect "$registry/$name:$TAG" > /dev/null 2>&1; then
+              if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$TAG" = latest ]; then
+                # Only before the oai-gnb and oai-nr-ue workflow has published anything.
+                echo "::warning::$registry/$name:latest does not exist yet: nothing runs. Run the oai-gnb and oai-nr-ue workflow."
+                echo "found=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "$registry/$name:$TAG does not exist: run the oai-gnb and oai-nr-ue workflow first" >&2
+              exit 1
+            fi
+          done
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
   scripts:
     runs-on: ubuntu-24.04
     steps:
@@ -67,7 +94,8 @@ jobs:
           python3 -m py_compile docker/scripts/amber_compose.py
 
   build:
-    needs: scripts
+    needs: [scripts, gnb-ue]
+    if: needs.gnb-ue.outputs.found == 'true'
     runs-on: ubuntu-24.04
     outputs:
       image: ${{ steps.name.outputs.image }}
@@ -125,44 +153,11 @@ jobs:
       - name: Run the scenario in containers and compare with amber.run
         run: docker/scripts/amber_check_image.sh "${{ needs.build.outputs.image }}" "${{ matrix.scenario }}"
 
-  gnb-ue:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: read
-    outputs:
-      tag: ${{ steps.find.outputs.tag }}
-      found: ${{ steps.find.outputs.found }}
-    steps:
-      - name: Find oai-gnb and oai-nr-ue
-        id: find
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.oai_5g_tag || 'latest' }}
-        run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          for name in oai-gnb oai-nr-ue; do
-            if ! docker manifest inspect "$registry/$name:$TAG" > /dev/null 2>&1; then
-              if [ "$TAG" != latest ]; then
-                echo "$registry/$name:$TAG does not exist" >&2
-                exit 1
-              fi
-              # Only before the oai-gnb and oai-nr-ue workflow has published anything.
-              echo "::warning::$registry/$name:latest does not exist yet: the rooms do not run and nothing is published. Run the oai-gnb and oai-nr-ue workflow."
-              echo "found=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "found=true" >> "$GITHUB_OUTPUT"
-
   # Each checked-in 5G room: every Tag heard, the cell without errors, a ping through, and each
   # room's own check (see aiot_check_room.sh). The records and logs are kept as an artifact, pass
   # or fail.
   rooms:
     needs: [build, gnb-ue]
-    if: needs.gnb-ue.outputs.found == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

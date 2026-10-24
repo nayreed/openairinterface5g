@@ -1,33 +1,32 @@
 name: oai-gnb and oai-nr-ue images
 
-# The gNB and UE images the 5G A-IoT rooms run, built as docker/README.md and OAI's CI build them:
-# ran-base (the build dependencies), then ran-build (all of OAI), then oai-gnb and oai-nr-ue.
+# The one workflow a push to aiot-rfsim starts. Its first job looks at what the push changed:
 #
-# ran-base changes only with docker/Dockerfile.base.ubuntu, cmake_targets/build_oai and
-# cmake_targets/tools/build_helper (OAI's CI rebuilds it on the same files). It is pushed as
-# ghcr.io/<owner>/ran-base:<hash of those files> and pulled by every later run with the same hash,
-# so a run builds it only when one of them changed.
+#   - the gNB or the UE (anything but the files listed in "What the push changed" below): build
+#     oai-gnb and oai-nr-ue, then start the oai-amber workflow with them;
+#   - only oai-amber, its scripts, the rooms or their configuration: start the oai-amber workflow
+#     with the :latest gNB and UE, and build nothing here;
+#   - only docs: nothing.
 #
-# oai-gnb and oai-nr-ue are pushed as :<commit> only. This workflow then starts the oai-amber image
-# workflow with that tag, which runs every room with them and, when the rooms pass, moves :latest to
-# them. A room therefore never gets a :latest gNB or UE that has not run the rooms.
+# The oai-amber workflow has no push trigger of its own, so a push never starts it twice, and it
+# never runs without a gNB and UE to run the rooms with.
 #
-# It runs on a push to aiot-rfsim that changes the gNB or the UE, and by hand. Changes that only
-# touch oai-amber, the rooms or the docs start the oai-amber workflow alone, with the :latest gNB
-# and UE.
+# The gNB and UE are built as docker/README.md and OAI's CI build them: ran-base (the build
+# dependencies), then ran-build (all of OAI), then oai-gnb and oai-nr-ue. ran-base changes only
+# with docker/Dockerfile.base.ubuntu, cmake_targets/build_oai and cmake_targets/tools/build_helper
+# (OAI's CI rebuilds it on the same files). It is pushed as ghcr.io/<owner>/ran-base:<hash of those
+# files> and pulled by every later run with the same hash, so a run builds it only when one of them
+# changed.
+#
+# oai-gnb and oai-nr-ue are pushed as :<commit> only. The oai-amber run this workflow starts runs
+# every room with them and, when the rooms pass, moves :latest to them. A room therefore never gets
+# a :latest gNB or UE that has not run the rooms.
+#
+# By hand, it always builds the gNB and UE.
 
 on:
   push:
     branches: [aiot-rfsim]
-    paths-ignore:
-      - '**.md'
-      - 'doc/**'
-      - 'ci-scripts/**'
-      - 'docker/Dockerfile.amber.ubuntu'
-      - 'docker/scripts/amber_*'
-      - 'docker/scripts/aiot_check_room.sh'
-      - '.github/workflows/amber-image.yml'
-      - '.github/workflows/jenkins-dispatch.yml'
   workflow_dispatch:
 
 permissions:
@@ -38,7 +37,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      gnb: ${{ steps.diff.outputs.gnb }}
+      amber: ${{ steps.diff.outputs.amber }}
+    steps:
+      - name: What the push changed
+        id: diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          gnb=false amber=false
+          if [ "$GITHUB_EVENT_NAME" != push ] || [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            gnb=true
+          elif ! files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename'); then
+            echo "Cannot compare $BEFORE with $GITHUB_SHA: building the gNB and UE"
+            gnb=true
+          elif [ "$(wc -l <<< "$files")" -ge 300 ]; then
+            echo "300 files or more changed (the compare API's limit): building the gNB and UE"
+            gnb=true
+          else
+            while read -r f; do
+              [ -n "$f" ] || continue
+              case "$f" in
+                docker/Dockerfile.amber.ubuntu | docker/scripts/amber_* | docker/scripts/aiot_check_room.sh | \
+                ci-scripts/yaml_files/5g_rfsimulator_aiot*/* | ci-scripts/conf_files/* | \
+                .github/workflows/amber-image.yml)
+                  amber=true ;;
+                *.md | doc/* | ci-scripts/* | .github/workflows/jenkins-dispatch.yml) ;;
+                *)
+                  echo "gNB/UE change: $f"
+                  gnb=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "gnb=$gnb amber=$amber"
+          echo "gnb=$gnb" >> "$GITHUB_OUTPUT"
+          echo "amber=$amber" >> "$GITHUB_OUTPUT"
+
+  # Only oai-amber or the rooms changed: run them with the :latest gNB and UE.
+  amber-only:
+    needs: changes
+    if: needs.changes.outputs.gnb != 'true' && needs.changes.outputs.amber == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Start the oai-amber workflow with the :latest gNB and UE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run amber-image.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f oai_5g_tag=latest
+          echo "Started oai-amber image with oai_5g_tag=latest"
+
   ran-base:
+    needs: changes
+    if: needs.changes.outputs.gnb == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
