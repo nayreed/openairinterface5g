@@ -1094,6 +1094,9 @@ void *UE_thread(void *arg)
     metadata meta = {.slot =  curMsg.proc.nr_slot_rx, .frame =  curMsg.proc.frame_rx};
     UEscopeCopyWithMetadata(UE, ueTimeDomainSamples, rxp[0] - firstSymSamp, sizeof(c16_t), 1, readBlockSize, 0, &meta);
     AssertFatal(readBlockSize == tmp, "read to rf board failed %d", tmp);
+    // the time of this slot, which a Reader in the gNB opens the UE's Ambient IoT D2R windows in
+    if (UE->aiot_d2r)
+      nr_aiot_d2r_set_slot_time(UE->aiot_d2r, curMsg.proc.frame_rx, slot_nr, rx_timestamp - firstSymSamp);
     struct timespec current_time;
     if (clock_gettime(CLOCK_REALTIME, &current_time)) {
       LOG_E(PHY, "clock_gettime failed\n");

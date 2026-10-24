@@ -53,6 +53,11 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
   r2d->tx_slots = (1u << NR_AIOT_R2D_TX_SLOT_PERIOD) - 1;
   r2d->cfg = *cfg;
   r2d->cfg.prb_start = -1;
+  /* the grid's sizes, also without R2D: the node's clock (nr_aiot_r2d_now()) runs on its slots */
+  r2d->slots_per_frame = slots_per_frame;
+  r2d->symbols_per_slot = symbols_per_slot;
+  r2d->ofdm_symbol_size = ofdm_symbol_size;
+  r2d->n_prb = n_prb;
   pthread_mutex_init(&r2d->lock, NULL);
   if (cfg->prb_start < 0 || cfg->n_rb_max == 0)
     return 0; /* no R2D: a gNB configured without one, or zeroed (the simulators) */
@@ -84,10 +89,6 @@ int nr_aiot_r2d_init(nr_aiot_r2d_t *r2d,
     return -1;
   }
   r2d->cfg = *cfg;
-  r2d->slots_per_frame = slots_per_frame;
-  r2d->symbols_per_slot = symbols_per_slot;
-  r2d->ofdm_symbol_size = ofdm_symbol_size;
-  r2d->n_prb = n_prb;
   /* aiot_r2d_resource_elements() gives a waveform whose "on" chips are about 1 and whose mean power,
    * with half the chips on, is about 1/2 over its K subcarriers, i.e. 1 / (2K) per resource element.
    * A QPSK resource element of the data channel has power tx_amp^2 / 2. The R2D's own K is used at
@@ -223,10 +224,23 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
   return rc;
 }
 
+int nr_aiot_r2d_n_symbols(const uint8_t *tb, int a_bits, int m_chip_symb)
+{
+  if (!aiot_m_valid(m_chip_symb) || a_bits < 1 || a_bits > AIOT_MAX_TB_BITS || !tb)
+    return AIOT_EINVAL;
+  const int max_chips = 4 * (a_bits + 16) + 64; /* as schedule() */
+  uint8_t *chips = malloc(max_chips);
+  if (!chips)
+    return AIOT_ENOMEM;
+  const int n_chips = aiot_r2d_chips(tb, a_bits, m_chip_symb, chips, max_chips);
+  free(chips);
+  return n_chips < 0 ? n_chips : aiot_r2d_n_symbols(n_chips, m_chip_symb);
+}
+
 void nr_aiot_r2d_set_slot_time(nr_aiot_r2d_t *r2d, int frame, int slot, int64_t ts)
 {
-  if (r2d->cfg.prb_start < 0)
-    return;
+  if (r2d->slots_per_frame == 0)
+    return; /* not initialised */
   pthread_mutex_lock(&r2d->lock);
   r2d->timed_slot = frame * r2d->slots_per_frame + slot;
   r2d->timed_ts = ts;
@@ -249,14 +263,18 @@ int nr_aiot_r2d_take(nr_aiot_r2d_t *r2d, int frame, int slot, nr_aiot_r2d_slot_t
   out->prb_start = r2d->cfg.prb_start;
   out->carrier = r2d->cfg.carrier && r2d->cfg.prb_start >= 0;
   memset(out->n_rb, 0, sizeof(out->n_rb));
-  if (r2d->cfg.prb_start < 0)
-    return 0;
+  if (r2d->slots_per_frame == 0)
+    return 0; /* not initialised */
   const int now = frame * r2d->slots_per_frame + slot;
   const int nsym = r2d->symbols_per_slot;
   int taken = 0;
   pthread_mutex_lock(&r2d->lock);
   r2d->now_slot = now;
   r2d->now_ts = r2d->timed_slot == now ? r2d->timed_ts : -1;
+  if (r2d->cfg.prb_start < 0) {
+    pthread_mutex_unlock(&r2d->lock);
+    return 0; /* only the clock: the R2D is sent by another node (a split Reader) */
+  }
   for (int i = 0; i < r2d->n_pending;) {
     nr_aiot_r2d_tx_t *p = &r2d->pending[i];
     int done = 0;

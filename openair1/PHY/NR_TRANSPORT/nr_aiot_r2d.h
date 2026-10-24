@@ -121,9 +121,14 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
                          int m_chip_symb,
                          int n_rb);
 
+/* The OFDM symbols nr_aiot_r2d_schedule() would give the transport block tb, without scheduling it:
+ * for a Reader whose R2D another node sends. Returns them, or a negative AIOT_E* code. */
+int nr_aiot_r2d_n_symbols(const uint8_t *tb, int a_bits, int m_chip_symb);
+
 /* The node's clock: ts is the radio timestamp (the node's own sample count) of the first sample of
  * (frame, slot), the slot the node maps next. The Reader plans each R2D, and the D2R windows it opens,
- * from the time of the slot mapped last, so a node calls this before it maps each slot. */
+ * from the time of the slot mapped last, so a node calls this before it maps each slot. The clock runs
+ * also without R2D PRBs: a gNB whose R2D a UE sends (a split Reader) plans on its own slots. */
 void nr_aiot_r2d_set_slot_time(nr_aiot_r2d_t *r2d, int frame, int slot, int64_t ts);
 
 /* The absolute slot (frame * slots_per_frame + slot) the node mapped last, or -1 before the first.

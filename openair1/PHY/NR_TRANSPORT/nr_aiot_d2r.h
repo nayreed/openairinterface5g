@@ -112,6 +112,15 @@ int64_t nr_aiot_d2r_received_until(nr_aiot_d2r_t *d);
 /* Waits until the receiver has passed A-IoT sample after, or timeout_ms (wall clock) have gone by.
  * Returns nr_aiot_d2r_received_until(). */
 int64_t nr_aiot_d2r_wait(nr_aiot_d2r_t *d, int64_t after, int timeout_ms);
+
+/* The node's receive clock, for a Reader in another node that opens windows in cell time (a split
+ * Reader): ts is the radio timestamp of the first sample of (frame, slot) as the node receives it (a
+ * UE's DL slot). The node gives it for each slot it reads. */
+void nr_aiot_d2r_set_slot_time(nr_aiot_d2r_t *d, int frame, int slot, int64_t ts);
+/* The A-IoT sample of this receiver's clock that is A-IoT sample `sample` (from 0, 5760 a slot) of
+ * (frame, slot) of the cell, counted on from the slot given last at 1 ms a slot (15 kHz, 10 slots a
+ * frame), the nearer way round the 1024 frames. -1 before the first slot time. */
+int64_t nr_aiot_d2r_cell_time(nr_aiot_d2r_t *d, int frame, int slot, int sample);
 nr_aiot_d2r_stats_t nr_aiot_d2r_stats(nr_aiot_d2r_t *d);
 
 #ifdef __cplusplus

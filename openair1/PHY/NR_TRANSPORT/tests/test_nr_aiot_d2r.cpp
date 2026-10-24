@@ -494,6 +494,23 @@ TEST(NrAiotD2R, LosesNoSampleOfTheUesReads)
   EXPECT_EQ(nr_aiot_d2r_received_until(d.get()), a0 + (int64_t)c.size());
 }
 
+// A Reader in another node opens windows in cell time: the receiver counts on from the time of the
+// slot the node read last, the nearer way round the 1024 frames.
+TEST(NrAiotD2R, MapsCellTimeOntoItsOwnSamples)
+{
+  for (int64_t fs : {5760000LL, 11520000LL}) {
+    auto d = Make(kRoom, fs);
+    ASSERT_TRUE(d);
+    const int64_t per = fs / 1000; // radio samples a slot
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 0, 0, 0), -1); // no slot read yet
+    nr_aiot_d2r_set_slot_time(d.get(), 1023, 9, 7 * per);
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 1023, 9, 0), 7 * 5760);
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 0, 0, 10), 8 * 5760 + 10); // across the wrap
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 1023, 8, 5759), 7 * 5760 - 1); // a slot back
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 12, 3, 0), (7 + 124) * 5760);
+  }
+}
+
 int main(int argc, char **argv)
 {
   logInit();

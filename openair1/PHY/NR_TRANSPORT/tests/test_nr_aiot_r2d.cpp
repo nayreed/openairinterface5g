@@ -448,6 +448,42 @@ TEST(NrAiotR2D, KeepsTheTimeOfTheSlotMappedLast)
   EXPECT_EQ(ts, -1);
 }
 
+// A node whose R2D another node sends (a split Reader) keeps the clock and writes nothing.
+TEST(NrAiotR2D, KeepsTheClockWithoutPrbs)
+{
+  Cell cell(-1, 0);
+  Grid g;
+  int64_t ts = 0;
+  const std::vector<uint8_t> tb(40, 1);
+  EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 0, 2, 0, tb.data(), tb.size(), 6, 1), AIOT_EINVAL);
+  nr_aiot_r2d_set_slot_time(&cell.r2d, 1023, 9, 99);
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 1023, 9, g.re.data(), nullptr, nullptr), 0);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 10239);
+  EXPECT_EQ(ts, 99);
+  for (auto &v : g.re)
+    ASSERT_TRUE(!v.r && !v.i);
+}
+
+// A Reader whose R2D another node sends counts its symbols without scheduling it: as many as
+// schedule() gives the same transport block.
+TEST(NrAiotR2D, CountsTheSymbolsScheduleGives)
+{
+  std::mt19937 gen(5);
+  for (int m : {2, 6, 12, 24})
+    for (int a_bits : {1, 40, 333, AIOT_MAX_TB_BITS}) {
+      Cell cell(0, 3);
+      const std::vector<uint8_t> tb = RandomBits(gen, a_bits);
+      const int n = nr_aiot_r2d_n_symbols(tb.data(), a_bits, m);
+      EXPECT_GT(n, 0);
+      EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 0, 2, 0, tb.data(), a_bits, m, aiot_n_rb_min(m)), n) << m << " " << a_bits;
+    }
+  const std::vector<uint8_t> tb(AIOT_MAX_TB_BITS + 1, 1);
+  EXPECT_EQ(nr_aiot_r2d_n_symbols(tb.data(), 40, 5), AIOT_EINVAL);
+  EXPECT_EQ(nr_aiot_r2d_n_symbols(tb.data(), 0, 6), AIOT_EINVAL);
+  EXPECT_EQ(nr_aiot_r2d_n_symbols(tb.data(), AIOT_MAX_TB_BITS + 1, 6), AIOT_EINVAL);
+  EXPECT_EQ(nr_aiot_r2d_n_symbols(nullptr, 40, 6), AIOT_EINVAL);
+}
+
 // With the carrier on, slots without R2D carry one tone at the centre of the reserved PRBs, as
 // strong as an "on" chip of an R2D on all of them, that runs on unbroken through every cyclic prefix
 // and from slot to slot: the samples are the tone itself, to the rounding of its resource element.

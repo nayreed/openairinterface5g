@@ -32,6 +32,8 @@
 #define ZERO_CHUNK (AIOT_SAMPLES_PER_MS * 10) /* A-IoT samples received at a time across a gap */
 #define STATS_EVERY_S 10 /* the worker logs its counts this often */
 #define D2R_QUEUE_MS 100 /* the worker's room: a real radio's samples are lost if it falls further behind */
+#define CELL_SLOTS_PER_FRAME 10 /* 15 kHz */
+#define CELL_FRAMES 1024
 
 typedef struct {
   c16_t *x;
@@ -75,6 +77,8 @@ struct nr_aiot_d2r {
   int n_out, cap_out;
   int64_t received_until; /* A-IoT clock */
   nr_aiot_d2r_stats_t stats;
+  int clock_slot; /* the slot (frame * 10 + slot) nr_aiot_d2r_set_slot_time() gave last, -1: none */
+  int64_t clock_ts; /* its radio timestamp */
 
   /* the worker */
   int running, stop;
@@ -172,6 +176,7 @@ nr_aiot_d2r_t *nr_aiot_d2r_new(const nr_aiot_d2r_config_t *cfg, int n_prb, int s
   d->next_ts = -1;
   d->rx = new_rx(d);
   pthread_mutex_init(&d->lock, NULL);
+  d->clock_slot = -1;
   pthread_cond_init(&d->cond, NULL);
   if (!d->rx || make_filter(d) != 0 || grow((void **)&d->w, &d->cap_w, d->g + 1, sizeof(cd_t)) != 0) {
     nr_aiot_d2r_free(d);
@@ -631,6 +636,29 @@ int64_t nr_aiot_d2r_received_until(nr_aiot_d2r_t *d)
   int64_t t = d->received_until;
   pthread_mutex_unlock(&d->lock);
   return t;
+}
+
+void nr_aiot_d2r_set_slot_time(nr_aiot_d2r_t *d, int frame, int slot, int64_t ts)
+{
+  pthread_mutex_lock(&d->lock);
+  d->clock_slot = frame * CELL_SLOTS_PER_FRAME + slot;
+  d->clock_ts = ts;
+  pthread_mutex_unlock(&d->lock);
+}
+
+int64_t nr_aiot_d2r_cell_time(nr_aiot_d2r_t *d, int frame, int slot, int sample)
+{
+  pthread_mutex_lock(&d->lock);
+  const int ref = d->clock_slot;
+  const int64_t ts = d->clock_ts;
+  pthread_mutex_unlock(&d->lock);
+  if (ref < 0)
+    return -1;
+  const int wrap = CELL_FRAMES * CELL_SLOTS_PER_FRAME;
+  int k = ((frame * CELL_SLOTS_PER_FRAME + slot - ref) % wrap + wrap) % wrap;
+  if (k > wrap / 2)
+    k -= wrap;
+  return (ts + d->d / 2) / d->d + (int64_t)k * AIOT_SAMPLES_PER_MS + sample;
 }
 
 int64_t nr_aiot_d2r_wait(nr_aiot_d2r_t *d, int64_t after, int timeout_ms)
