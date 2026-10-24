@@ -417,8 +417,6 @@ static nr_rlc_sdu_segment_t *resegment(nr_rlc_sdu_segment_t *sdu,
   int over_size;
   int old_is_last;
 
-  sdu->sdu->ref_count++;
-
   /* clear is_last to compute header size */
   old_is_last = sdu->is_last;
   sdu->is_last = 0;
@@ -428,6 +426,8 @@ static nr_rlc_sdu_segment_t *resegment(nr_rlc_sdu_segment_t *sdu,
   /* if no room for at least 1 data byte, do nothing */
   if (pdu_header_size + 1 > pdu_size)
     return NULL;
+
+  sdu->sdu->ref_count++;
 
   next = calloc(1, sizeof(nr_rlc_sdu_segment_t));
   if (next == NULL) {
@@ -466,8 +466,18 @@ static int generate_tx_pdu(nr_rlc_entity_um_t *entity, char *buffer, int size)
 
   pdu_header_size = compute_pdu_header_size(entity, sdu);
 
-  /* not enough room for at least one byte of data? do nothing */
-  if (pdu_header_size + 1 > size)
+  /* not enough room for at least one byte of data? do nothing
+   * if the SDU does not fit whole, it goes as a segment, whose header can be
+   * bigger: with a 12-bit SN a whole SDU has a 1-byte header, its first
+   * segment a 2-byte one (38.322 6.2.2.3) */
+  int sent_header_size = pdu_header_size;
+  if (pdu_header_size + sdu->size > size) {
+    int is_last = sdu->is_last;
+    sdu->is_last = 0;
+    sent_header_size = compute_pdu_header_size(entity, sdu);
+    sdu->is_last = is_last;
+  }
+  if (sent_header_size + 1 > size)
     return 0;
 
   entity->tx_list = entity->tx_list->next;
