@@ -149,6 +149,15 @@ fi
 if [ "$failed" = 0 ]; then
   echo "$project: PASS"
 else
+  # Enough of the logs to see why, in the job's own output (OUT_DIR holds them whole).
+  for name in "${amber[@]}"; do
+    echo "---- $name (last 20 lines) ----"
+    docker logs "$name" 2>&1 | tail -20 || true
+  done
+  for name in rfsim5g-oai-gnb rfsim5g-oai-nr-ue; do
+    echo "---- $name, A-IoT lines (last 30) ----"
+    docker logs "$name" 2>&1 | grep -i 'a-iot\|aiot\|amber' | tail -30 || true
+  done
   echo "$project: FAIL" >&2
 fi
 exit "$failed"
