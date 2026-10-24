@@ -11,8 +11,9 @@
  *               next paging (5.5.3). Each frame: a CBRA paging offering 2^occasions_exp access
  *               occasions and its Access Triggers, every Msg1 answered with a Random ID Response
  *               that assigns an AS ID and brings that Tag's data; then an R2D Upper Layer Data
- *               Transfer to every registered AS ID (Received Data Size 0), which asks that Tag
- *               alone for data.
+ *               Transfer to every AS ID given so far (Received Data Size 0), which asks that Tag
+ *               alone for data. An AS ID is polled from the Random ID Response that gave it, also
+ *               when the data it brought was lost: the Tag has joined and answers only a poll.
  * broadcast     Each frame: a CBRA paging with a new Transaction ID, so every Tag answers again,
  *               offering 2^occasions_exp access occasions over the paging and its Access Triggers;
  *               every Msg1 decoded is answered, which brings that Tag's data.
@@ -133,8 +134,11 @@ static int registration_step(void *state,
     return 1;
   }
   if (!s->polling) {
-    for (int k = 0; h2 && k < h2->n_answers; k++) {
-      const int as_id = h2->answers[k].as_id;
+    /* every AS ID the Random ID Response gave, heard back or not: a Tag whose data after it was
+     * lost keeps its AS ID and ignores the pagings that follow, so only a poll reaches it */
+    for (int k = 0; h2 && k < h2->sent.n_entries; k++) {
+      const aiot_mac_rid_entry_t *e = &h2->sent.entries[k];
+      const int as_id = e->assigned_as_id >= 0 ? e->assigned_as_id : e->echoed_random_id;
       int known = 0;
       for (int r = 0; r < s->n_registered && !known; r++)
         known = s->registered[r] == as_id;
