@@ -1,25 +1,55 @@
 name: oai-amber image
 
-# Started by hand (Actions > oai-amber image > Run workflow). Builds three images from one commit:
-#   - oai-amber: amber-reader, amber-tag, rfsim_hub and Amber's current dev branch
-#     (docker/Dockerfile.amber.ubuntu);
-#   - oai-gnb and oai-nr-ue: this branch's gNB and UE (docker/Dockerfile.{base,build,gNB,nrUE}.ubuntu),
-#     which the 5G rooms need for dl_prbblacklist, PRACH at 5.76 Msps and the A-IoT Reader.
-# It runs two seeded TOML scenarios in docker compose and compares their CSV files with amber.run
-# (adaptive_aloha and gen2_q; registration is what every room runs),
-# runs each checked-in 5G room (ci-scripts/yaml_files/5g_rfsimulator_aiot*) with the three images
-# (docker/scripts/aiot_check_room.sh), then, on aiot-rfsim only, publishes all three as
-# ghcr.io/<owner>/<image>:<commit> and :latest. A room then runs from the published images with
-#   REGISTRY=ghcr.io/<owner>/ TAG=<commit> AMBER_IMG=ghcr.io/<owner>/oai-amber:<commit> docker compose up -d
+# Builds oai-amber (amber-reader, amber-tag, rfsim_hub and Amber's dev branch, from
+# docker/Dockerfile.amber.ubuntu), checks it, runs every checked-in 5G room with it, and only then
+# publishes it. The gNB and UE images come from the oai-gnb and oai-nr-ue workflow
+# (oai-5g-images.yml); this workflow pulls them and never builds them.
+#
+#   scripts    bash -n and shellcheck on the scripts the images and rooms use
+#   build      the oai-amber image, from the GitHub Actions layer cache
+#   scenarios  two seeded Amber scenarios in docker compose, compared with amber.run
+#   gnb-ue     which oai-gnb and oai-nr-ue to run the rooms with: :<oai_5g_tag> when the oai-gnb
+#              and oai-nr-ue workflow started this run, :latest otherwise
+#   rooms      each room in ci-scripts/yaml_files/5g_rfsimulator_aiot* with those three images
+#              (docker/scripts/aiot_check_room.sh)
+#   publish    on aiot-rfsim, once the rooms pass: oai-amber as :<commit> and :latest, and the gNB
+#              and UE the rooms ran with as :latest
+#
+# A pull request runs everything but publish. A room then runs from the published images with
+#   REGISTRY=ghcr.io/<owner>/ TAG=latest AMBER_IMG=ghcr.io/<owner>/oai-amber:latest docker compose up -d
 
 on:
+  push:
+    branches: [aiot-rfsim]
+    paths:
+      - 'docker/Dockerfile.amber.ubuntu'
+      - 'docker/scripts/amber_*'
+      - 'docker/scripts/aiot_check_room.sh'
+      - 'ci-scripts/yaml_files/5g_rfsimulator_aiot*/**'
+      - 'ci-scripts/conf_files/**'
+      - '.github/workflows/amber-image.yml'
+  pull_request:
+    branches: [aiot-rfsim]
+    paths:
+      - 'docker/Dockerfile.amber.ubuntu'
+      - 'docker/scripts/amber_*'
+      - 'docker/scripts/aiot_check_room.sh'
+      - 'ci-scripts/yaml_files/5g_rfsimulator_aiot*/**'
+      - 'ci-scripts/conf_files/**'
+      - '.github/workflows/amber-image.yml'
   workflow_dispatch:
+    inputs:
+      oai_5g_tag:
+        description: oai-gnb and oai-nr-ue tag to run the rooms with (the oai-gnb and oai-nr-ue workflow passes its commit)
+        default: latest
 
 permissions:
   contents: read
 
+# A run the oai-gnb and oai-nr-ue workflow started has a group of its own, so a push to aiot-rfsim
+# does not cancel the run that would move the gNB and UE to :latest.
 concurrency:
-  group: amber-image-${{ github.ref }}
+  group: amber-image-${{ github.ref }}-${{ inputs.oai_5g_tag || 'latest' }}
   cancel-in-progress: true
 
 jobs:
@@ -75,43 +105,6 @@ jobs:
           path: ${{ runner.temp }}/oai-amber.tar
           retention-days: 1
 
-  # The gNB and the UE, built as docker/README.md builds them. The build image takes OAI's whole
-  # build, so this job takes about an hour and a half. OAI targets the build machine's CPU
-  # (-march=native); -march=x86-64-v3 (AVX2, no AVX-512) instead lets the images run on any x86 host
-  # that runs oai-amber. That flag replaces the build image's -Werror, which a C_FLAGS given here
-  # overrides.
-  build-5g:
-    needs: scripts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 300
-    steps:
-      - uses: actions/checkout@v7
-      - name: Free disk space for the build images
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          docker system prune --all --force
-          df -h /
-      - name: Build ran-base, ran-build, oai-gnb and oai-nr-ue
-        env:
-          DOCKER_BUILDKIT: "1"
-        run: |
-          owner=${GITHUB_REPOSITORY_OWNER,,}
-          tag=${GITHUB_SHA::8}
-          docker build --target ran-base --tag ran-base:latest --file docker/Dockerfile.base.ubuntu .
-          docker build --target ran-build --tag ran-build:latest --file docker/Dockerfile.build.ubuntu \
-            --build-arg BUILD_OPTION="--cmake-opt -DCMAKE_C_FLAGS=-march=x86-64-v3 --cmake-opt -DCMAKE_CXX_FLAGS=-march=x86-64-v3" .
-          docker build --target oai-gnb --tag "ghcr.io/$owner/oai-gnb:$tag" --file docker/Dockerfile.gNB.ubuntu \
-            --label org.opencontainers.image.revision="$GITHUB_SHA" .
-          docker build --target oai-nr-ue --tag "ghcr.io/$owner/oai-nr-ue:$tag" --file docker/Dockerfile.nrUE.ubuntu \
-            --label org.opencontainers.image.revision="$GITHUB_SHA" .
-          docker image ls
-          docker save --output "$RUNNER_TEMP/oai-5g.tar" "ghcr.io/$owner/oai-gnb:$tag" "ghcr.io/$owner/oai-nr-ue:$tag"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: oai-5g
-          path: ${{ runner.temp }}/oai-5g.tar
-          retention-days: 1
-
   scenarios:
     needs: build
     runs-on: ubuntu-24.04
@@ -132,12 +125,48 @@ jobs:
       - name: Run the scenario in containers and compare with amber.run
         run: docker/scripts/amber_check_image.sh "${{ needs.build.outputs.image }}" "${{ matrix.scenario }}"
 
-  # Each checked-in 5G room with the three images: every Tag heard, the cell without errors, a ping
-  # through, and each room's own check (see aiot_check_room.sh). The records and logs are kept as
-  # an artifact, pass or fail.
-  rooms:
-    needs: [build, build-5g]
+  gnb-ue:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      tag: ${{ steps.find.outputs.tag }}
+      found: ${{ steps.find.outputs.found }}
+    steps:
+      - name: Find oai-gnb and oai-nr-ue
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.oai_5g_tag || 'latest' }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          for name in oai-gnb oai-nr-ue; do
+            if ! docker manifest inspect "$registry/$name:$TAG" > /dev/null 2>&1; then
+              if [ "$TAG" != latest ]; then
+                echo "$registry/$name:$TAG does not exist" >&2
+                exit 1
+              fi
+              # Only before the oai-gnb and oai-nr-ue workflow has published anything.
+              echo "::warning::$registry/$name:latest does not exist yet: the rooms do not run and nothing is published. Run the oai-gnb and oai-nr-ue workflow."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+  # Each checked-in 5G room: every Tag heard, the cell without errors, a ping through, and each
+  # room's own check (see aiot_check_room.sh). The records and logs are kept as an artifact, pass
+  # or fail.
+  rooms:
+    needs: [build, gnb-ue]
+    if: needs.gnb-ue.outputs.found == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -155,21 +184,22 @@ jobs:
         with:
           name: oai-amber
           path: ${{ runner.temp }}
-      - uses: actions/download-artifact@v8
-        with:
-          name: oai-5g
-          path: ${{ runner.temp }}
-      - name: Load the images
+      - name: Get the images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.gnb-ue.outputs.tag }}
         run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
+          docker pull "$registry/oai-gnb:$TAG"
+          docker pull "$registry/oai-nr-ue:$TAG"
           docker load --input "$RUNNER_TEMP/oai-amber.tar"
-          docker load --input "$RUNNER_TEMP/oai-5g.tar"
       - name: Run the room and check it
         env:
-          REGISTRY: ghcr.io/${{ github.repository_owner }}/
-          TAG: ${{ needs.build.outputs.tag }}
+          TAG: ${{ needs.gnb-ue.outputs.tag }}
           AMBER_IMG: ${{ needs.build.outputs.image }}
         run: |
-          export REGISTRY=${REGISTRY,,}
+          export REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/
           docker/scripts/aiot_check_room.sh "ci-scripts/yaml_files/${{ matrix.room }}" "$RUNNER_TEMP/room"
       - uses: actions/upload-artifact@v7
         if: always()
@@ -178,9 +208,10 @@ jobs:
           path: ${{ runner.temp }}/room
           retention-days: 14
 
+  # Nothing is published unless every room passed with these images.
   publish:
-    needs: [build, build-5g, scenarios, rooms]
-    if: github.ref == 'refs/heads/aiot-rfsim'
+    needs: [build, scenarios, gnb-ue, rooms]
+    if: github.ref == 'refs/heads/aiot-rfsim' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -190,23 +221,21 @@ jobs:
         with:
           name: oai-amber
           path: ${{ runner.temp }}
-      - uses: actions/download-artifact@v8
-        with:
-          name: oai-5g
-          path: ${{ runner.temp }}
-      - name: Push to ghcr.io
+      - name: Push oai-amber, and move the gNB and UE to :latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AMBER: ${{ needs.build.outputs.image }}
+          TAG: ${{ needs.build.outputs.tag }}
+          OAI_5G_TAG: ${{ needs.gnb-ue.outputs.tag }}
         run: |
-          docker load --input "$RUNNER_TEMP/oai-amber.tar"
-          docker load --input "$RUNNER_TEMP/oai-5g.tar"
-          amber=${{ needs.build.outputs.image }}
-          registry=${amber%/oai-amber:*}
-          tag=${{ needs.build.outputs.tag }}
+          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for name in oai-amber oai-gnb oai-nr-ue; do
-            image="$registry/$name:$tag"
-            docker push "$image"
-            docker tag "$image" "$registry/$name:latest"
-            docker push "$registry/$name:latest"
-          done
+          docker load --input "$RUNNER_TEMP/oai-amber.tar"
+          docker push "$AMBER"
+          docker tag "$AMBER" "$registry/oai-amber:latest"
+          docker push "$registry/oai-amber:latest"
+          if [ "$OAI_5G_TAG" != latest ]; then
+            for name in oai-gnb oai-nr-ue; do
+              docker buildx imagetools create --tag "$registry/$name:latest" "$registry/$name:$OAI_5G_TAG"
+            done
+          fi
