@@ -119,4 +119,7 @@ receiver missed no sample.
 * Only the CW node's carrier is built. A carrier from the UE itself (`cw = "ue-ul"`, case 2-2) needs
   the UE to cancel its own carrier in its D2R receiver.
 * The Tags' data stays in the UE. The same room with the UE sending it to the gNB is
-  [topology 2](../5g_rfsimulator_aiot_t2/README.md).
+  [topology 2](../5g_rfsimulator_aiot_t2/README.md), and with the gNB running the MAC and the UE
+  only sending the R2D or receiving the D2R, topology 3:
+  [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md) and
+  [5g_rfsimulator_aiot_t3a](../5g_rfsimulator_aiot_t3a/README.md).
