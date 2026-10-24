@@ -317,18 +317,59 @@ TEST(Reader, RegistrationGivesEveryNodeAnAsIdAndPollsIt)
 }
 
 // The data a Tag sends after its Random ID Response is lost (a collision, a fade, or a split
-// Reader's window given up). The Tag keeps its AS ID and ignores later pagings of the same
-// Transaction ID, so the Reader must poll the AS IDs it gave, not only those it heard.
-TEST(Reader, RegistrationPollsATagWhoseFirstDataWasLost)
+// Reader's window given up). The Tag keeps its AS ID and would ignore the later pagings of the run's
+// one Transaction ID (38.391 5.2). The Reader NACKs the AS IDs whose data it did not hear: the Tag
+// releases its AS ID, finds its procedure failed (5.5.2) and joins again at the next paging.
+TEST(Reader, RegistrationNacksATagWhoseFirstDataWasLost)
 {
   Air air("registration", {{"occasions_exp", 3}}, 6);
   air.lose_ridr = 1;
   air.run(120);
   EXPECT_EQ(air.lose_ridr, 0);
   EXPECT_EQ(air.unmatched, 0);
+
+  /* right after the first Random ID Response, a NACK Feedback with every AS ID it gave */
+  size_t first = 0;
+  while (first < air.heard.size() && air.heard[first]->sent.kind != AIOT_R2D_RANDOM_ID_RESPONSE)
+    first++;
+  ASSERT_LT(first + 1, air.heard.size());
+  const aiot_mac_r2d_msg_t &ridr = air.heard[first]->sent;
+  const aiot_mac_r2d_msg_t &nack = air.heard[first + 1]->sent;
+  ASSERT_EQ(nack.kind, AIOT_R2D_NACK_FEEDBACK);
+  ASSERT_EQ(nack.n_as_ids, ridr.n_entries);
+  std::set<int> nacked;
+  for (int i = 0; i < nack.n_as_ids; i++) {
+    EXPECT_EQ(nack.as_ids[i], ridr.entries[i].assigned_as_id);
+    nacked.insert(nack.as_ids[i]);
+  }
+
+  /* every node joined again and sent data; no poll goes to an AS ID that was NACKed, and every
+   * poll is answered */
   const std::vector<int> from = air.data_from();
-  for (auto &n : air.nodes)
+  for (auto &n : air.nodes) {
     EXPECT_NE(std::find(from.begin(), from.end(), n->id), from.end()) << "no data from node " << n->id;
+    aiot_device_state_t st;
+    aiot_device_state(n->mac, &st);
+    EXPECT_GE(st.as_id, 1);
+    EXPECT_EQ(nacked.count(st.as_id), 0u);
+  }
+  int polls = 0;
+  for (auto &h : air.heard)
+    if (h->sent.kind == AIOT_R2D_UPPER_LAYER_DATA) {
+      polls++;
+      EXPECT_EQ(nacked.count(h->sent.as_id), 0u);
+      EXPECT_EQ(h->n_answers, 1);
+    }
+  EXPECT_GT(polls, 6);
+}
+
+// Every Tag's data is heard: no NACK Feedback is sent.
+TEST(Reader, RegistrationSendsNoNackWhenEveryDataIsHeard)
+{
+  Air air("registration", {{"occasions_exp", 3}}, 6);
+  air.run(80);
+  for (auto &h : air.heard)
+    EXPECT_NE(h->sent.kind, AIOT_R2D_NACK_FEEDBACK);
 }
 
 TEST(Reader, Gen2QKeepsItsTable)

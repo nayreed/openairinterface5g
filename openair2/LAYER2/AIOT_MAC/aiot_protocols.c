@@ -11,9 +11,12 @@
  *               next paging (5.5.3). Each frame: a CBRA paging offering 2^occasions_exp access
  *               occasions and its Access Triggers, every Msg1 answered with a Random ID Response
  *               that assigns an AS ID and brings that Tag's data; then an R2D Upper Layer Data
- *               Transfer to every AS ID given so far (Received Data Size 0), which asks that Tag
- *               alone for data. An AS ID is polled from the Random ID Response that gave it, also
- *               when the data it brought was lost: the Tag has joined and answers only a poll.
+ *               Transfer to every registered AS ID (Received Data Size 0), which asks that Tag
+ *               alone for data. A Tag is registered once its data after the Random ID Response is
+ *               heard. The AS IDs whose data was not heard get a NACK Feedback right after that
+ *               Random ID Response: the Tag releases its AS ID and finds its procedure failed
+ *               (5.5.2), so it joins again at the next paging instead of waiting for a poll that
+ *               never comes.
  * broadcast     Each frame: a CBRA paging with a new Transaction ID, so every Tag answers again,
  *               offering 2^occasions_exp access occasions over the paging and its Access Triggers;
  *               every Msg1 decoded is answered, which brings that Tag's data.
@@ -94,12 +97,21 @@ static int within(const char *name, double v, double lo, double hi, char *err, i
 #define MAX_REGISTERED 1000
 
 typedef struct {
-  int started, polling;
+  int started, polling, nacked;
   aiot_sched_info_t sched;
   int tid, i, n;
   int n_registered, j;
   int registered[MAX_REGISTERED];
 } registration_t;
+
+static void registration_add(registration_t *s, int as_id)
+{
+  for (int r = 0; r < s->n_registered; r++)
+    if (s->registered[r] == as_id)
+      return;
+  if (s->n_registered < MAX_REGISTERED)
+    s->registered[s->n_registered++] = as_id;
+}
 
 static int registration_check(const double *p, char *err, int err_len)
 {
@@ -134,16 +146,29 @@ static int registration_step(void *state,
     return 1;
   }
   if (!s->polling) {
-    /* every AS ID the Random ID Response gave, heard back or not: a Tag whose data after it was
-     * lost keeps its AS ID and ignores the pagings that follow, so only a poll reaches it */
-    for (int k = 0; h2 && k < h2->sent.n_entries; k++) {
-      const aiot_mac_rid_entry_t *e = &h2->sent.entries[k];
-      const int as_id = e->assigned_as_id >= 0 ? e->assigned_as_id : e->echoed_random_id;
-      int known = 0;
-      for (int r = 0; r < s->n_registered && !known; r++)
-        known = s->registered[r] == as_id;
-      if (!known && s->n_registered < MAX_REGISTERED)
-        s->registered[s->n_registered++] = as_id;
+    if (s->nacked) {
+      s->nacked = 0; /* the NACK Feedback brings nothing back */
+    } else if (h2) {
+      /* A Tag whose data was heard has joined. One whose data was lost has its AS ID too and
+       * would ignore the pagings that follow (38.391 5.2): NACK it, so that it releases the AS ID
+       * and finds its procedure failed (5.5.2), and joins again at the next paging. */
+      aiot_policy_msg_t nack = {.msg.kind = AIOT_R2D_NACK_FEEDBACK};
+      for (int k = 0; k < h2->sent.n_entries; k++) {
+        const aiot_mac_rid_entry_t *e = &h2->sent.entries[k];
+        const int as_id = e->assigned_as_id >= 0 ? e->assigned_as_id : e->echoed_random_id;
+        int heard = 0;
+        for (int a = 0; a < h2->n_answers && !heard; a++)
+          heard = h2->answers[a].kind == AIOT_ANSWER_DATA && h2->answers[a].as_id == as_id;
+        if (heard)
+          registration_add(s, as_id);
+        else if (nack.msg.n_as_ids < AIOT_MAC_MAX_NACK_IDS)
+          nack.msg.as_ids[nack.msg.n_as_ids++] = as_id;
+      }
+      if (nack.msg.n_as_ids > 0) {
+        *next = nack;
+        s->nacked = 1;
+        return 1;
+      }
     }
     if (++s->i < s->n) {
       registration_join(s, p, next);
