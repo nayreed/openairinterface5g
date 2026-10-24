@@ -574,6 +574,62 @@ These modes of operation are supported:
 
 For detailed implementation status, encoding/decoding support, and unit test coverage, see [5G NAS Implementation Documentation](5Gnas.md).
 
+## OpenAirInterface Ambient IoT Feature Set
+
+Rel-19 Ambient IoT (A-IoT): a gNB or a UE reads A-IoT devices (Tags) in the air of its 5G cell. The
+[physical layer README](../openair1/PHY/AIOT/README.md) has the options and the tests, and
+[the rooms' README](../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md) how to run them.
+
+### A-IoT PHY
+
+* TS 38.291 V19.3.0, as a C library with no OAI context (`aiot_phy`, also `libaiot_phy.so`)
+* R2D, Reader to device (§6.2): OFDM transmitter, M = 2, 6, 12 or 24 chips per symbol, on the PRBs
+  M needs or more, as samples or as resource elements of a node's own grid; the device's envelope
+  detector
+* D2R, device to Reader (§6.1): the device's backscatter frame (T_bit, R_SFS, repetition, preamble
+  and CP options of 38.391), the Reader's receiver with optional successive interference cancellation
+* CRC, tail-biting convolutional code and block repetition (clause 8)
+* gNB: R2D in DL PRBs the scheduler leaves free (`dl_prbblacklist`), optionally with the carrier the
+  devices reflect; D2R receiver on UL PRBs it leaves free (`ul_prbblacklist`); FDD, or TDD in DL slots
+* UE: R2D in UL PRBs, through its own TX procedure and OFDM; D2R receiver on its DL receive stream
+* Link-level simulator `aiot_sim`: R2D detection against SNR, D2R BLER against received power, and a
+  check at the sensitivity points of TS 38.191 and TS 38.194
+
+### A-IoT MAC
+
+* TS 38.391 V19.0.0: packer and parser of every R2D and D2R message and of the D2R scheduling
+  information
+* The Reader and the device MAC, with the registration, broadcast, unicast, gen2_q and
+  adaptive_aloha protocols
+* The Reader in the gNB or in the UE, on the node's R2D and D2R, with Amber's records
+  (`reader_tx.csv`, `reader_rx.csv`)
+* Tag data: each message the Reader hears, in one UDP datagram to a destination, such as the
+  network's end of a UE's user plane
+* A split Reader: the gNB runs the MAC, and a UE sends its R2D or receives its D2R, told what and
+  when over the UE's user plane
+
+### A-IoT topologies
+
+The four topologies of the Rel-19 study, each with an RFsimulator room under `ci-scripts/yaml_files`
+that `amber-compose` writes from an Amber scenario, and the image build checks:
+
+| Topology | R2D | D2R | MAC | Carrier | Room |
+|:--|:--|:--|:--|:--|:--|
+| 1 | gNB | gNB | gNB | gNB DL, or a CW node in the UL band | `5g_rfsimulator_aiot_t1`, `5g_rfsimulator_aiot_t1_cw_ul` |
+| 2 | UE | UE | UE, data to the gNB | a CW node in the UL band | `5g_rfsimulator_aiot_t2` |
+| 3 | UE or gNB | gNB or UE | gNB | a CW node in the UL band | `5g_rfsimulator_aiot_t3b`, `5g_rfsimulator_aiot_t3a` |
+| 4 | UE | UE | UE | a CW node in the UL band | `5g_rfsimulator_aiot_t4` |
+
+Not supported:
+
+* A carrier from the Reader's own UL (cases 1-2 and 2-2), which needs the node to cancel its own
+  carrier in its D2R receiver
+* A second receiver in the UE's UL band: in the rooms the UE receives the D2R in the guard band of
+  its DL
+* A Reader in a gNB with an nFAPI split
+* The A-IoT functions of the core network: Tag data goes over plain UDP on the UE's default bearer
+* Tested over the RFsimulator (`rfsim_hub`) only
+
 ## Radio and Fronthaul Support
 
 * O-RAN 7.2 fronthaul (O-DU), see [FHI 7.2 tutorial](ORAN_FHI7.2_Tutorial.md)

@@ -6,8 +6,8 @@
  * \brief One shared air for several rfsim nodes.
  *
  * Every node (gNB, UE, Reader, Tag, ...) is a normal rfsim client of the hub, on its own port. Each
- * receiver gets the sum of the transmitters linked to it. A link has a gain, a delay and a
- * frequency shift. Nodes without a link between them do not hear each other.
+ * receiver gets the sum of the transmitters linked to it. A link has a gain, a delay, a frequency
+ * shift and, if set, a pass band. Nodes without a link between them do not hear each other.
  *
  * The room (hub_room_*) holds what each node has sent and mixes what each node receives. It does
  * no I/O, so it can be tested on its own. hub_serve() connects it to the nodes' sockets.
@@ -26,6 +26,10 @@ extern "C" {
 #endif
 
 #define HUB_NAME_LEN 32
+/// A link's pass band is a linear-phase FIR of 2 HUB_PASS_HALF + 1 taps (Kaiser window, 60 dB). Its
+/// edges fall from full gain to 60 dB down over about sample rate / 53, centred on each edge, and it
+/// adds no delay: the receiver waits for HUB_PASS_HALF more samples of the transmitter instead.
+#define HUB_PASS_HALF 96
 
 typedef struct {
   char name[HUB_NAME_LEN];
@@ -49,6 +53,10 @@ typedef struct {
   int64_t delay;
   /// the transmitter's signal lands this far from the receiver's centre frequency
   double shift_Hz;
+  /// only the band pass_width_Hz wide around pass_Hz, measured like shift_Hz from the receiver's
+  /// centre, reaches the receiver (see HUB_PASS_HALF); 0: the whole band
+  double pass_Hz;
+  double pass_width_Hz;
 } hub_link_conf_t;
 
 typedef struct {

@@ -320,6 +320,15 @@ void ue_srs_procedures_nr(PHY_VARS_NR_UE *ue,
                         // is a problem
 }
 
+void nr_ue_aiot_r2d_take(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_tx_t *phy_data)
+{
+  // a slot with PRACH sends no OFDM: an R2D across it is dropped
+  if (ue->prach_vars[proc->gNB_id]->active)
+    return;
+  nr_aiot_r2d_set_slot_time(&ue->aiot_r2d, proc->frame_tx, proc->nr_slot_tx, proc->timestamp_tx);
+  nr_aiot_r2d_take(&ue->aiot_r2d, proc->frame_tx, proc->nr_slot_tx, &phy_data->aiot_r2d);
+}
+
 void phy_procedures_nrUE_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_tx_t *phy_data, c16_t **txp)
 {
   const int slot_tx = proc->nr_slot_tx;
@@ -355,6 +364,9 @@ void phy_procedures_nrUE_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, n
   // Don't do OFDM Mod if txdata contains prach
   const NR_UE_PRACH *prach_var = ue->prach_vars[proc->gNB_id];
   if (!prach_var->active) {
+    // Ambient IoT R2D, last, on PRBs no NR channel uses (first antenna); the modulator rotates it
+    nr_aiot_r2d_put(&ue->aiot_r2d, &phy_data->aiot_r2d, txdataF[0], NULL, was_symbol_used);
+
     start_meas_nr_ue_phy(ue, OFDM_MOD_STATS);
     nr_tx_rotation_and_ofdm_mod(proc->nr_slot_tx,
                                 &ue->frame_parms,

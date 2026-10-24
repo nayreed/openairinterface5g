@@ -15,10 +15,14 @@
  * so its first symbol has the long CP (l0 = 0), which the device relies on to find its symbols.
  *
  * Receiver (an implementation choice, not specified by 3GPP): the device squares the signal (its
- * envelope detector), finds the SIP by correlating the envelope with the SIP's shape, reads M from
- * the CAP (§7.2.1), decides each Manchester bit by comparing its two chips' energy, and stops at
- * the postamble, "on, on" at a bit boundary, which Manchester data never has. Sums run in a fixed
- * order and the first maximum wins, so the same samples always give the same decisions. */
+ * envelope detector), finds the SIP by correlating the envelope with the SIP's shape, and takes its
+ * threshold half way between the SIP's on and off levels, as the comparator of an RF envelope
+ * detector takes it from the start indicator. It reads M from the CAP (§7.2.1), decides each
+ * Manchester bit by comparing its two chips' energy, and stops at the postamble, "on, on" at a bit
+ * boundary, which Manchester data never has. No step compares levels as a ratio, so a steady
+ * carrier from another node under the R2D only adds its own noise (38.191 §8.4.3 measures the
+ * device's sensitivity with the carrier on). Sums run in a fixed order and the first maximum wins,
+ * so the same samples always give the same decisions. */
 
 #include <math.h>
 #include <stdlib.h>
@@ -262,7 +266,7 @@ int aiot_r2d_transmission(const uint8_t *tb_bits, int a_bits, int m_chip_symb, i
 
 #define DECIM 6 /* the SIP search runs on the envelope averaged over 6 samples */
 #define SIP_SHAPE_MIN 0.8 /* normalized correlation needed to accept a SIP */
-#define SIP_CONTRAST_MIN 4.0 /* on/off energy ratio of the SIP needed to accept it (6 dB) */
+#define SIP_MARGIN 0.25 /* how far each SIP chip must be from the threshold, as a share of the on-off gap */
 #define SIP_LEN (2 * AIOT_N_FFT + AIOT_CP_LONG + AIOT_CP_SHORT) /* the SIP's two symbols with their CPs */
 #define TMPL_DEC (SIP_LEN / DECIM)
 #define MAX_BITS (8 * AIOT_MAX_TBS_BYTES + 16 + 8) /* the largest R2D TB and its CRC, plus one byte */
@@ -517,7 +521,14 @@ static int find_sip(aiot_r2d_rx_t *rx, int *start_out, double *on_out, double *o
     }
     on /= n_on;
     off /= n_off;
-    if (on > SIP_CONTRAST_MIN * (off > 1e-300 ? off : 1e-300)) {
+    /* The threshold is half way between the SIP's on and off levels, as a device's comparator
+     * takes it from the start indicator. A steady carrier from another node under the R2D raises
+     * both levels alike and changes nothing. Every chip must fall on its side, clear of it. */
+    const double thr = 0.5 * (on + off), gap = on - off;
+    int clear = gap > 0.0;
+    for (int c = 0; c < AIOT_N_SIP && clear; c++)
+      clear = SIP[c] ? lev[c] > thr + SIP_MARGIN * gap : lev[c] < thr - SIP_MARGIN * gap;
+    if (clear) {
       *start_out = (int)best;
       *on_out = on;
       *off_out = off;

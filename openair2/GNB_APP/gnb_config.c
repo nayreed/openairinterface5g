@@ -61,6 +61,7 @@
 #include "positioning_nr_paramdef.h"
 #include "f1ap_cu_task.h"
 #include "openair3/NRPPA/nrppa_gNB_config.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_config.h"
 
 static int DEFBANDS[] = {7};
 static int DEFENBS[] = {0};
@@ -859,47 +860,24 @@ void RCconfig_NR_L1(void)
                   MACRLC_BF_METHOD " \"das\" is not supported with a split L1, the beam indices come from the VNF\n");
       if (gNB->enable_analog_das)
         LOG_I(NR_PHY, "L1 configured for a distributed antenna system (DAS)\n");
-      gNB->aiot_r2d_cfg = (nr_aiot_r2d_config_t){.prb_start = *gpd(params, np, L1_AIOT_R2D_PRB_START)->iptr,
-                                                 .n_rb_max = *gpd(params, np, L1_AIOT_R2D_N_RB)->iptr,
-                                                 .power_offset_db = *gpd(params, np, L1_AIOT_R2D_POWER_OFFSET_DB)->dblptr,
-                                                 .carrier = *gpd(params, np, L1_AIOT_R2D_CARRIER)->iptr};
+      // the Ambient IoT R2D and D2R of the "aiot" section; the schedulers must leave their PRBs alone
+      // (with an nFAPI PNF, the VNF's file must blacklist them too: this checks only the file this L1 reads)
+      nr_aiot_config_phy(&gNB->aiot_r2d_cfg, &gNB->aiot_d2r_cfg);
       if (gNB->aiot_r2d_cfg.prb_start >= 0) {
-        AssertFatal(gNB->aiot_r2d_cfg.n_rb_max >= 1,
-                    "%s is set but %s is %d: give the R2D at least one PRB\n",
-                    L1_AIOT_R2D_PRB_START,
-                    L1_AIOT_R2D_N_RB,
-                    gNB->aiot_r2d_cfg.n_rb_max);
-        /* the DL scheduler must leave the R2D's PRBs alone (with an nFAPI PNF, the VNF's file must
-         * blacklist them too: this checks only the file this L1 reads) */
         uint16_t dlprbbl[MAX_BWP_SIZE] = {0};
         get_prb_blacklist(dlprbbl, GNB_DLPRBBLACKLIST_IDX);
         for (int rb = gNB->aiot_r2d_cfg.prb_start; rb < gNB->aiot_r2d_cfg.prb_start + gNB->aiot_r2d_cfg.n_rb_max; rb++)
-          AssertFatal(rb >= 0 && rb < MAX_BWP_SIZE && dlprbbl[rb],
-                      "A-IoT R2D PRB %d (%s, %s) is not in gNBs.[0].dl_prbblacklist\n",
-                      rb,
-                      L1_AIOT_R2D_PRB_START,
-                      L1_AIOT_R2D_N_RB);
+          AssertFatal(rb < MAX_BWP_SIZE && dlprbbl[rb],
+                      "A-IoT R2D PRB %d (aiot.r2d_prb_start, aiot.r2d_n_rb) is not in gNBs.[0].dl_prbblacklist\n",
+                      rb);
       }
-      gNB->aiot_d2r_cfg = (nr_aiot_d2r_config_t){.prb_start = *gpd(params, np, L1_AIOT_D2R_PRB_START)->iptr,
-                                                 .n_rb = *gpd(params, np, L1_AIOT_D2R_N_RB)->iptr,
-                                                 .noise_counts = *gpd(params, np, L1_AIOT_D2R_NOISE_COUNTS)->dblptr,
-                                                 .enable_sic = *gpd(params, np, L1_AIOT_D2R_SIC)->iptr};
       if (gNB->aiot_d2r_cfg.prb_start >= 0) {
-        AssertFatal(gNB->aiot_d2r_cfg.n_rb >= 1,
-                    "%s is set but %s is %d: give the D2R at least one PRB\n",
-                    L1_AIOT_D2R_PRB_START,
-                    L1_AIOT_D2R_N_RB,
-                    gNB->aiot_d2r_cfg.n_rb);
-        /* no UE may send in the D2R's PRBs (with an nFAPI PNF, the VNF's file must blacklist them
-         * too: this checks only the file this L1 reads) */
         uint16_t ulprbbl[MAX_BWP_SIZE] = {0};
         get_prb_blacklist(ulprbbl, GNB_ULPRBBLACKLIST_IDX);
         for (int rb = gNB->aiot_d2r_cfg.prb_start; rb < gNB->aiot_d2r_cfg.prb_start + gNB->aiot_d2r_cfg.n_rb; rb++)
-          AssertFatal(rb >= 0 && rb < MAX_BWP_SIZE && ulprbbl[rb],
-                      "A-IoT D2R PRB %d (%s, %s) is not in gNBs.[0].ul_prbblacklist\n",
-                      rb,
-                      L1_AIOT_D2R_PRB_START,
-                      L1_AIOT_D2R_N_RB);
+          AssertFatal(rb < MAX_BWP_SIZE && ulprbbl[rb],
+                      "A-IoT D2R PRB %d (aiot.d2r_prb_start, aiot.d2r_n_rb) is not in gNBs.[0].ul_prbblacklist\n",
+                      rb);
       }
       // Midhaul configuration
       if (strcmp(*gpd(params, np, L1_TRANSPORT_N_PREFERENCE)->strptr, "local_mac") == 0) {

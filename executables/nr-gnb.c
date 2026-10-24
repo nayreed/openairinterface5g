@@ -42,7 +42,7 @@
 #include "thread-pool.h"
 #include "time_meas.h"
 #include "utils.h"
-#include "LAYER2/NR_MAC_gNB/nr_aiot_reader.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_config.h"
 
 #define TICK_TO_US(ts) (ts.trials==0?0:ts.diff/ts.trials)
 #define L1STATSSTRLEN 16384
@@ -97,6 +97,8 @@ static void tx_func(processingData_L1tx_t *info)
   if (tx_slot_type == NR_DOWNLINK_SLOT || tx_slot_type == NR_MIXED_SLOT) {
     START_MEAS_FULL_SLOT(&info->gNB->phy_proc_tx, tx_slot_type, NR_DOWNLINK_SLOT);
     START_MEAS_FULL_SLOT(&info->gNB->gnb_tx_procedures_stats, tx_slot_type, NR_DOWNLINK_SLOT);
+    // the time of this slot, which the Ambient IoT Reader plans its R2D on
+    nr_aiot_r2d_set_slot_time(&gNB->aiot_r2d, frame_tx, slot_tx, info->timestamp_tx);
     phy_procedures_gNB_TX(info->gNB, &sched_response.DL_req, &sched_response.TX_req, &sched_response.UL_dci_req, frame_tx,slot_tx);
     STOP_MEAS_FULL_SLOT(&info->gNB->gnb_tx_procedures_stats, tx_slot_type, NR_DOWNLINK_SLOT);
 

@@ -99,9 +99,10 @@ struct Air {
     for (size_t t = 0; t < x.size(); t++)
       x[t] += std::polar(amp, 2 * M_PI * hz * std::fmod((double)(ts0 + (int64_t)t), fs) / fs);
   }
-  // A UE's uplink: QPSK on every subcarrier of the PRBs outside 15-21, as 384-point OFDM at
-  // 5.76 Msps with a 27-sample CP, scaled to rms counts.
-  void AddUplink(std::mt19937_64 &gen, double rms)
+  // An NR carrier (a UE's uplink at the gNB, the gNB's downlink at a UE): QPSK on every subcarrier
+  // of its PRBs outside the D2R's, as 384-point OFDM at 5.76 Msps with a 27-sample CP, scaled to rms
+  // counts.
+  void AddNr(std::mt19937_64 &gen, double rms, const nr_aiot_d2r_config_t &d2r = kRoom)
   {
     const int n = AIOT_N_FFT, cp = AIOT_CP_SHORT;
     std::vector<std::complex<double>> sym(n), td(n);
@@ -109,7 +110,7 @@ struct Air {
     for (size_t at = 0; at < x.size(); at += n + cp) {
       std::fill(sym.begin(), sym.end(), 0.0);
       for (int k = 0; k < 12 * kPrb; k++) {
-        if (k >= 12 * 15 && k < 12 * 22)
+        if (k >= 12 * d2r.prb_start && k < 12 * (d2r.prb_start + d2r.n_rb))
           continue;
         int bin = ((k - 6 * kPrb) % n + n) % n;
         sym[bin] = std::complex<double>((gen() & 1) ? 1 : -1, (gen() & 1) ? 1 : -1);
@@ -187,7 +188,7 @@ TEST(NrAiotD2R, TheD2RIsAtTheCentreOfItsPrbs)
 TEST(NrAiotD2R, RefusesWhatDoesNotFit)
 {
   EXPECT_FALSE(Make({-1, 7, 1.0, 1}));
-  EXPECT_FALSE(Make({20, 6, 1.0, 1})); // PRB 25 is past the carrier
+  EXPECT_FALSE(Make({26, 7, 1.0, 1})); // PRB 32 is past the 32 PRBs that 5.76 Msps samples
   EXPECT_FALSE(Make({15, 0, 1.0, 1}));
   EXPECT_FALSE(Make({15, 7, 0.0, 1}));
   EXPECT_FALSE(Make(kRoom, 7680000)); // 25 PRBs without three-quarter sampling
@@ -247,13 +248,40 @@ TEST(NrAiotD2R, DecodesBesideTheUeUplink)
     Band band(a0, 9000 + aiot_frame_samples(64, &p) + 2 * kSlot, 0.0);
     band.Add(start, tb, p, kTagCounts, -1.0);
     Air air(band, 1);
-    air.AddUplink(gen, kTagCounts * std::sqrt(0.5) * 10); // the D2R's power is |amp|^2 / 2
+    air.AddNr(gen, kTagCounts * std::sqrt(0.5) * 10); // the D2R's power is |amp|^2 / 2
     D2rPtr d = Make();
     const aiot_d2r_expect_t e = Expect(start - 100, 200, 64, p, {1, 2, 4, 8});
     ASSERT_EQ(nr_aiot_d2r_expect(d.get(), &e), 0);
     auto got = FeedAll(d.get(), air.ts0, air.Counts(gen), kSlot);
     ASSERT_EQ(got.size(), 1u);
     ExpectDecoded(got[0], tb, start, r);
+  }
+}
+
+// The 7 PRBs of guard band that 5.76 Msps holds above the 25 PRBs of the carrier, wrapping round
+// below them (PRBs 25 to 31, centred at 2.88 MHz), with no NR PRB to give up: a UE receives the D2R
+// there in the room, the gNB's downlink 20 dB above it on every PRB of the carrier.
+TEST(NrAiotD2R, DecodesInTheGuardBand)
+{
+  std::mt19937_64 gen(8);
+  const nr_aiot_d2r_config_t guard = {25, 7, 1.0, 1};
+  const double shift_hz = AIOT_SAMPLE_RATE_HZ / 2;
+  ASSERT_TRUE(Make(guard));
+  EXPECT_EQ(nr_aiot_d2r_shift_hz(Make(guard).get()), shift_hz);
+  for (int r : {1, 8}) {
+    const aiot_d2r_params_t p = Params(r);
+    const auto tb = RandomBits(gen, 64);
+    const int64_t a0 = 11 * kSlot, start = a0 + 7000;
+    Band band(a0, 7000 + aiot_frame_samples(64, &p) + 2 * kSlot, 0.3);
+    band.Add(start, tb, p, kTagCounts, 0.5);
+    Air air(band, 1, shift_hz);
+    air.AddNr(gen, kTagCounts * std::sqrt(0.5) * 10, guard);
+    D2rPtr d = Make(guard);
+    const aiot_d2r_expect_t e = Expect(start - 100, 200, 64, p, {1, 2, 4, 8});
+    ASSERT_EQ(nr_aiot_d2r_expect(d.get(), &e), 0);
+    auto got = FeedAll(d.get(), air.ts0, air.Counts(gen), kSlot);
+    ASSERT_EQ(got.size(), 1u);
+    ExpectDecoded(got[0], tb, start, r, 1); // the start within a sample, with the carrier on both sides
   }
 }
 
@@ -403,6 +431,83 @@ TEST(NrAiotD2R, TheWorkerDecodesTheSame)
     if (wait) {
       EXPECT_EQ(nr_aiot_d2r_stats(d.get()).overruns, 0u);
     }
+  }
+}
+
+// A UE pushes every read of its radio (nrue_ru_read()), and its reads are not the slots: the
+// initial sync reads two frames at once; then each slot is read from its second symbol to the next
+// slot's first, the last slot of a frame in two reads (to the frame's end, then the next frame's
+// first symbol), and the UE shortens or lengthens that read to follow its timing drift. The radio's
+// timestamps stay unbroken across all of them, and the D2R receiver loses none of their samples.
+TEST(NrAiotD2R, LosesNoSampleOfTheUesReads)
+{
+  std::mt19937_64 gen(7);
+  const int kFrame = 10 * kSlot, kFirstSymbol = AIOT_N_FFT + AIOT_CP_LONG;
+  const aiot_d2r_params_t p = Params(2);
+  const int len = aiot_frame_samples(40, &p);
+  // one D2R inside the sync's read, one over the end of the frame after it
+  const int64_t a0 = 1000 * (int64_t)kFrame, start[2] = {a0 + kFrame + 2000, a0 + 3 * kFrame - len / 2};
+  std::vector<uint8_t> tb[2];
+  Band band(a0, 4 * kFrame, 0.4);
+  for (int i = 0; i < 2; i++) {
+    tb[i] = RandomBits(gen, 40);
+    band.Add(start[i], tb[i], p, kTagCounts, 0.9);
+  }
+  const std::vector<c16_t> c = Air(band, 1).Counts(gen);
+
+  std::vector<int> reads = {2 * kFrame, kFirstSymbol}; // the sync, then the first symbol of slot 0
+  const int shifts[] = {3, -2};
+  int64_t at = 2 * kFrame + kFirstSymbol;
+  for (int f = 0; at < (int64_t)c.size(); f++)
+    for (int slot = 0; slot < 10 && at < (int64_t)c.size(); slot++) {
+      std::vector<int> r = {kSlot};
+      if (slot == 9)
+        r = {kSlot - kFirstSymbol - shifts[f % 2], kFirstSymbol};
+      for (int n : r) {
+        n = (int)std::min<int64_t>(n, (int64_t)c.size() - at);
+        reads.push_back(n);
+        at += n;
+      }
+    }
+
+  D2rPtr d = Make();
+  ASSERT_EQ(nr_aiot_d2r_start(d.get(), 4, kSlot, 1), 0);
+  for (int64_t at : start) {
+    const aiot_d2r_expect_t e = Expect(at - 80, 160, 40, p, {2});
+    ASSERT_EQ(nr_aiot_d2r_expect(d.get(), &e), 0);
+  }
+  int64_t ts = a0;
+  for (int n : reads) {
+    ASSERT_EQ(nr_aiot_d2r_push(d.get(), ts, c.data() + (ts - a0), n), 0);
+    ts += n;
+  }
+  ASSERT_EQ(ts, a0 + (int64_t)c.size());
+  nr_aiot_d2r_drain(d.get());
+  auto got = Pop(d.get());
+  ASSERT_EQ(got.size(), 2u);
+  for (int i = 0; i < 2; i++)
+    ExpectDecoded(got[i], tb[i], start[i], 2);
+  const nr_aiot_d2r_stats_t st = nr_aiot_d2r_stats(d.get());
+  EXPECT_EQ(st.zero_filled, 0u);
+  EXPECT_EQ(st.overruns, 0u);
+  EXPECT_EQ(st.late, 0u);
+  EXPECT_EQ(nr_aiot_d2r_received_until(d.get()), a0 + (int64_t)c.size());
+}
+
+// A Reader in another node opens windows in cell time: the receiver counts on from the time of the
+// slot the node read last, the nearer way round the 1024 frames.
+TEST(NrAiotD2R, MapsCellTimeOntoItsOwnSamples)
+{
+  for (int64_t fs : {5760000LL, 11520000LL}) {
+    auto d = Make(kRoom, fs);
+    ASSERT_TRUE(d);
+    const int64_t per = fs / 1000; // radio samples a slot
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 0, 0, 0), -1); // no slot read yet
+    nr_aiot_d2r_set_slot_time(d.get(), 1023, 9, 7 * per);
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 1023, 9, 0), 7 * 5760);
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 0, 0, 10), 8 * 5760 + 10); // across the wrap
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 1023, 8, 5759), 7 * 5760 - 1); // a slot back
+    EXPECT_EQ(nr_aiot_d2r_cell_time(d.get(), 12, 3, 0), (7 + 124) * 5760);
   }
 }
 

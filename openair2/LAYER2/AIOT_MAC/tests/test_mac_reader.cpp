@@ -419,6 +419,7 @@ TEST(Reader, ManualSendsWhatIsPushed)
   EXPECT_EQ(air.unmatched, 0);
   ASSERT_GE(air.heard.size(), 2u);
   EXPECT_EQ(air.heard[1]->sent.kind, AIOT_R2D_PAGING_CBRA);
-  if (air.heard.size() > 2)
+  if (air.heard.size() > 2) {
     EXPECT_EQ(air.heard[2]->sent.kind, AIOT_R2D_RANDOM_ID_RESPONSE);
+  }
 }

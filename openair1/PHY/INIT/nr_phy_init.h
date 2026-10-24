@@ -12,6 +12,9 @@
 int nr_get_ssb_start_symbol(const NR_DL_FRAME_PARMS *fp, uint8_t i_ssb);
 int init_nr_ue_signal(PHY_VARS_NR_UE *ue,int nb_connected_eNB);
 void term_nr_ue_signal(PHY_VARS_NR_UE *ue);
+/* The slots the UE can send an Ambient IoT R2D in, from its configuration: those whose symbols are all
+ * uplink (every slot with FDD), and none before the UE has its configuration. */
+void nr_ue_aiot_r2d_set_tx_slots(PHY_VARS_NR_UE *ue);
 void init_nr_ue_transport(PHY_VARS_NR_UE *ue);
 void init_phy_nr_measurements(PHY_VARS_NR_UE *ue);
 void phy_init_nr_gNB(PHY_VARS_gNB *gNB);

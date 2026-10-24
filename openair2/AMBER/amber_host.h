@@ -26,6 +26,7 @@ typedef struct {
   char *output_dir; ///< directory the session writes its CSV logs to
   int block_bytes; ///< size of one message block, a multiple of sizeof(c16_t)
   int node_id; ///< node this program runs (amber-tag only)
+  char *role; ///< what amber-reader runs: "reader", the scenario's Reader, or "carrier", only its carrier node
 } amber_params_t;
 
 typedef struct {
@@ -37,7 +38,8 @@ typedef struct {
 
 typedef struct amber_session_s amber_session_t;
 
-/*! \brief Read the "amber" configuration section; with_node_id also requires amber.node_id */
+/*! \brief Read the "amber" configuration section: for amber-tag (with_node_id) amber.node_id, which it
+ * requires, else amber.role */
 void amber_read_params(amber_params_t *params, bool with_node_id);
 
 /*! \brief Load the rfsimulator device for one antenna, sized so one block is one millisecond,
@@ -55,7 +57,9 @@ void amber_radio_write(amber_radio_t *radio, openair0_timestamp_t ts, int flags)
 
 void amber_radio_stop(amber_radio_t *radio);
 
-/*! \brief Start Python and create the Reader's session (amber.session.ReaderSession) */
+/*! \brief Start Python and create amber-reader's session, as params->role says: the Reader's
+ * (amber.session.ReaderSession) or a carrier node's (amber.session.CarrierSession), which sends only
+ * the carrier, for a room whose carrier comes from a node of its own */
 amber_session_t *amber_session_create_reader(const amber_params_t *params);
 
 /*! \brief Start Python and create a Tag's session (amber.session.TagSession) */

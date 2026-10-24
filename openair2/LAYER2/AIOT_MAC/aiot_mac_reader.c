@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "aiot_node_msg.h"
 #include "aiot_protocols.h"
 
 #define MAX_EXPECTS 16
@@ -501,6 +502,7 @@ int aiot_mac_struct_size(const char *type)
       {"aiot_device_upper_t", sizeof(aiot_device_upper_t)},
       {"aiot_device_send_t", sizeof(aiot_device_send_t)},
       {"aiot_device_state_t", sizeof(aiot_device_state_t)},
+      {"aiot_tag_data_t", sizeof(aiot_tag_data_t)},
   };
   for (size_t i = 0; type && i < sizeof(sizes) / sizeof(sizes[0]); i++)
     if (!strcmp(sizes[i].name, type))

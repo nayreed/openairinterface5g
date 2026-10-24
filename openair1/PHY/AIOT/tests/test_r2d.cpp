@@ -81,6 +81,16 @@ void AddNoise(std::vector<cd_t> &y, double noise_w, std::mt19937 &gen)
   }
 }
 
+// A carrier from another node: an unbroken tone power_db above an "on" chip, offset_hz from the R2D.
+void AddCarrier(std::vector<cd_t> &y, double power_db, double offset_hz)
+{
+  const double a = std::pow(10.0, power_db / 20), w = 2 * M_PI * offset_hz / AIOT_SAMPLE_RATE_HZ;
+  for (size_t n = 0; n < y.size(); n++) {
+    y[n].r += a * std::cos(w * (double)n);
+    y[n].i += a * std::sin(w * (double)n);
+  }
+}
+
 } // namespace
 
 TEST(R2DTx, Manchester)
@@ -374,6 +384,38 @@ TEST(R2DRx, FindsNothingInNoiseOrWhenOff)
   RxPtr off = NewRx();
   aiot_r2d_rx_set_enabled(off.get(), 0);
   EXPECT_TRUE(Receive(off.get(), frame, AIOT_SAMPLES_PER_MS).empty());
+}
+
+// A carrier from another node under the R2D, as from a CW node in the UL band: the device takes
+// its threshold from the SIP, so at 20 dB SNR it decodes every frame under a carrier as strong as
+// the "on" chips and under one 6 dB stronger, and finds nothing in a carrier and noise alone.
+// 38.191 8.4.3 measures the device's sensitivity with a carrier on, 10 dB above REFSENS.
+TEST(R2DRx, ReceivesUnderACarrierFromAnotherNode)
+{
+  std::mt19937 gen(6);
+  const double kOffsetHz = 1.92e6;
+  for (double carrier_db : {0.0, 6.0}) {
+    std::vector<std::vector<uint8_t>> tbs;
+    std::vector<cd_t> y(2000, cd_t{0, 0});
+    for (int k = 0; k < 4; k++) {
+      tbs.push_back(RandomBits(gen, 96));
+      Place(y, (int)y.size(), tbs.back(), 6, 1);
+      y.resize(y.size() + 3000, cd_t{0, 0});
+    }
+    AddCarrier(y, carrier_db, kOffsetHz);
+    AddNoise(y, std::pow(10.0, -20.0 / 10), gen);
+    RxPtr rx = NewRx();
+    std::vector<aiot_r2d_frame_t> found = Receive(rx.get(), y, AIOT_SAMPLES_PER_MS);
+    ASSERT_EQ(found.size(), tbs.size()) << "carrier " << carrier_db << " dB";
+    for (size_t k = 0; k < tbs.size(); k++)
+      EXPECT_TRUE(std::equal(tbs[k].begin(), tbs[k].end(), found[k].bits)) << "carrier " << carrier_db << " dB, frame " << k;
+  }
+
+  std::vector<cd_t> y(AIOT_SAMPLES_PER_MS * 200, cd_t{0, 0});
+  AddCarrier(y, 20.0, kOffsetHz);
+  AddNoise(y, 1.0, gen);
+  RxPtr rx = NewRx();
+  EXPECT_TRUE(Receive(rx.get(), y, AIOT_SAMPLES_PER_MS).empty());
 }
 
 TEST(R2DRx, RejectsBadArguments)

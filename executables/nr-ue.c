@@ -266,28 +266,6 @@ static uint num_dl_symbols_slot(const fapi_nr_config_request_t *cfg, int nr_slot
   return current_slot->num_dl_ul_symbols_list.num_dl;
 }
 
-static int nr_ue_slot_select(const fapi_nr_config_request_t *cfg, int nr_slot)
-{
-  if (cfg->cell_config.frame_duplex_type == FDD)
-    return NR_UPLINK_SLOT | NR_DOWNLINK_SLOT;
-
-  const fapi_nr_tdd_table_t *tdd_table = &cfg->tdd_table;
-  int rel_slot = nr_slot % tdd_table->tdd_period_in_slots;
-
-  if (tdd_table->max_tdd_periodicity_list == NULL) // this happens before receiving TDD configuration
-    return NR_DOWNLINK_SLOT;
-
-  const fapi_nr_max_tdd_periodicity_t *current_slot = &tdd_table->max_tdd_periodicity_list[rel_slot];
-
-  if (current_slot->num_dl_ul_symbols_list.num_dl == NR_SYMBOLS_PER_SLOT)
-    return NR_DOWNLINK_SLOT;
-
-  if (current_slot->num_dl_ul_symbols_list.num_ul == NR_SYMBOLS_PER_SLOT)
-    return NR_UPLINK_SLOT;
-
-  return NR_MIXED_SLOT;
-}
-
 static void RU_write(nr_rxtx_thread_data_t *rxtxD, bool sl_tx_action, c16_t **txp)
 {
   int writeBlockSize = rxtxD->writeBlockSize;
@@ -460,6 +438,7 @@ void processSlotTX(void *arg)
         UE->if_inst->ul_indication(&ul_indication);
         stop_meas(&UE->ue_ul_indication_stats);
       }
+      nr_ue_aiot_r2d_take(UE, proc, &phy_data);
       dynamic_barrier_join(rxtxD->next_barrier);
 
       phy_procedures_nrUE_TX(UE, proc, &phy_data, txp);
@@ -1115,6 +1094,9 @@ void *UE_thread(void *arg)
     metadata meta = {.slot =  curMsg.proc.nr_slot_rx, .frame =  curMsg.proc.frame_rx};
     UEscopeCopyWithMetadata(UE, ueTimeDomainSamples, rxp[0] - firstSymSamp, sizeof(c16_t), 1, readBlockSize, 0, &meta);
     AssertFatal(readBlockSize == tmp, "read to rf board failed %d", tmp);
+    // the time of this slot, which a Reader in the gNB opens the UE's Ambient IoT D2R windows in
+    if (UE->aiot_d2r)
+      nr_aiot_d2r_set_slot_time(UE->aiot_d2r, curMsg.proc.frame_rx, slot_nr, rx_timestamp - firstSymSamp);
     struct timespec current_time;
     if (clock_gettime(CLOCK_REALTIME, &current_time)) {
       LOG_E(PHY, "clock_gettime failed\n");

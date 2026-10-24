@@ -21,6 +21,8 @@
 #define AMBER_SESSION_MODULE "amber.session"
 #define MS_PER_SECOND 1000
 #define NOT_SET (-1)
+#define ROLE_READER "reader"
+#define ROLE_CARRIER "carrier"
 
 struct amber_session_s {
   PyObject *obj;
@@ -36,11 +38,22 @@ void amber_read_params(amber_params_t *params, bool with_node_id)
     STRINGPARAM("scenario",   "path of the Amber scenario module\n",        0, &params->scenario,    NULL),
     STRINGPARAM("output_dir", "directory for the CSV logs\n",               0, &params->output_dir,  "."),
     INTPARAM("block_bytes",   "bytes per rfsim block (one simulated ms)\n", 0, &params->block_bytes, AMBER_DEFAULT_BLOCK_BYTES),
+  };
+  paramdef_t tag_desc[] = {
     INTPARAM("node_id",       "scenario node run by this amber-tag\n",      0, &params->node_id,     NOT_SET),
   };
+  paramdef_t reader_desc[] = {
+    STRINGPARAM("role",
+                "what amber-reader runs: \"" ROLE_READER "\", the scenario's Reader, or \"" ROLE_CARRIER "\", its carrier node\n",
+                0, &params->role, ROLE_READER),
+  };
   // clang-format on
-  int num = with_node_id ? sizeofArray(desc) : sizeofArray(desc) - 1;
-  int ret = config_get(config_get_if(), desc, num, AMBER_SECTION);
+  params->node_id = NOT_SET;
+  params->role = NULL;
+  int ret = config_get(config_get_if(), desc, sizeofArray(desc), AMBER_SECTION);
+  if (ret >= 0)
+    ret = with_node_id ? config_get(config_get_if(), tag_desc, sizeofArray(tag_desc), AMBER_SECTION)
+                       : config_get(config_get_if(), reader_desc, sizeofArray(reader_desc), AMBER_SECTION);
   AssertFatal(ret >= 0, "cannot read the %s configuration section\n", AMBER_SECTION);
   if (params->scenario == NULL || params->scenario[0] == '\0') {
     LOG_E(UTIL, "set %s.scenario to the scenario module to run\n", AMBER_SECTION);
@@ -52,6 +65,10 @@ void amber_read_params(amber_params_t *params, bool with_node_id)
   }
   if (with_node_id && params->node_id == NOT_SET) {
     LOG_E(UTIL, "set %s.node_id to the scenario node this program runs\n", AMBER_SECTION);
+    exit(EXIT_FAILURE);
+  }
+  if (!with_node_id && strcmp(params->role, ROLE_READER) != 0 && strcmp(params->role, ROLE_CARRIER) != 0) {
+    LOG_E(UTIL, "%s.role is \"%s\": it must be \"" ROLE_READER "\" or \"" ROLE_CARRIER "\"\n", AMBER_SECTION, params->role);
     exit(EXIT_FAILURE);
   }
 }
@@ -159,7 +176,7 @@ amber_session_t *amber_session_create_reader(const amber_params_t *params)
 {
   start_python();
   PyObject *args = Py_BuildValue("(sis)", params->scenario, params->block_bytes, params->output_dir);
-  return session_create(params, "ReaderSession", args);
+  return session_create(params, strcmp(params->role, ROLE_CARRIER) == 0 ? "CarrierSession" : "ReaderSession", args);
 }
 
 amber_session_t *amber_session_create_tag(const amber_params_t *params)

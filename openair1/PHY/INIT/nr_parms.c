@@ -421,6 +421,28 @@ int nr_init_frame_parms_ue(NR_DL_FRAME_PARMS *fp, fapi_nr_config_request_t* conf
   return 0;
 }
 
+int nr_ue_slot_select(const fapi_nr_config_request_t *cfg, int nr_slot)
+{
+  if (cfg->cell_config.frame_duplex_type == FDD)
+    return NR_UPLINK_SLOT | NR_DOWNLINK_SLOT;
+
+  const fapi_nr_tdd_table_t *tdd_table = &cfg->tdd_table;
+  int rel_slot = nr_slot % tdd_table->tdd_period_in_slots;
+
+  if (tdd_table->max_tdd_periodicity_list == NULL) // this happens before receiving TDD configuration
+    return NR_DOWNLINK_SLOT;
+
+  const fapi_nr_max_tdd_periodicity_t *current_slot = &tdd_table->max_tdd_periodicity_list[rel_slot];
+
+  if (current_slot->num_dl_ul_symbols_list.num_dl == NR_SYMBOLS_PER_SLOT)
+    return NR_DOWNLINK_SLOT;
+
+  if (current_slot->num_dl_ul_symbols_list.num_ul == NR_SYMBOLS_PER_SLOT)
+    return NR_UPLINK_SLOT;
+
+  return NR_MIXED_SLOT;
+}
+
 void nr_init_frame_parms_ue_sa(NR_DL_FRAME_PARMS *frame_parms, const nrUE_cell_params_t *cell)
 {
   const uint64_t downlink_frequency = cell->rf_frequency;

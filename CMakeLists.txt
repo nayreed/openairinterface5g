@@ -1036,7 +1036,7 @@ add_library(PHY_NR_NO_AVX_256 ${PHY_NR_SRC})
 target_link_libraries(PHY_NR_NO_AVX_256 PHY_NR_COMMON nr_phy_common_no_avx_256 nr_common nr_aiot_r2d nr_aiot_d2r nr_aiot_reader)
 target_compile_definitions(PHY_NR_NO_AVX_256 PUBLIC USE_128BIT)
 
-target_link_libraries(PHY_NR_UE asn1_nr_rrc_hdrs nr_phy_common nr_common UTIL polar smallblock)
+target_link_libraries(PHY_NR_UE asn1_nr_rrc_hdrs nr_phy_common nr_common UTIL polar smallblock nr_aiot_r2d nr_aiot_d2r nr_aiot_reader)
 
 if (ENABLE_LDPC_CUDA AND LDPC_GPU_BACKEND STREQUAL "HIP")
   # these compile the LDPC_CUDA-guarded pinned-memory paths, which call into the
@@ -1326,6 +1326,7 @@ target_link_libraries(L2_NR PRIVATE ds alg)
 target_link_libraries(L2_NR PRIVATE f1ap f1ap_lib)
 target_link_libraries(L2_NR PRIVATE nfapi_nr_user_lib)
 target_link_libraries(L2_NR PRIVATE nrppa)
+target_link_libraries(L2_NR PRIVATE nr_aiot_config)
 target_include_directories(L2_NR PRIVATE ${F1AP_DIR}/lib)
 if(E2_AGENT)
   target_compile_definitions(L2_NR PRIVATE ${E2AP_VERSION} ${KPM_VERSION} E2_AGENT)
@@ -1819,7 +1820,7 @@ target_link_libraries(nr-softmodem PRIVATE
   time_management softmodem_common nrppa
   -Wl,--end-group dl)
 
-target_link_libraries(nr-softmodem PRIVATE pthread m CONFIG_LIB rt nr_aiot_reader_config)
+target_link_libraries(nr-softmodem PRIVATE pthread m CONFIG_LIB rt nr_aiot_config)
 target_link_libraries(nr-softmodem PRIVATE ${T_LIB})
 target_link_libraries(nr-softmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
 target_link_libraries(nr-softmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
@@ -1891,7 +1892,7 @@ target_link_libraries(nr-uesoftmodem PRIVATE
   time_management softmodem_common
   -Wl,--end-group dl)
 
-target_link_libraries(nr-uesoftmodem PRIVATE pthread m CONFIG_LIB rt nr_ue_phy_meas)
+target_link_libraries(nr-uesoftmodem PRIVATE pthread m CONFIG_LIB rt nr_ue_phy_meas nr_aiot_config)
 target_link_libraries(nr-uesoftmodem PRIVATE ${T_LIB})
 target_link_libraries(nr-uesoftmodem PRIVATE nr_nas lib_uicc usim_lib SECURITY)
 target_link_libraries(nr-uesoftmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)

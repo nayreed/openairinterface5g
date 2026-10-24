@@ -35,26 +35,27 @@ ninja -C build-aiot aiot_phy_shared
 
 A gNB can be the Reader. `openair1/PHY/NR_TRANSPORT/nr_aiot_r2d.c` schedules R2D transmissions and
 writes their resource elements into the gNB's DL grid, on PRBs the DL scheduler leaves empty, after
-the NR channels of each slot. It is set in the gNB's `L1s` section:
+the NR channels of each slot. It is set in the `aiot` section, which the D2R and the Reader below
+share (or with `--aiot.r2d_prb_start 0 ...`):
 
 ```
-L1s = ({ ...
-  aiot_r2d_prb_start = 0;        # first DL PRB of the R2D; -1 (the default): no R2D
-  aiot_r2d_n_rb = 3;             # PRBs reserved for it
-  aiot_r2d_power_offset_dB = 0;  # R2D EPRE over PDSCH EPRE
-  aiot_r2d_carrier = 0;          # 1: the carrier wave too, whenever no R2D is sent
-});
+aiot = { ...
+  r2d_prb_start = 0;             # first DL PRB of the R2D; -1 (the default): no R2D
+  r2d_n_rb = 3;                  # PRBs reserved for it
+  r2d_power_offset_dB = 0;       # R2D EPRE over PDSCH EPRE (a UE: PUSCH)
+  r2d_carrier = 0;               # 1: the carrier wave too, whenever no R2D is sent
+};
 gNBs = ({ ... dl_prbblacklist = "0,1,2"; ... });  # must hold the R2D's PRBs
 ```
 
 The R2D starts at symbol 0 or 7 (a half-subframe) and runs over the next slots without a gap, in
 downlink slots only: with TDD, an R2D that would span an uplink or mixed slot is refused. A
 transmission that misses a slot, or overwrites an NR channel, is logged. The gNB refuses at start an
-`aiot_r2d_power_offset_dB` whose resource elements would not fit 16 bits (about +20 dB on 3 PRBs at
+`r2d_power_offset_dB` whose resource elements would not fit 16 bits (about +20 dB on 3 PRBs at
 the default backoff), so the R2D is never clipped. `ctest -R test_nr_aiot_r2d`
 checks it, down to a device decoding what the gNB's OFDM sends.
 
-With `aiot_r2d_carrier = 1` the gNB also sends the carrier the devices reflect (the "gnb-dl" carrier
+With `r2d_carrier = 1` the gNB also sends the carrier the devices reflect (the "gnb-dl" carrier
 of TR 38.769): every symbol without R2D gets one tone at the centre of the reserved PRBs, as strong
 as an "on" chip of an R2D on all of them, its phase carried over each cyclic prefix so that it runs
 on unbroken from symbol to symbol and slot to slot. The R2D is then the carrier keyed by its chips,
@@ -64,15 +65,15 @@ as from a standalone Reader.
 OFDM, so it works on the time-domain samples of each slot, as the radio delivers them: it moves the
 centre of the D2R PRBs (where the carrier wave and the D2R are) to 0 Hz, brings the samples to the
 A-IoT rate of 5.76 Msps, and runs the D2R receiver over each window the MAC opens. That runs in its
-own thread, as PRACH detection does, so the RU thread only copies the slot. It is set in `L1s` too:
+own thread, as PRACH detection does, so the RU thread only copies the slot. It is set in `aiot` too:
 
 ```
-L1s = ({ ...
-  aiot_d2r_prb_start = 15;       # first UL PRB of the D2R; -1 (the default): no D2R
-  aiot_d2r_n_rb = 7;             # PRBs reserved for it; the carrier wave is at their centre
-  aiot_d2r_noise_counts = 1.0;   # the receiver's noise floor, rms on I and Q, in ADC counts
-  aiot_d2r_sic = 1;              # cancel each decoded D2R and look again
-});
+aiot = { ...
+  d2r_prb_start = 15;            # first UL PRB of the D2R; -1 (the default): no D2R
+  d2r_n_rb = 7;                  # PRBs reserved for it; the carrier wave is at their centre
+  d2r_noise_counts = 1.0;        # the receiver's noise floor, rms on I and Q, in ADC counts
+  d2r_sic = 1;                   # cancel each decoded D2R and look again
+};
 gNBs = ({ ... ul_prbblacklist = "15,16,17,18,19,20,21"; ... });  # must hold the D2R's PRBs
 ```
 
@@ -85,6 +86,50 @@ RFsimulator or a local SDR): with a split RU there are no time-domain samples, a
 The receiver logs its counts every 10 s. `ctest -R test_nr_aiot_d2r` checks it, beside a UE's
 uplink 20 dB above the D2R, and at 23.04 Msps with a tone that would alias onto the D2R.
 
+## In the UE
+
+A UE can send R2D too, in its uplink, from the same `aiot` section (or `--aiot.r2d_prb_start 1 ...`
+on the UE's command line): `r2d_prb_start`, `r2d_n_rb` and `r2d_power_offset_dB`, over the PUSCH EPRE,
+place it in UL PRBs, which the gNB's `ul_prbblacklist` must hold, away from PUCCH and PRACH. The
+section is the first UE's: other UEs in the same process send none.
+
+The UE builds consecutive slots in parallel threads, so it takes each slot's R2D in slot order, in
+`processSlotTX()` before its barrier (`nr_aiot_r2d_take()`), and writes it into the slot's grid after
+PUCCH, in `phy_procedures_nrUE_TX()` (`nr_aiot_r2d_put()`). Its symbols are marked used, so the UE's
+OFDM sends them, with the phase rotation of every resource element. With TDD the R2D goes only in
+slots whose symbols are all uplink. A slot with PRACH sends no OFDM, so an R2D across one is dropped
+and logged. A UE does not send the carrier wave (`r2d_carrier`). `ctest -R test_nr_ue_aiot_r2d`
+checks it through the UE's own TX procedure and OFDM, down to a device decoding what the UE sends,
+with the slots taken in order and sent in any order.
+
+The UE receives D2R in its downlink band, the only band its radio delivers: `d2r_prb_start`,
+`d2r_n_rb`, `d2r_noise_counts` and `d2r_sic` place it there. A real UE would need a second receiver
+in its uplink band, where the carrier and the devices' reflections are; in the room the RFsimulator
+hub moves each device's reflection into the UE's band instead. The D2R can take DL PRBs that the
+gNB's `dl_prbblacklist` holds, but the SSB, the CORESETs and the CSI-RS still use them. So the room
+puts it past the carrier's PRBs, in the guard band the UE's samples hold: at 5.76 Msps, 32 PRBs fit,
+and PRBs 25 to 31 are the 7 above the 25 of the carrier, wrapping round below them, centred at
+2.88 MHz. No NR channel is there, and the cell gives up no PRB.
+
+`nrue_ru_read()` hands every sample the radio delivers to the D2R receiver, whatever the read: the
+initial sync's frames, each slot, and the first symbol of the next frame that the UE reads apart at
+each frame's end. The radio's timestamps run on unbroken across them, also when the UE shortens or
+lengthens a read to follow its timing drift. `ctest -R test_nr_aiot_d2r` decodes two D2Rs pushed in
+the UE's reads and checks that no sample is lost, and decodes a D2R in the guard band with the
+downlink 20 dB above it on every PRB of the carrier.
+
+With `protocol` set in its section the UE is the Reader (topology 4), with the Reader of
+[the MAC](#the-mac) on its R2D and D2R. The UE's own Reader is the only one that schedules its R2D:
+the gNB only keeps the UL PRBs free. The Reader plans each R2D from the radio timestamp of the slot
+the UE mapped last, which carries the UE's timing advance and drift, and opens the D2R windows on the
+timestamps of the UE's reads, the same radio clock. With `data_dest` too, the UE also sends each
+message it hears from a Tag to the network over its own user plane (topology 2; see
+[the MAC](#the-mac)).
+
+With `serve_port` set instead, the UE is the far end of a split Reader whose MAC is in the gNB
+(topology 3, [below](#a-split-reader)): it sends in its UL the R2Ds the gNB gives it, with its
+`r2d_*` PRBs, or opens on its DL receiver the D2R windows the gNB gives it, with its `d2r_*` PRBs.
+
 ## The MAC
 
 `openair2/LAYER2/AIOT_MAC` is the 38.391 MAC, built into the same library: the Reader with its
@@ -92,12 +137,13 @@ protocols (registration, broadcast, unicast, gen2_q, adaptive_aloha) and the dev
 the PHY and the clock (`aiot_mac.h`). `ctest -R test_aiot_mac` runs its tests, with the Reader and its
 protocols against the device MAC over an ideal air.
 
-`openair2/LAYER2/NR_MAC_gNB/nr_aiot_reader.c` makes the gNB the Reader: it runs that MAC on the
-gNB's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D the
-protocol sends next on the first half-subframe the gNB has not sent yet (`lead_slots` ahead, twice
-as many after one that came too late), opens the D2R windows the MAC asks for, and gives the MAC
-their outcomes. It needs both the R2D and the D2R in `L1s`, and is set in the `aiot` section (or
-with `--aiot.protocol registration --aiot.nodes 0-3 ...`):
+`openair2/LAYER2/AIOT_MAC/nr_aiot_reader.c` makes the gNB or the UE the Reader: it runs that MAC on
+the node's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D
+the protocol sends next on the first half-subframe the node has not sent yet (`lead_slots` ahead,
+twice as many after one that came too late), opens the D2R windows the MAC asks for, and gives the
+MAC their outcomes. It needs both the R2D and the D2R, its own or a UE's (see
+[a split Reader](#a-split-reader)), and is set in the same `aiot` section (or with
+`--aiot.protocol registration --aiot.nodes 0-3 ...`):
 
 ```
 aiot = {
@@ -109,6 +155,10 @@ aiot = {
   r_sfs = "1,2,4,8";             # the R_SFS a paging offers
   lead_slots = 2;
   output_dir = "/tmp/aiot";      # reader_tx.csv, reader_rx.csv and the protocol's tables; "": none
+  data_dest = "";                # ipv4:port for each message heard from a Tag, as Tag data; "": none
+  remote_r2d = "";               # a gNB: ipv4:port of the UE that sends its R2D; "": its own
+  remote_d2r = "";               # a gNB: ipv4:port of the UE that receives its D2R; "": its own
+  serve_port = 0;                # a UE: the UDP port it serves a gNB's split Reader on; 0: none
 };
 ```
 
@@ -117,6 +167,50 @@ with Amber's defaults.) The records have the columns of Amber's Reader, so Amber
 and each Tag's data is logged. `ctest -R test_nr_aiot_reader` closes the loop: the gNB's grid, OFDM,
 Tags running the device MAC, and the D2R receiver, under a carrier wave 26 dB above the Tags; with
 registration every Tag registers, and gen2_q reads every Tag.
+
+With `data_dest`, each message the Reader hears from a Tag (a Msg1 or data, each row of
+`reader_rx.csv` but the collisions) also goes there in one UDP datagram of Tag data. A UE that reads
+the Tags gives the network's end of its user plane, and the network has them (topology 2).
+`openair2/LAYER2/AIOT_MAC/aiot_node_msg.h` is the one encoder and decoder of the messages between
+nodes, in the same library, so Amber decodes Tag data with it too (`amber.sink`): 40 bytes and the
+SDU, big-endian, with a sequence number that shows a lost datagram. The socket never blocks the
+Reader: a datagram it cannot take is counted and lost. `ctest -R test_aiot_mac_node_msg` checks the
+layout byte by byte, and `test_nr_aiot_reader` that the datagrams are the rows of `reader_rx.csv`.
+
+### A split Reader
+
+In topology 3 the Reader's MAC stays in the gNB and a UE does half of its radio work: it sends the
+R2D in its UL PRBs (the gNB's `remote_r2d`, which the gNB then has no `r2d_*` PRBs for) or receives
+the D2R in its DL (`remote_d2r`, no `d2r_*` PRBs). The UE listens on `serve_port`
+(`openair2/LAYER2/AIOT_MAC/nr_aiot_peer.h`). The gNB talks to it over its own user plane, in four
+more messages of `aiot_node_msg.h`, one datagram each, and the UE answers to the address each came
+from:
+
+| Message | From | Holds |
+|:--|:--|:--|
+| R2D | gNB | the transport block, M, N_RB, and the frame, slot and symbol to send it in |
+| R2D done | UE | what `nr_aiot_r2d_schedule()` said, and how many slots the UE had in hand |
+| window | gNB | the D2R window the MAC opened, its start as frame, slot and A-IoT sample of the slot |
+| outcome | UE | the window's outcome, each D2R's start counted from the window's start |
+
+Both nodes count time in the cell's frames and slots, which a synced UE follows: an R2D goes in the
+UE's UL slot of that number, which timing advance aligns with the gNB's UL, and a window opens at
+that sample of the UE's DL slot of that number. So the gNB plans every R2D and window on its own TX
+clock, as for its own R2D, which `nr_aiot_r2d` keeps also without R2D PRBs, and the UE turns a time
+of the cell into a sample of its receiver with `nr_aiot_d2r_cell_time()`.
+
+With a remote R2D the gNB plans on as if it had sent each R2D, and opens its own windows. An R2D
+that reaches the UE too late is lost on the air, and the UE says by how many slots: the lead grows by
+those, and 2 more. Until the UE has answered once, the gNB sends one R2D every 100 slots, as the UE
+may not have its user plane yet. With a remote D2R the MAC waits for each window's outcome from the
+UE, and a window whose outcome is not back 200 slots after its end is given up as empty, so the
+protocol goes on. A window that reaches the UE after its start is decoded on what is left, and the
+outcome says how late it was: the lead grows by that, and 2 slots more, as it plans the R2D the
+window follows. The R2Ds and windows sent before the UE first answered count apart, as they waited
+for it. The
+gNB logs the split's delays once a second of the cell: how far ahead each R2D or window reached the
+UE, and how long the answers took. `ctest -R test_nr_aiot_reader` runs both splits with the UE over
+loopback, against the same Tags as the gNB alone.
 
 ## Tests
 
@@ -128,7 +222,8 @@ the formulas of §6.1.3, the frame lengths of the fixed reference channels of 38
 Scheduling Info and the Access Trigger, NACK Feedback and D2R messages against hand-built 38.391
 field layouts (the other R2D messages by packing and parsing), and that each receiver gets back
 what its transmitter sent, in noise and across the parameters the spec allows, and that a device
-decodes the R2D's resource elements wherever a carrier's grid puts them.
+decodes the R2D's resource elements wherever a carrier's grid puts them, and under a carrier wave
+from another node 6 dB above its "on" chips.
 
 Where the specs disagree, the code follows 38.291: for M = 24, 38.194 Annex B.2 lists 8 padding
 chips, while the mapping of 38.291 §6.2.5, which skips the last two chips of every symbol, gives

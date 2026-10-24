@@ -60,9 +60,9 @@ struct Room {
     nodes.push_back(n);
     return static_cast<int>(nodes.size()) - 1;
   }
-  void Link(int tx, int rx, double gain_dB = 0, int64_t delay = 0, double shift_Hz = 0)
+  void Link(int tx, int rx, double gain_dB = 0, int64_t delay = 0, double shift_Hz = 0, double pass_Hz = 0, double width = 0)
   {
-    links.push_back({tx, rx, gain_dB, delay, shift_Hz});
+    links.push_back({tx, rx, gain_dB, delay, shift_Hz, pass_Hz, width});
   }
   hub_room_t *Create(int64_t history = kHistory)
   {
@@ -297,6 +297,93 @@ TEST(HubRoom, ShiftsFrequencyContinuouslyAcrossBlocks)
     }
   }
   hub_room_free(room);
+}
+
+// A tone at hz, phase 0 at sample 0.
+std::complex<double> Tone(double hz, double amp, int64_t t)
+{
+  return std::polar(amp, 2 * M_PI * hz * (double)t / kSampleRate);
+}
+
+// Two tones go in; through the pass band only the one in the band comes out, at its full level and
+// with no delay. The band is where the tones land at the receiver, after the shift.
+TEST(HubRoom, APassBandLetsOnlyItsBandThrough)
+{
+  for (double shift_Hz : {0.0, 100000.0}) {
+    Room r;
+    int tx = r.Node("tx", kQuantum + HUB_PASS_HALF);
+    int rx = r.Node("rx", kQuantum);
+    const double in_hz = 300000, out_hz = -400000, amp = 8000;
+    r.Link(tx, rx, 0, 0, shift_Hz, in_hz + shift_Hz, 200000);
+    r.Link(rx, tx);
+    hub_room_t *room = r.Create();
+    ASSERT_NE(room, nullptr) << r.why;
+    const int64_t len = 8 * kQuantum + HUB_PASS_HALF;
+    std::vector<c16_t> x(len);
+    for (int64_t t = 0; t < len; t++) {
+      const std::complex<double> v = Tone(in_hz, amp, t) + Tone(out_hz, amp, t);
+      x[t] = {(int16_t)std::lround(v.real()), (int16_t)std::lround(v.imag())};
+    }
+    hub_room_write(room, tx, 0, x.data(), len, 0);
+    std::complex<double> leak = 0;
+    int64_t n = 0;
+    for (int64_t start = 0; start + kQuantum <= len - HUB_PASS_HALF; start += kQuantum) {
+      std::vector<c16_t> out = NextBlock(room, rx, start);
+      for (int64_t i = 0; i < kQuantum; i++) {
+        const int64_t t = start + i;
+        if (t < 2 * HUB_PASS_HALF)
+          continue; // the filter's start, over silence before sample 0
+        const std::complex<double> want = Tone(in_hz, amp, t) * std::polar(1.0, 2 * M_PI * shift_Hz * t / kSampleRate);
+        EXPECT_NEAR(out[i].r, want.real(), 4.0) << "sample " << t << ", shift " << shift_Hz;
+        EXPECT_NEAR(out[i].i, want.imag(), 4.0) << "sample " << t << ", shift " << shift_Hz;
+        leak += std::complex<double>(out[i].r, out[i].i) * std::conj(Tone(out_hz + shift_Hz, 1, t));
+        n++;
+      }
+    }
+    EXPECT_LT(20 * std::log10(std::abs(leak) / n / amp), -55) << "the tone out of the band, shift " << shift_Hz;
+    hub_room_free(room);
+  }
+}
+
+// The receiver waits for HUB_PASS_HALF samples more of a transmitter it hears through a pass band,
+// and a cycle through one needs that much more look-ahead.
+TEST(HubRoom, APassBandWaitsForWhatItNeeds)
+{
+  {
+    Room r;
+    int tx = r.Node("tx", kQuantum + HUB_PASS_HALF);
+    int rx = r.Node("rx", kQuantum);
+    r.Link(tx, rx, 0, 0, 0, 0, 100000);
+    r.Link(rx, tx);
+    hub_room_t *room = r.Create();
+    ASSERT_NE(room, nullptr) << r.why;
+    hub_room_write(room, tx, 0, Block(tx, 0, kQuantum).data(), kQuantum, 0);
+    c16_t out[kQuantum];
+    uint64_t ts;
+    EXPECT_FALSE(hub_room_next_block(room, rx, &ts, out));
+    hub_room_write(room, tx, kQuantum, Block(tx, kQuantum, HUB_PASS_HALF).data(), HUB_PASS_HALF, 0);
+    EXPECT_TRUE(hub_room_next_block(room, rx, &ts, out));
+    hub_room_free(room);
+  }
+  for (int64_t extra : {0, HUB_PASS_HALF}) {
+    Room r;
+    int reader = r.Node("reader", kQuantum + extra);
+    int tag = r.Node("tag", 0);
+    r.Link(reader, tag);
+    r.Link(tag, reader, 0, 0, 0, 0, 100000);
+    hub_room_t *room = r.Create();
+    EXPECT_EQ(room != nullptr, extra > 0) << r.why;
+    hub_room_free(room);
+  }
+  for (double width : {-1.0, kSampleRate}) {
+    Room r;
+    int a = r.Node("a", kQuantum);
+    int b = r.Node("b", kQuantum);
+    r.Link(a, b, 0, 0, 0, 0, width);
+    r.Link(b, a);
+    EXPECT_EQ(r.Create(), nullptr);
+    EXPECT_NE(r.why.find("pass band"), std::string::npos) << r.why;
+  }
 }
 
 TEST(HubRoom, AppliesTheSendersGainAndSaturates)

@@ -14,6 +14,9 @@ extern "C" {
 void nr_init_frame_parms(nfapi_nr_config_request_scf_t *config, NR_DL_FRAME_PARMS *frame_parms);
 int nr_init_frame_parms_ue(NR_DL_FRAME_PARMS *frame_parms, fapi_nr_config_request_t *config, uint16_t nr_band);
 void nr_init_frame_parms_ue_sa(NR_DL_FRAME_PARMS *frame_parms, const nrUE_cell_params_t *cell);
+/* The type of a UE's slot nr_slot from its configuration: NR_DOWNLINK_SLOT, NR_UPLINK_SLOT or
+ * NR_MIXED_SLOT (every FDD slot, and a TDD slot with both); downlink before the UE has its TDD table. */
+int nr_ue_slot_select(const fapi_nr_config_request_t *cfg, int nr_slot);
 int nr_init_frame_parms_ue_sl(NR_DL_FRAME_PARMS *fp,
                               sl_nr_phy_config_request_t *config,
                               int threequarter_fs,

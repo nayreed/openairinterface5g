@@ -1193,7 +1193,6 @@ InventoryResult run_inventory(int n_dev, int n_code, std::vector<int> sfs, int x
       }
       if (singles.empty())
         continue;
-      singles.resize(std::min<size_t>(singles.size(), AIOT_MAC_MAX_ID_ENTRIES));
       aiot_mac_r2d_msg_t ridr = r.rid_response(singles, ridr_sched());
       res.r2d_count++;
       for (auto &dv : devs) {

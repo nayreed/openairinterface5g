@@ -96,8 +96,14 @@ COPY docker/scripts/amber_compose.py ./amber-compose
 COPY ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
      ci-scripts/conf_files/nrue.uicc.conf \
      /opt/oai-amber/etc/cells/
-COPY ci-scripts/yaml_files/5g_rfsimulator_aiot/ /tmp/room/
-COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1/ /tmp/room_t1/
+# The checked-in 5G rooms, checked below
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot/ /tmp/rooms/5g_rfsimulator_aiot/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1/ /tmp/rooms/5g_rfsimulator_aiot_t1/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t1_cw_ul/ /tmp/rooms/5g_rfsimulator_aiot_t1_cw_ul/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t2/ /tmp/rooms/5g_rfsimulator_aiot_t2/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t3a/ /tmp/rooms/5g_rfsimulator_aiot_t3a/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t3b/ /tmp/rooms/5g_rfsimulator_aiot_t3b/
+COPY ci-scripts/yaml_files/5g_rfsimulator_aiot_t4/ /tmp/rooms/5g_rfsimulator_aiot_t4/
 
 # Fail here rather than at run time if a library is missing.
 RUN ldconfig && \
@@ -106,14 +112,14 @@ RUN ldconfig && \
     ! ldd amber-reader amber-tag rfsim_hub /usr/local/lib/librfsimulator.so /usr/local/lib/libparams_libconfig.so | grep "not found" && \
     python3 -c "import amber.session" && \
     python3 -c "from amber.phy import aiot; assert aiot.crc([1, 0, 1], 6)" && \
-    echo "---- the checked-in 5G room is what amber-compose writes from its scenario ----" && \
-    mkdir /tmp/new && cp /tmp/room/scenario.toml /tmp/new/ && \
-    amber-compose --image oai-amber:latest /tmp/new/scenario.toml /tmp/new && \
-    diff -r --exclude=README.md /tmp/room /tmp/new && \
-    mkdir /tmp/new_t1 && cp /tmp/room_t1/scenario.toml /tmp/new_t1/ && \
-    amber-compose --image oai-amber:latest /tmp/new_t1/scenario.toml /tmp/new_t1 && \
-    diff -r --exclude=README.md /tmp/room_t1 /tmp/new_t1 && \
-    rm -r /tmp/room /tmp/new /tmp/room_t1 /tmp/new_t1
+    python3 -c "from amber import mac, sink; assert mac.node_msg_type(b'') is None" && \
+    echo "---- each checked-in 5G room is what amber-compose writes from its scenario ----" && \
+    for room in /tmp/rooms/*; do \
+      new=/tmp/new/${room##*/} && mkdir -p "$new" && cp "$room/scenario.toml" "$new/" && \
+      amber-compose --image oai-amber:latest "$new/scenario.toml" "$new" && \
+      diff -r --exclude=README.md "$room" "$new" || exit 1; \
+    done && \
+    rm -r /tmp/rooms /tmp/new
 
 WORKDIR /opt/oai-amber
 # The image amber-compose names in the compose files it writes
