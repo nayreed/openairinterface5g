@@ -5,7 +5,8 @@ name: oai-amber image
 #     (docker/Dockerfile.amber.ubuntu);
 #   - oai-gnb and oai-nr-ue: this branch's gNB and UE (docker/Dockerfile.{base,build,gNB,nrUE}.ubuntu),
 #     which the 5G rooms need for dl_prbblacklist, PRACH at 5.76 Msps and the A-IoT Reader.
-# It runs three seeded TOML scenarios in docker compose and compares their CSV files with amber.run,
+# It runs two seeded TOML scenarios in docker compose and compares their CSV files with amber.run
+# (adaptive_aloha and gen2_q; registration is what every room runs),
 # runs each checked-in 5G room (ci-scripts/yaml_files/5g_rfsimulator_aiot*) with the three images
 # (docker/scripts/aiot_check_room.sh), then, on aiot-rfsim only, publishes all three as
 # ghcr.io/<owner>/<image>:<commit> and :latest. A room then runs from the published images with
@@ -118,7 +119,6 @@ jobs:
       fail-fast: false
       matrix:
         scenario:
-          - /opt/amber/tests/scenarios/registration.toml
           - /opt/amber/tests/scenarios/adaptive_aloha.toml
           - /opt/amber/tests/scenarios/gen2_q.toml
     steps:
