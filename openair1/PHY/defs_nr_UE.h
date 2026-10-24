@@ -571,7 +571,7 @@ typedef struct nr_phy_data_tx_s {
   NR_UE_ULSCH_t ulsch;
   NR_UE_PUCCH pucch_vars;
   NR_UE_SRS srs_vars;
-  nr_aiot_r2d_slot_t aiot_r2d; // the slot's Ambient IoT R2D, taken in slot order
+  nr_aiot_r2d_slot_t *aiot_r2d; // the slot's Ambient IoT R2D, taken in slot order; NULL: none
 
   // Sidelink Rx action decided by MAC
   sl_nr_tx_config_type_enum_t sl_tx_action;

@@ -10,9 +10,9 @@ cell (`cell = "n28-25prb"`). `amber-compose` writes every other file of the fold
 [Another scenario](#another-scenario-any-number-of-tags)):
 
 * `oai-gnb` and `oai-nr-ue`: a 25-PRB, 15 kHz FDD cell in band n28, in `--do-ra --noS1` mode
-  ([runmodem-nrue.md](../../../doc/runmodem-nrue.md)), from `gnb.conf` and `nr-ue.conf`, copies of
+  ([runmodem-nrue.md](../../../doc/runmodem-nrue.md)), from
   [gnb.band28.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf) and
-  [nrue.uicc.conf](../../conf_files/nrue.uicc.conf);
+  [nrue.uicc.conf](../../conf_files/nrue.uicc.conf), which the compose file mounts from `../../conf_files`;
 * `amber-reader` and one `amber-tag<id>` per Tag: an A-IoT Reader and its devices running the
   scenario ([openair2/AMBER](../../../openair2/AMBER/README.md)); as checked in, the four Tags of
   Amber's `registration`;
@@ -131,10 +131,14 @@ The scenario decides how many Tags there are, and everything else. Edit `scenari
 another Amber scenario here, with a `[network]` table naming the cell), then write the folder again:
 
 ```bash
-docker run --rm -v "$PWD:/room" oai-amber:latest amber-compose /room/scenario.toml /room
+docker run --rm -v "$PWD/../..:/ci" oai-amber:latest amber-compose /ci/yaml_files/5g_rfsimulator_aiot/scenario.toml \
+    /ci/yaml_files/5g_rfsimulator_aiot --cells-dir ../../conf_files
 ```
 
-It writes `docker-compose.yaml`, `rfsim_hub.conf`, `gnb.conf` and `nr-ue.conf`: one container and
+(the same in the other `5g_rfsimulator_aiot_*` folders, with their name). It writes
+`docker-compose.yaml` and `rfsim_hub.conf`, and the compose file mounts the cell's files from
+`../../conf_files`. In a folder outside this repository, leave `--cells-dir` out: `amber-compose`
+then copies them in, as `gnb.conf` and `nr-ue.conf`. Either way there is one container and
 one hub node per Tag, with the same gains on every Tag's links. The containers see this folder as
 `/room`. Amber's 12-Tag `gen2_q`, for example, is `tests/scenarios/gen2_q.toml` in Amber with
 `[network]` and `cell = "n28-25prb"` added. The room's network has addresses for 121 Tags, and each

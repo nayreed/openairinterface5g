@@ -19,8 +19,6 @@
 #include "nr-uesoftmodem.h"
 #include "common/config/config_userapi.h"
 #include "nr_phy_common.h"
-#include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
-#include "LAYER2/AIOT_MAC/nr_aiot_peer.h"
 #ifdef LDPC_CUDA
 #include "PHY/gpu_compat.h"
 #include "PHY/gpu_alloc.h"
@@ -274,24 +272,37 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
 
   /* The modulator rotates every resource element of the UE's grid, so the carrier wave's would need a
    * counter-rotation to run on unbroken: not supported. A UE configured without an aiot section (the
-   * simulators) has a zeroed aiot_r2d_cfg: no R2D. */
-  AssertFatal(ue->aiot_r2d_cfg.prb_start < 0 || !ue->aiot_r2d_cfg.carrier,
-              "aiot.r2d_carrier: a UE does not send the carrier wave\n");
+   * simulators) has a zeroed aiot_r2d_cfg (n_rb_max 0): no R2D. */
+  if (ue->aiot_r2d_cfg.prb_start >= 0 && ue->aiot_r2d_cfg.n_rb_max > 0 && ue->aiot_r2d_cfg.carrier) {
+    LOG_E(PHY, "aiot.r2d_carrier: a UE does not send the carrier wave\n");
+    exit(EXIT_FAILURE);
+  }
   /* a PUSCH QPSK resource element is AMP / sqrt(2), as the gNB's PDSCH is TX_AMP / sqrt(2) */
-  AssertFatal(nr_aiot_r2d_init(&ue->aiot_r2d,
-                               &ue->aiot_r2d_cfg,
-                               fp->slots_per_frame,
-                               fp->symbols_per_slot,
-                               fp->ofdm_symbol_size,
-                               fp->N_RB_UL,
-                               AMP)
-                  == 0,
-              "Ambient IoT R2D configuration does not fit the UE's uplink carrier\n");
+  if (nr_aiot_r2d_init(&ue->aiot_r2d_cfg,
+                       fp->slots_per_frame,
+                       fp->symbols_per_slot,
+                       fp->ofdm_symbol_size,
+                       fp->nb_prefix_samples0,
+                       fp->nb_prefix_samples,
+                       fp->N_RB_UL,
+                       AMP,
+                       &ue->aiot_r2d)
+      != 0) {
+    LOG_E(PHY, "Ambient IoT R2D configuration (aiot section) does not fit the UE's uplink carrier\n");
+    exit(EXIT_FAILURE);
+  }
   nr_ue_aiot_r2d_set_tx_slots(ue);
   /* The UE has one receiver, in its DL band: the D2R must reach it there (in the room, the RFsimulator
    * hub moves each device's reflection into the guard band past the carrier's PRBs). nrue_ru_read()
    * hands it every sample. */
   if (ue->aiot_d2r_cfg.prb_start >= 0 && ue->aiot_d2r_cfg.n_rb > 0) {
+    if (ue->aiot_d2r_cfg.prb_start + ue->aiot_d2r_cfg.n_rb > fp->N_RB_DL && !IS_SOFTMODEM_RFSIM)
+      LOG_W(PHY,
+            "Ambient IoT D2R PRBs %d to %d are in the guard band past the carrier's %d PRBs: the RFsimulator delivers it, a "
+            "real radio's anti-alias filter may not\n",
+            ue->aiot_d2r_cfg.prb_start,
+            ue->aiot_d2r_cfg.prb_start + ue->aiot_d2r_cfg.n_rb - 1,
+            fp->N_RB_DL);
     ue->aiot_d2r = nr_aiot_d2r_open(&ue->aiot_d2r_cfg,
                                     fp->N_RB_DL,
                                     fp->subcarrier_spacing,
@@ -299,7 +310,10 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
                                     get_samples_per_slot(0, fp),
                                     IS_SOFTMODEM_RFSIM,
                                     "DL");
-    AssertFatal(ue->aiot_d2r, "Ambient IoT D2R configuration does not fit the UE's downlink carrier\n");
+    if (!ue->aiot_d2r) {
+      LOG_E(PHY, "Ambient IoT D2R configuration (aiot section) does not fit the UE's downlink carrier\n");
+      exit(EXIT_FAILURE);
+    }
   }
 
   return 0;
@@ -318,13 +332,7 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue)
 {
   const NR_DL_FRAME_PARMS* fp = &ue->frame_parms;
   phy_term_nr_top();
-  nr_aiot_reader_free(ue->aiot_reader); /* first: they use the R2D and the D2R */
-  ue->aiot_reader = NULL;
-  nr_aiot_peer_free(ue->aiot_peer);
-  ue->aiot_peer = NULL;
-  nr_aiot_r2d_free(&ue->aiot_r2d);
-  nr_aiot_d2r_free(ue->aiot_d2r);
-  ue->aiot_d2r = NULL;
+  nr_ue_aiot_free(ue);
 
   NR_UE_COMMON* common_vars = &ue->common_vars;
 
@@ -367,15 +375,27 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue)
   sl_ue_free(ue);
 }
 
+void nr_ue_aiot_free(PHY_VARS_NR_UE *ue)
+{
+  nr_aiot_d2r_free(ue->aiot_d2r); /* stops its worker */
+  ue->aiot_d2r = NULL;
+  nr_aiot_r2d_free(&ue->aiot_r2d);
+}
+
+/* An R2D goes only in the UE's slots whose symbols are all uplink. */
+static bool aiot_r2d_sends(const void *ctx, int frame, int slot)
+{
+  const fapi_nr_config_request_t *cfg = ctx;
+  return cfg->cell_config.frame_duplex_type == FDD || nr_ue_slot_select(cfg, slot) == NR_UPLINK_SLOT;
+}
+
 void nr_ue_aiot_r2d_set_tx_slots(PHY_VARS_NR_UE *ue)
 {
-  if (ue->aiot_r2d.slots_per_frame == 0)
+  if (ue->aiot_r2d.slots_per_frame == 0 || ue->aiot_r2d.cfg.prb_start < 0)
     return; /* no R2D, or a configuration before init_nr_ue_signal(), which sets the slots itself */
-  const fapi_nr_config_request_t *cfg = &ue->nrUE_config;
-  uint32_t mask = 0;
-  for (int i = 0; ue->received_config_request && i < NR_AIOT_R2D_TX_SLOT_PERIOD; i++)
-    if (cfg->cell_config.frame_duplex_type == FDD || nr_ue_slot_select(cfg, i % ue->frame_parms.slots_per_frame) == NR_UPLINK_SLOT)
-      mask |= 1u << i;
+  /* before the cell's configuration, no slot is known to be uplink */
+  const uint32_t mask =
+      ue->received_config_request ? nr_aiot_r2d_slot_mask(ue->frame_parms.slots_per_frame, aiot_r2d_sends, &ue->nrUE_config) : 0;
   nr_aiot_r2d_set_tx_slots(&ue->aiot_r2d, mask);
 }
 

@@ -25,6 +25,8 @@
 #include <time.h>
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
+#include "common/utils/utils.h"
+#include "nr_aiot_r2d.h" /* nr_aiot_cell_slot_diff() */
 
 #define FILTER_SPAN 8 /* G = FILTER_SPAN * D radio samples each side */
 #define FILTER_CUTOFF_HZ 1900000.0 /* passes the D2R PRBs, stops what aliases into them */
@@ -32,8 +34,6 @@
 #define ZERO_CHUNK (AIOT_SAMPLES_PER_MS * 10) /* A-IoT samples received at a time across a gap */
 #define STATS_EVERY_S 10 /* the worker logs its counts this often */
 #define D2R_QUEUE_MS 100 /* the worker's room: a real radio's samples are lost if it falls further behind */
-#define CELL_SLOTS_PER_FRAME 10 /* 15 kHz */
-#define CELL_FRAMES 1024
 
 typedef struct {
   c16_t *x;
@@ -77,7 +77,7 @@ struct nr_aiot_d2r {
   int n_out, cap_out;
   int64_t received_until; /* A-IoT clock */
   nr_aiot_d2r_stats_t stats;
-  int clock_slot; /* the slot (frame * 10 + slot) nr_aiot_d2r_set_slot_time() gave last, -1: none */
+  int clock_slot; /* the absolute slot of the cell nr_aiot_d2r_set_slot_time() gave last, -1: none */
   int64_t clock_ts; /* its radio timestamp */
 
   /* the worker */
@@ -547,7 +547,7 @@ nr_aiot_d2r_t *nr_aiot_d2r_open(const nr_aiot_d2r_config_t *cfg,
                                 int scs_hz,
                                 int64_t sample_rate_hz,
                                 int slot_samples,
-                                int wait_when_full,
+                                bool wait_when_full,
                                 const char *band)
 {
   nr_aiot_d2r_t *d = nr_aiot_d2r_new(cfg, n_prb, scs_hz, sample_rate_hz);
@@ -555,7 +555,7 @@ nr_aiot_d2r_t *nr_aiot_d2r_open(const nr_aiot_d2r_config_t *cfg,
     return NULL;
   const int slots = (int)(sample_rate_hz * D2R_QUEUE_MS / 1000 / slot_samples);
   if (nr_aiot_d2r_start(d, slots, slot_samples, wait_when_full) != 0) {
-    LOG_E(NR_PHY, "A-IoT D2R: cannot start the receiver thread\n");
+    LOG_E(NR_PHY, "A-IoT D2R: cannot allocate the receiver's ring of %d slots of %d samples\n", slots, slot_samples);
     nr_aiot_d2r_free(d);
     return NULL;
   }
@@ -598,7 +598,7 @@ int nr_aiot_d2r_push(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
     return AIOT_EINVAL;
   int done = 0;
   do {
-    const int k = n - done < d->max_slot_samples ? n - done : d->max_slot_samples;
+    const int k = cmin(n - done, d->max_slot_samples);
     const int ret = push_piece(d, ts + done, x + done, k);
     if (ret < 0)
       return ret;
@@ -641,7 +641,7 @@ int64_t nr_aiot_d2r_received_until(nr_aiot_d2r_t *d)
 void nr_aiot_d2r_set_slot_time(nr_aiot_d2r_t *d, int frame, int slot, int64_t ts)
 {
   pthread_mutex_lock(&d->lock);
-  d->clock_slot = frame * CELL_SLOTS_PER_FRAME + slot;
+  d->clock_slot = frame * AIOT_CELL_SLOTS_PER_FRAME + slot;
   d->clock_ts = ts;
   pthread_mutex_unlock(&d->lock);
 }
@@ -654,10 +654,7 @@ int64_t nr_aiot_d2r_cell_time(nr_aiot_d2r_t *d, int frame, int slot, int sample)
   pthread_mutex_unlock(&d->lock);
   if (ref < 0)
     return -1;
-  const int wrap = CELL_FRAMES * CELL_SLOTS_PER_FRAME;
-  int k = ((frame * CELL_SLOTS_PER_FRAME + slot - ref) % wrap + wrap) % wrap;
-  if (k > wrap / 2)
-    k -= wrap;
+  const int k = nr_aiot_cell_slot_diff(ref, frame * AIOT_CELL_SLOTS_PER_FRAME + slot);
   return (ts + d->d / 2) / d->d + (int64_t)k * AIOT_SAMPLES_PER_MS + sample;
 }
 

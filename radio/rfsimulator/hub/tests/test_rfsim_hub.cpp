@@ -386,6 +386,34 @@ TEST(HubRoom, APassBandWaitsForWhatItNeeds)
   }
 }
 
+// A link through a pass band weighs less than nothing in the wait around a cycle: a cycle through two
+// of them needs two HUB_PASS_HALF more look-ahead, and one whose sum is below zero is refused too.
+TEST(HubRoom, CountsEveryPassBandOfACycle)
+{
+  for (int64_t extra : {-1, 0}) {
+    Room r;
+    int reader = r.Node("reader", kQuantum + 2 * HUB_PASS_HALF + extra);
+    int tag = r.Node("tag", 0);
+    int other = r.Node("other", 0);
+    r.Link(reader, tag, 0, 0, 0, 0, 100000);
+    r.Link(tag, reader, 0, 0, 0, 0, 100000);
+    r.Link(reader, other, 0, 10); // a heavier first step to the same cycle
+    r.Link(other, tag);
+    r.Link(tag, other, 0, kQuantum);
+    r.Link(other, reader, 0, kQuantum);
+    hub_room_t *room = r.Create();
+    EXPECT_EQ(room != nullptr, extra == 0) << r.why;
+    hub_room_free(room);
+  }
+  Room r;
+  int a = r.Node("a", 0);
+  int b = r.Node("b", 0);
+  r.Link(a, b, 0, 0, 0, 0, 100000);
+  r.Link(b, a, 0, 0, 0, 0, 100000);
+  EXPECT_EQ(r.Create(), nullptr);
+  EXPECT_NE(r.why.find("-" + std::to_string(2 * HUB_PASS_HALF) + " samples"), std::string::npos) << r.why;
+}
+
 TEST(HubRoom, AppliesTheSendersGainAndSaturates)
 {
   Room r;

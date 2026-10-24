@@ -8,41 +8,49 @@
 
 #include "aiot_node_msg.h"
 
+#include <endian.h>
 #include <string.h>
 
 #define HEADER_BYTES 4
 
+/* big-endian fields, at any alignment */
 static void put_u16(uint8_t *p, uint16_t v)
 {
-  p[0] = v >> 8;
-  p[1] = v;
+  v = htobe16(v);
+  memcpy(p, &v, sizeof(v));
 }
 
 static void put_u32(uint8_t *p, uint32_t v)
 {
-  put_u16(p, v >> 16);
-  put_u16(p + 2, v);
+  v = htobe32(v);
+  memcpy(p, &v, sizeof(v));
 }
 
 static void put_u64(uint8_t *p, uint64_t v)
 {
-  put_u32(p, v >> 32);
-  put_u32(p + 4, v);
+  v = htobe64(v);
+  memcpy(p, &v, sizeof(v));
 }
 
 static uint16_t get_u16(const uint8_t *p)
 {
-  return (uint16_t)(p[0] << 8 | p[1]);
+  uint16_t v;
+  memcpy(&v, p, sizeof(v));
+  return be16toh(v);
 }
 
 static uint32_t get_u32(const uint8_t *p)
 {
-  return (uint32_t)get_u16(p) << 16 | get_u16(p + 2);
+  uint32_t v;
+  memcpy(&v, p, sizeof(v));
+  return be32toh(v);
 }
 
 static uint64_t get_u64(const uint8_t *p)
 {
-  return (uint64_t)get_u32(p) << 32 | get_u32(p + 4);
+  uint64_t v;
+  memcpy(&v, p, sizeof(v));
+  return be64toh(v);
 }
 
 static int fits(int v, int lo, int hi)
@@ -135,8 +143,8 @@ int aiot_node_msg_parse_tag_data(const uint8_t *buf, int len, aiot_tag_data_t *m
  * The split Reader's messages
  * ------------------------------------------------------------------------------------------- */
 
-#define CELL_FRAMES 1024
-#define CELL_SLOTS 10 /* a frame's, at 15 kHz */
+#define CELL_FRAMES AIOT_CELL_FRAMES
+#define CELL_SLOTS AIOT_CELL_SLOTS_PER_FRAME
 #define MAX_DECODED (AIOT_MAX_SHIFTS * AIOT_MAX_SIC_ROUNDS)
 #define MAX_D2R_BITS AIOT_MAX_TB_BITS /* aiot_d2r_result_t.bits */
 
@@ -145,19 +153,14 @@ static int packed_bytes(int n_bits)
   return (n_bits + 7) / 8;
 }
 
-/* n bits, one a byte, into (n + 7) / 8 bytes, the first in the top bit */
 static void put_bits(uint8_t *p, const uint8_t *bits, int n)
 {
-  memset(p, 0, packed_bytes(n));
-  for (int i = 0; i < n; i++)
-    if (bits[i])
-      p[i / 8] |= 0x80 >> (i % 8);
+  aiot_pack_bits(bits, n, p);
 }
 
 static void get_bits(const uint8_t *p, uint8_t *bits, int n)
 {
-  for (int i = 0; i < n; i++)
-    bits[i] = (p[i / 8] >> (7 - i % 8)) & 1;
+  aiot_unpack_bits(p, n, bits);
 }
 
 static int is_type(const uint8_t *buf, int len, aiot_node_msg_type_t type, int fixed)
@@ -257,11 +260,19 @@ int aiot_node_msg_pack_window(const aiot_node_window_t *m, uint8_t *buf, int cap
   put_u16(buf + 22, e->a_bits);
   put_u16(buf + 24, p->i_bit);
   const int bytes[] = {p->t_bit_num, p->t_bit_den, p->r_sfs, p->r_block, p->r_code, p->l_amble, p->i_add, p->modulation};
-  for (int i = 0; i < 8; i++)
+  for (int i = 0; i < (int)(sizeof(bytes) / sizeof(bytes[0])); i++)
     buf[26 + i] = bytes[i];
   for (int i = 0; i < e->n_r_sfs; i++)
     buf[AIOT_NODE_WINDOW_FIXED_BYTES + i] = e->r_sfs[i];
   return len;
+}
+
+int aiot_node_msg_window_tag(const uint8_t *buf, int len, int64_t *tag)
+{
+  if (!tag || !is_type(buf, len, AIOT_NODE_MSG_WINDOW, AIOT_NODE_WINDOW_FIXED_BYTES))
+    return AIOT_EINVAL;
+  *tag = (int64_t)get_u64(buf + 4);
+  return 0;
 }
 
 int aiot_node_msg_parse_window(const uint8_t *buf, int len, aiot_node_window_t *m)
@@ -293,7 +304,8 @@ int aiot_node_msg_parse_window(const uint8_t *buf, int len, aiot_node_window_t *
   p->modulation = (aiot_mod_t)buf[33];
   for (int i = 0; i < n; i++)
     e->r_sfs[i] = buf[AIOT_NODE_WINDOW_FIXED_BYTES + i];
-  return 0;
+  /* a window the D2R receiver could not open: its parameters, and a frame longer than a transport block */
+  return aiot_d2r_expect_check(e) == 0 ? 0 : AIOT_EINVAL;
 }
 
 int aiot_node_msg_pack_outcome(const aiot_node_outcome_t *m, uint8_t *buf, int cap)

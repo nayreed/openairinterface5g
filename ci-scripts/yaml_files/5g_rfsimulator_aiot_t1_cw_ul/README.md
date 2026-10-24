@@ -68,6 +68,9 @@ docker logs -f rfsim5g-oai-gnb | grep A-IoT
 
 ## First run, against topology 1 with the gNB's carrier
 
+> These numbers come from a run made before the review fixes (the R2D now gives way to the NR channels in
+> its slot, and a split Reader's lead stops at 64 slots); they have not been measured again since.
+
 Over the scenario's 8 s, with the same Tags. The topology 1 column is a run of that room on the
 same build.
 

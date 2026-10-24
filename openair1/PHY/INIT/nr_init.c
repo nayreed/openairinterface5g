@@ -22,7 +22,6 @@
 #include <math.h>
 #include <complex.h>
 #include "PHY/NR_TRANSPORT/nr_ulsch.h"
-#include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
 #include "PHY/NR_REFSIG/nr_refsig.h"
 #include "PHY/NR_REFSIG/ul_ref_seq_nr.h"
 #include <string.h>
@@ -94,14 +93,10 @@ void reset_active_stats(PHY_VARS_gNB *gNB, int frame)
 }
 
 /* An R2D goes only in slots whose symbols are all downlink. */
-static uint32_t aiot_r2d_tx_slots(const nfapi_nr_config_request_scf_t *cfg, int slots_per_frame)
+static bool aiot_r2d_sends(const void *ctx, int frame, int slot)
 {
-  uint32_t mask = 0;
-  for (int i = 0; i < NR_AIOT_R2D_TX_SLOT_PERIOD; i++)
-    if (cfg->cell_config.frame_duplex_type.value == FDD
-        || nr_slot_select(cfg, i / slots_per_frame, i % slots_per_frame) == NR_DOWNLINK_SLOT)
-      mask |= 1u << i;
-  return mask;
+  const nfapi_nr_config_request_scf_t *cfg = ctx;
+  return cfg->cell_config.frame_duplex_type.value == FDD || nr_slot_select(cfg, frame, slot) == NR_DOWNLINK_SLOT;
 }
 
 void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
@@ -145,17 +140,21 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
   gNB->bad_pucch = 0;
   if (gNB->TX_AMP == 0)
     gNB->TX_AMP = AMP;
-  AssertFatal(nr_aiot_r2d_init(&gNB->aiot_r2d,
-                               &gNB->aiot_r2d_cfg,
-                               fp->slots_per_frame,
-                               fp->symbols_per_slot,
-                               fp->ofdm_symbol_size,
-                               fp->N_RB_DL,
-                               gNB->TX_AMP)
-                  == 0,
-              "Ambient IoT R2D configuration does not fit this cell\n");
+  if (nr_aiot_r2d_init(&gNB->aiot_r2d_cfg,
+                       fp->slots_per_frame,
+                       fp->symbols_per_slot,
+                       fp->ofdm_symbol_size,
+                       fp->nb_prefix_samples0,
+                       fp->nb_prefix_samples,
+                       fp->N_RB_DL,
+                       gNB->TX_AMP,
+                       &gNB->aiot_r2d)
+      != 0) {
+    LOG_E(PHY, "Ambient IoT R2D configuration (aiot section) does not fit this cell\n");
+    exit(EXIT_FAILURE);
+  }
   if (gNB->aiot_r2d.cfg.prb_start >= 0)
-    nr_aiot_r2d_set_tx_slots(&gNB->aiot_r2d, aiot_r2d_tx_slots(&gNB->gNB_config, fp->slots_per_frame));
+    nr_aiot_r2d_set_tx_slots(&gNB->aiot_r2d, nr_aiot_r2d_slot_mask(fp->slots_per_frame, aiot_r2d_sends, &gNB->gNB_config));
   /* a gNB that was not configured from a file (the simulators) has a zeroed aiot_d2r_cfg: no D2R */
   if (gNB->aiot_d2r_cfg.prb_start >= 0 && gNB->aiot_d2r_cfg.n_rb > 0) {
     /* a real radio's slots are lost if the receiver falls behind; the RFsimulator's time waits for it */
@@ -166,7 +165,10 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
                                      get_samples_per_slot(0, fp),
                                      IS_SOFTMODEM_RFSIM,
                                      "UL");
-    AssertFatal(gNB->aiot_d2r, "Ambient IoT D2R configuration does not fit this cell\n");
+    if (!gNB->aiot_d2r) {
+      LOG_E(PHY, "Ambient IoT D2R configuration (aiot section) does not fit this cell\n");
+      exit(EXIT_FAILURE);
+    }
   }
   // ceil(((NB_RB<<1)*3)/32) // 3 RE *2(QPSK)
   nr_generate_modulation_table();
@@ -299,8 +301,7 @@ void phy_free_nr_gNB(PHY_VARS_gNB *gNB)
   free(gNB->pusch_vars);
 
   free_nrLDPC_coding_interface(&gNB->nrLDPC_coding_interface);
-  nr_aiot_reader_free(gNB->aiot_reader); /* first: it uses the R2D and the D2R */
-  gNB->aiot_reader = NULL;
+  /* the A-IoT Reader, which uses them, is freed before by its owner (nr-softmodem) */
   nr_aiot_r2d_free(&gNB->aiot_r2d);
   nr_aiot_d2r_free(gNB->aiot_d2r);
   gNB->aiot_d2r = NULL;

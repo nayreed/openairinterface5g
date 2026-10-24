@@ -99,6 +99,7 @@ extern "C" {
 #define AIOT_NODE_WINDOW_FIXED_BYTES 34 /* a window without its R_SFS list */
 #define AIOT_NODE_OUTCOME_FIXED_BYTES 20 /* an outcome without its D2Rs */
 #define AIOT_NODE_D2R_FIXED_BYTES 15 /* a decoded D2R of an outcome, without its bits */
+#define AIOT_NODE_MAX_WINDOWS 64 /* D2R windows of a split Reader open at a time, at the gNB and at the UE */
 #define AIOT_NODE_SPLIT_MAX_BYTES /* the longest split message: an outcome with every D2R the receiver can decode */ \
   (AIOT_NODE_OUTCOME_FIXED_BYTES + AIOT_MAX_SHIFTS * AIOT_MAX_SIC_ROUNDS * (AIOT_NODE_D2R_FIXED_BYTES + AIOT_MAX_TB_BITS / 8))
 
@@ -169,7 +170,11 @@ int aiot_node_msg_parse_r2d(const uint8_t *buf, int len, aiot_node_r2d_t *m);
 int aiot_node_msg_pack_r2d_done(const aiot_node_r2d_done_t *m, uint8_t *buf, int cap);
 int aiot_node_msg_parse_r2d_done(const uint8_t *buf, int len, aiot_node_r2d_done_t *m);
 int aiot_node_msg_pack_window(const aiot_node_window_t *m, uint8_t *buf, int cap);
+/* A window parses only when the D2R receiver can open it (aiot_d2r_expect_check()). */
 int aiot_node_msg_parse_window(const uint8_t *buf, int len, aiot_node_window_t *m);
+/* The tag of the window message in buf, also when its window does not parse, so that the UE can answer
+ * it at once with an empty outcome. Returns 0, or AIOT_EINVAL when buf is no window message. */
+int aiot_node_msg_window_tag(const uint8_t *buf, int len, int64_t *tag);
 int aiot_node_msg_pack_outcome(const aiot_node_outcome_t *m, uint8_t *buf, int cap);
 int aiot_node_msg_parse_outcome(const uint8_t *buf, int len, aiot_node_outcome_t *m);
 

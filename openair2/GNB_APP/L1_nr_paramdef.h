@@ -41,6 +41,16 @@
 #define HLP_NUM_ARX "Number of antennas per thread for PUSCH channel estimation"
 /* removed, only kept to reject stale config files */
 #define L1_ANALOG_DAS_REMOVED                "enable_das"
+/* moved to the "aiot" section (aiot.r2d_prb_start, ...), only kept to reject stale config files */
+#define L1_AIOT_REMOVED_UNSET                -99999
+#define L1_AIOT_R2D_PRB_START_REMOVED        "aiot_r2d_prb_start"
+#define L1_AIOT_R2D_N_RB_REMOVED             "aiot_r2d_n_rb"
+#define L1_AIOT_R2D_POWER_OFFSET_DB_REMOVED  "aiot_r2d_power_offset_dB"
+#define L1_AIOT_R2D_CARRIER_REMOVED          "aiot_r2d_carrier"
+#define L1_AIOT_D2R_PRB_START_REMOVED        "aiot_d2r_prb_start"
+#define L1_AIOT_D2R_N_RB_REMOVED             "aiot_d2r_n_rb"
+#define L1_AIOT_D2R_NOISE_COUNTS_REMOVED     "aiot_d2r_noise_counts"
+#define L1_AIOT_D2R_SIC_REMOVED              "aiot_d2r_sic"
 
 /*----------------------------------------------------------------------------------------------------------------------------------------------------*/
 /*                                            L1 configuration parameters                                                                             */
@@ -69,6 +79,14 @@
   {L1_PHASE_COMP,                        HLP_L1_PHASE_COMP,PARAMFLAG_BOOL, .uptr=NULL,.defintval=1,               TYPE_UINT,     0},         \
   {L1_NUM_ANTENNAS_PER_THREAD,           HLP_NUM_ARX,0,         .uptr=NULL,           .defintval=1,               TYPE_UINT,     0},         \
   {L1_ANALOG_DAS_REMOVED,                NULL,       0,         .iptr=NULL,           .defintval=-1,              TYPE_INT,      0},         \
+  {L1_AIOT_R2D_PRB_START_REMOVED,        NULL,       0,         .iptr=NULL,           .defintval=L1_AIOT_REMOVED_UNSET, TYPE_INT, 0},      \
+  {L1_AIOT_R2D_N_RB_REMOVED,             NULL,       0,         .iptr=NULL,           .defintval=L1_AIOT_REMOVED_UNSET, TYPE_INT, 0},      \
+  {L1_AIOT_R2D_POWER_OFFSET_DB_REMOVED,  NULL,       0,         .dblptr=NULL,         .defdblval=L1_AIOT_REMOVED_UNSET, TYPE_DOUBLE, 0},   \
+  {L1_AIOT_R2D_CARRIER_REMOVED,          NULL,       0,         .iptr=NULL,           .defintval=L1_AIOT_REMOVED_UNSET, TYPE_INT, 0},      \
+  {L1_AIOT_D2R_PRB_START_REMOVED,        NULL,       0,         .iptr=NULL,           .defintval=L1_AIOT_REMOVED_UNSET, TYPE_INT, 0},      \
+  {L1_AIOT_D2R_N_RB_REMOVED,             NULL,       0,         .iptr=NULL,           .defintval=L1_AIOT_REMOVED_UNSET, TYPE_INT, 0},      \
+  {L1_AIOT_D2R_NOISE_COUNTS_REMOVED,     NULL,       0,         .dblptr=NULL,         .defdblval=L1_AIOT_REMOVED_UNSET, TYPE_DOUBLE, 0},   \
+  {L1_AIOT_D2R_SIC_REMOVED,              NULL,       0,         .iptr=NULL,           .defintval=L1_AIOT_REMOVED_UNSET, TYPE_INT, 0},      \
 }
 // clang-format on
 

@@ -56,6 +56,7 @@ unsigned short config_frames[4] = {2,9,11,13};
 #include "common/utils/LOG/log.h"
 #include "e1ap_messages_types.h"
 #include "executables/softmodem-common.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
 #include "gnb_config.h"
 #include "gnb_paramdef.h"
 #include "intertask_interface.h"
@@ -383,6 +384,8 @@ int stop_L1(module_id_t gnb_id)
   }
 
   for (int inst = 0; inst < RC.nb_nr_L1_inst; inst++) {
+    nr_aiot_reader_free(RC.gNB[inst]->aiot_reader); /* writes what it has left; first: it uses the R2D and the D2R */
+    RC.gNB[inst]->aiot_reader = NULL;
     phy_free_nr_gNB(RC.gNB[inst]);
   }
 

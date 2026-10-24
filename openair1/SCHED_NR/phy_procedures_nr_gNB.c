@@ -427,7 +427,7 @@ void phy_procedures_gNB_TX(PHY_VARS_gNB *gNB,
   // Ambient IoT R2D, last, on PRBs no NR channel uses (first antenna)
   const c16_t *r2d_rotation =
       gNB->phase_comp ? fp->symbol_rotation[0] + (slot % fp->slots_per_subframe) * fp->symbols_per_slot : NULL;
-  nr_aiot_r2d_map(&gNB->aiot_r2d, frame, slot, gNB->common_vars.txdataF[0], r2d_rotation, NULL);
+  nr_aiot_r2d_map(&gNB->aiot_r2d, frame, slot, r2d_rotation, gNB->common_vars.txdataF[0]);
 
   for (int aa = 0; aa < fp->nb_antennas_tx; aa++) {
     T(T_GNB_PHY_DL_OUTPUT_SIGNAL,

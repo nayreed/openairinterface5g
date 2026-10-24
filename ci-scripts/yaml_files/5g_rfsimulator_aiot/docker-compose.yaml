@@ -36,7 +36,7 @@ services:
                 ipv4_address: 192.168.71.140
         devices: [/dev/net/tun:/dev/net/tun]
         volumes:
-            - ./gnb.conf:/opt/oai-gnb/etc/gnb.conf
+            - ../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf:/opt/oai-gnb/etc/gnb.conf
             - rrc.config:/opt/oai-gnb/
         healthcheck:
             test: /bin/bash -c "pgrep nr-softmodem"
@@ -54,7 +54,7 @@ services:
             ASAN_OPTIONS: detect_leaks=0
         devices: [/dev/net/tun:/dev/net/tun]
         volumes:
-            - ./nr-ue.conf:/opt/oai-nr-ue/etc/nr-ue.conf
+            - ../../conf_files/nrue.uicc.conf:/opt/oai-nr-ue/etc/nr-ue.conf
             - rrc.config:/opt/oai-nr-ue/etc/rrc/
         depends_on: [oai-gnb]
         networks:

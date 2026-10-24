@@ -73,13 +73,13 @@ static void read_links(hub_conf_t *conf)
   enum { TX, RX, GAIN, DELAY, SHIFT, PASS, PASS_WIDTH };
   // clang-format off
   paramdef_t desc[] = {
-    [TX]    = STRINGPARAM("tx",      "transmitting node\n",                                     PARAMFLAG_MANDATORY, NULL, NULL),
-    [RX]    = STRINGPARAM("rx",      "receiving node\n",                                        PARAMFLAG_MANDATORY, NULL, NULL),
-    [GAIN]  = DOUBLEPARAM("gain_dB", "gain from tx to rx, in dB\n",                             0,                   NULL, 0.0),
-    [DELAY] = INTPARAM("delay",      "delay from tx to rx, in samples\n",                       0,                   NULL, 0),
-    [SHIFT] = DOUBLEPARAM("shift_Hz", "where tx's signal lands from rx's centre frequency, Hz\n", 0,                   NULL, 0.0),
-    [PASS]  = DOUBLEPARAM("pass_Hz", "centre of the band that reaches rx, from rx's centre frequency, Hz\n", 0,          NULL, 0.0),
-    [PASS_WIDTH] = DOUBLEPARAM("pass_width_Hz", "width of the band that reaches rx, Hz; 0: the whole band\n", 0,       NULL, 0.0),
+    [TX]         = STRINGPARAM("tx",            "transmitting node\n",                                                   PARAMFLAG_MANDATORY, NULL, NULL),
+    [RX]         = STRINGPARAM("rx",            "receiving node\n",                                                      PARAMFLAG_MANDATORY, NULL, NULL),
+    [GAIN]       = DOUBLEPARAM("gain_dB",       "gain from tx to rx, in dB\n",                                           0,                   NULL, 0.0),
+    [DELAY]      = INTPARAM("delay",            "delay from tx to rx, in samples\n",                                     0,                   NULL, 0),
+    [SHIFT]      = DOUBLEPARAM("shift_Hz",      "where tx's signal lands from rx's centre frequency, Hz\n",              0,                   NULL, 0.0),
+    [PASS]       = DOUBLEPARAM("pass_Hz",       "centre of the band that reaches rx, from rx's centre frequency, Hz\n",  0,                   NULL, 0.0),
+    [PASS_WIDTH] = DOUBLEPARAM("pass_width_Hz", "width of the band that reaches rx, Hz; 0: the whole band\n",             0,                   NULL, 0.0),
   };
   // clang-format on
   paramlist_def_t list = {"links", NULL, 0};
@@ -98,6 +98,12 @@ static void read_links(hub_conf_t *conf)
     k->shift_Hz = *p[SHIFT].dblptr;
     k->pass_Hz = *p[PASS].dblptr;
     k->pass_width_Hz = *p[PASS_WIDTH].dblptr;
+    if (k->pass_Hz != 0.0 && k->pass_width_Hz == 0.0)
+      LOG_W(HW,
+            "link %s -> %s: pass_Hz %.0f without pass_width_Hz passes the whole band: give the width\n",
+            *p[TX].strptr,
+            *p[RX].strptr,
+            k->pass_Hz);
   }
 }
 

@@ -27,7 +27,7 @@ struct Ue {
   nr_ue_tx_t *t;
   explicit Ue(int prb_start, int n_rb_max = 3, double offset_db = 0)
   {
-    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, 0};
+    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, false};
     t = nr_ue_tx_new(&cfg);
   }
   ~Ue()

@@ -8,7 +8,6 @@
 
 #include "nr_aiot_reader.h"
 
-#include <arpa/inet.h>
 #include <errno.h>
 #include <math.h>
 #include <netinet/in.h>
@@ -17,21 +16,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "aiot_node_msg.h"
+#include "nr_aiot_udp.h"
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
+#include "common/utils/utils.h"
 
 #define SLOT_SAMPLES AIOT_SAMPLES_PER_MS /* one 15 kHz slot */
-#define SLOTS_PER_FRAME 10
-#define FRAMES 1024
-#define WRAP_SLOTS (FRAMES * SLOTS_PER_FRAME)
-#define MAX_LEAD_SLOTS 64
 #define LEAD_MARGIN_SLOTS 2 /* a remote R2D's lead over the delay of the one that came too late */
-#define MAX_EXPECTS 64
+/* the windows the MAC opens after one R2D (it opens at most 16), and the remote windows open at a time,
+ * which the UE's peer has as many of */
+#define MAX_EXPECTS AIOT_NODE_MAX_WINDOWS
 #define MAX_OUTCOMES 8
+#define ROWS_AT_A_TIME 64 /* the protocol's table rows taken at a time */
 #define FULL_SCALE2 (32767.0 * 32767.0) /* counts squared of a full-scale sample */
 /* a split Reader */
 #define WINDOW_TIMEOUT_SLOTS 200 /* a remote window's outcome not back this long after its end: given up as empty */
@@ -66,7 +65,7 @@ struct nr_aiot_reader {
   int sock; /* to the data destination, -1: none */
   struct sockaddr_in dest;
   uint32_t seq; /* Tag data messages so far */
-  int send_errno; /* the last error the socket gave */
+  nr_aiot_udp_tx_t data_tx;
   int decimation; /* radio samples per A-IoT sample */
   /* a split Reader: one socket to the remote R2D, the remote D2R, or both */
   int peer_sock; /* -1: none */
@@ -82,7 +81,9 @@ struct nr_aiot_reader {
   remote_window_t windows[MAX_EXPECTS];
   uint8_t *msg; /* AIOT_NODE_SPLIT_MAX_BYTES + 1 */
   aiot_node_outcome_t *remote_outcome;
-  int peer_errno;
+  nr_aiot_udp_tx_t peer_tx;
+  int recv_errno;
+  int64_t now; /* the pass's now, for the messages it takes */
   int64_t next_report;
   pthread_mutex_t lock; /* step() and stats() */
   nr_aiot_reader_stats_t stats;
@@ -199,34 +200,15 @@ int nr_aiot_reader_parse_t_bit(nr_aiot_reader_config_t *cfg, const char *s)
   return 0;
 }
 
-/* "a.b.c.d:port" into addr. Returns 0 or -1. */
-static int parse_dest(const char *s, struct sockaddr_in *addr)
-{
-  char host[32];
-  const char *colon = strrchr(s, ':');
-  if (!colon || colon == s || colon - s >= (int)sizeof(host))
-    return -1;
-  memcpy(host, s, colon - s);
-  host[colon - s] = 0;
-  char *end;
-  const long port = strtol(colon + 1, &end, 10);
-  if (end == colon + 1 || *end || port < 1 || port > 65535)
-    return -1;
-  memset(addr, 0, sizeof(*addr));
-  addr->sin_family = AF_INET;
-  addr->sin_port = htons((uint16_t)port);
-  return inet_pton(AF_INET, host, &addr->sin_addr) == 1 ? 0 : -1;
-}
-
 int nr_aiot_reader_parse_address(char *dst, const char *s)
 {
   dst[0] = 0;
   if (!s || !*s)
     return 0;
   struct sockaddr_in addr;
-  if (strlen(s) >= 64 || parse_dest(s, &addr) != 0)
+  if (strlen(s) >= NR_AIOT_READER_ADDRESS_LEN || nr_aiot_udp_parse(s, &addr) != 0)
     return -1;
-  snprintf(dst, 64, "%s", s);
+  snprintf(dst, NR_AIOT_READER_ADDRESS_LEN, "%s", s);
   return 0;
 }
 
@@ -307,7 +289,6 @@ static const char *describe(const aiot_mac_r2d_msg_t *m, char *detail, size_t le
       return "nack_feedback";
     }
   }
-  snprintf(detail, len, "%s", "");
   return "unknown";
 }
 
@@ -368,19 +349,10 @@ static void send_tag_data(nr_aiot_reader_t *r, const aiot_reader_heard_t *h, con
     r->stats.data_unsent++;
     return;
   }
-  if (sendto(r->sock, buf, n, MSG_DONTWAIT, (const struct sockaddr *)&r->dest, sizeof(r->dest)) == n) {
+  if (nr_aiot_udp_send(r->sock, &r->dest, buf, n, &r->data_tx, "Tag data"))
     r->stats.data_sent++;
-    return;
-  }
-  const int e = errno;
-  if (r->stats.data_unsent++ == 0 || e != r->send_errno)
-    LOG_W(NR_MAC,
-          "A-IoT Reader: Tag data seq %u not sent to %s: %s (%lu not sent so far)\n",
-          m.seq,
-          r->cfg.data_dest,
-          strerror(e),
-          (unsigned long)r->stats.data_unsent);
-  r->send_errno = e;
+  else
+    r->stats.data_unsent++;
 }
 
 static void record(nr_aiot_reader_t *r, const aiot_reader_heard_t *h)
@@ -407,7 +379,7 @@ static void record(nr_aiot_reader_t *r, const aiot_reader_heard_t *h)
       read_sdu(&a->message, &node, &value);
       if (a->as_id >= 0)
         snprintf(id, sizeof(id), "%d", a->as_id);
-      LOG_I(NR_MAC,
+      LOG_D(NR_MAC,
             "A-IoT Reader: data from Tag %d (AS ID %s): value %d, R_SFS %d, %.1f dBFS, after %s\n",
             node,
             id[0] ? id : "-",
@@ -445,7 +417,7 @@ static void record_rows(nr_aiot_reader_t *r)
   if (!r->table_csv)
     return;
   int n;
-  while ((n = aiot_reader_pop_rows(r->mac, r->rows, 64)) > 0)
+  while ((n = aiot_reader_pop_rows(r->mac, r->rows, ROWS_AT_A_TIME)) > 0)
     for (int i = 0; i < n; i++) {
       const double *row = r->rows + (size_t)i * r->table_cols;
       put_float(r->table_csv, round(row[0] / 1000.0 * 1e6) / 1e6);
@@ -507,7 +479,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
     snprintf(err, err_len, "the node has D2R PRBs (aiot.d2r_prb_start) and a UE receives the D2R (aiot.remote_d2r): give one");
     return NULL;
   }
-  if (r2d->slots_per_frame != SLOTS_PER_FRAME || (!d2r && r2d->ofdm_symbol_size % AIOT_N_FFT != 0)) {
+  if (r2d->slots_per_frame != AIOT_CELL_SLOTS_PER_FRAME || (!d2r && r2d->ofdm_symbol_size % AIOT_N_FFT != 0)) {
     snprintf(err,
              err_len,
              "the Reader needs 15 kHz slots, sampled at 5.76 Msps times a whole number (here %d slots a frame, symbols of %d)",
@@ -515,11 +487,15 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
              r2d->ofdm_symbol_size);
     return NULL;
   }
-  nr_aiot_reader_t *r = calloc(1, sizeof(*r));
-  if (!r) {
-    snprintf(err, err_len, "out of memory");
+  if (cfg->lead_slots < 0 || cfg->lead_slots > NR_AIOT_READER_MAX_LEAD_SLOTS) {
+    snprintf(err,
+             err_len,
+             "a lead of %d slots: give 0 (the default) to %d (aiot.lead_slots)",
+             cfg->lead_slots,
+             NR_AIOT_READER_MAX_LEAD_SLOTS);
     return NULL;
   }
+  nr_aiot_reader_t *r = calloc_or_fail(1, sizeof(*r));
   r->cfg = *cfg;
   for (int i = 0; i < r->cfg.n_params; i++)
     r->cfg.params[i].name = r->cfg.param_names[i];
@@ -532,14 +508,14 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
   r->remote_d2r = remote_d2r;
   r->stats.r2d_ahead_min = INT64_MAX;
   r->stats.window_ahead_min = INT64_MAX;
-  r->lead = cfg->lead_slots > 0 ? cfg->lead_slots : 2;
+  r->lead = cfg->lead_slots > 0 ? cfg->lead_slots : NR_AIOT_READER_LEAD_SLOTS;
   pthread_mutex_init(&r->lock, NULL);
-  r->outcomes = malloc(sizeof(*r->outcomes) * MAX_OUTCOMES);
-  r->heard = malloc(sizeof(*r->heard));
+  r->outcomes = malloc_or_fail(sizeof(*r->outcomes) * MAX_OUTCOMES);
+  r->heard = malloc_or_fail(sizeof(*r->heard));
   r->mac =
       aiot_reader_new(&r->cfg.link, r->cfg.protocol, r->cfg.params, r->cfg.n_params, r->cfg.node_ids, r->cfg.n_nodes, err, err_len);
-  if (!r->outcomes || !r->heard || !r->mac) {
-    if (r->mac == NULL && err[0] == 0)
+  if (!r->mac) {
+    if (err[0] == 0)
       snprintf(err, err_len, "out of memory");
     nr_aiot_reader_free(r);
     return NULL;
@@ -551,38 +527,39 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
     return NULL;
   }
   if (r->cfg.data_dest[0]) {
-    if (parse_dest(r->cfg.data_dest, &r->dest) != 0) {
+    if (nr_aiot_udp_parse(r->cfg.data_dest, &r->dest) != 0) {
       snprintf(err, err_len, "the data destination \"%s\" is not ipv4:port (aiot.data_dest)", r->cfg.data_dest);
       nr_aiot_reader_free(r);
       return NULL;
     }
-    r->sock = socket(AF_INET, SOCK_DGRAM, 0);
+    r->sock = nr_aiot_udp_open(NULL, err, err_len);
     if (r->sock < 0) {
-      snprintf(err, err_len, "no socket for the data destination: %s", strerror(errno));
       nr_aiot_reader_free(r);
       return NULL;
     }
   }
   if (remote_r2d || remote_d2r) {
-    const char *bad = remote_r2d && parse_dest(r->cfg.remote_r2d, &r->r2d_peer) != 0   ? r->cfg.remote_r2d
-                      : remote_d2r && parse_dest(r->cfg.remote_d2r, &r->d2r_peer) != 0 ? r->cfg.remote_d2r
-                                                                                       : NULL;
+    const char *bad = remote_r2d && nr_aiot_udp_parse(r->cfg.remote_r2d, &r->r2d_peer) != 0   ? r->cfg.remote_r2d
+                      : remote_d2r && nr_aiot_udp_parse(r->cfg.remote_d2r, &r->d2r_peer) != 0 ? r->cfg.remote_d2r
+                                                                                              : NULL;
     if (bad) {
       snprintf(err, err_len, "the UE's address \"%s\" is not ipv4:port (aiot.remote_r2d, aiot.remote_d2r)", bad);
       nr_aiot_reader_free(r);
       return NULL;
     }
-    r->msg = malloc(AIOT_NODE_SPLIT_MAX_BYTES + 1);
-    r->remote_outcome = malloc(sizeof(*r->remote_outcome));
-    r->peer_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (!r->msg || !r->remote_outcome || r->peer_sock < 0) {
-      snprintf(err, err_len, "no socket for the UE of the split: %s", r->peer_sock < 0 ? strerror(errno) : "out of memory");
+    r->msg = malloc_or_fail(AIOT_NODE_SPLIT_MAX_BYTES + 1);
+    r->remote_outcome = malloc_or_fail(sizeof(*r->remote_outcome));
+    r->peer_sock = nr_aiot_udp_open(NULL, err, err_len);
+    if (r->peer_sock < 0) {
       nr_aiot_reader_free(r);
       return NULL;
     }
   }
+  /* the Reader plans on the node's slots, also when another node sends the R2D */
+  nr_aiot_r2d_start_clock(r2d);
   if (r->cfg.output_dir[0]) {
-    mkdir(r->cfg.output_dir, 0777);
+    if (mkdir(r->cfg.output_dir, 0777) != 0 && errno != EEXIST)
+      LOG_W(NR_MAC, "A-IoT Reader: cannot make the folder %s: %s\n", r->cfg.output_dir, strerror(errno));
     r->tx_csv = open_csv(r->cfg.output_dir, "reader_tx.csv", "start_ms,end_ms,message,detail");
     r->rx_csv = open_csv(r->cfg.output_dir, "reader_rx.csv", "time_ms,after,kind,node_id,value,id,r_sfs,slot,rssi_dbfs");
     const char *name;
@@ -597,11 +574,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
       }
       r->table_csv = open_csv(r->cfg.output_dir, name, header);
       r->table_cols = nc;
-      r->rows = malloc(sizeof(double) * 64 * (size_t)nc);
-      if (!r->rows) {
-        fclose(r->table_csv);
-        r->table_csv = NULL;
-      }
+      r->rows = malloc_or_fail(sizeof(double) * ROWS_AT_A_TIME * (size_t)nc);
     }
   }
   return r;
@@ -669,25 +642,35 @@ static int cell_time(nr_aiot_reader_t *r, int64_t t, aiot_cell_time_t *at)
     return -1;
   const int64_t delta = t - to_aiot(r, ts);
   const int64_t k = delta >= 0 ? delta / SLOT_SAMPLES : -((-delta + SLOT_SAMPLES - 1) / SLOT_SAMPLES);
-  const int abs_slot = (int)(((slot + k) % WRAP_SLOTS + WRAP_SLOTS) % WRAP_SLOTS);
-  at->frame = abs_slot / SLOTS_PER_FRAME;
-  at->slot = abs_slot % SLOTS_PER_FRAME;
+  const int abs_slot = (int)(((slot + k) % AIOT_CELL_WRAP_SLOTS + AIOT_CELL_WRAP_SLOTS) % AIOT_CELL_WRAP_SLOTS);
+  at->frame = abs_slot / AIOT_CELL_SLOTS_PER_FRAME;
+  at->slot = abs_slot % AIOT_CELL_SLOTS_PER_FRAME;
   at->sample = (int)(delta - k * SLOT_SAMPLES);
   return 0;
 }
 
 static void peer_send(nr_aiot_reader_t *r, const struct sockaddr_in *to, int len, const char *what)
 {
-  if (len > 0 && sendto(r->peer_sock, r->msg, len, MSG_DONTWAIT, (const struct sockaddr *)to, sizeof(*to)) == len)
-    return;
-  const int e = len > 0 ? errno : EINVAL;
-  if (r->stats.peer_unsent++ == 0 || e != r->peer_errno)
-    LOG_W(NR_MAC,
-          "A-IoT Reader: %s not sent to the UE: %s (%lu not sent so far)\n",
-          what,
-          strerror(e),
-          (unsigned long)r->stats.peer_unsent);
-  r->peer_errno = e;
+  nr_aiot_udp_send(r->peer_sock, to, r->msg, len, &r->peer_tx, what);
+  r->stats.peer_unsent = r->peer_tx.unsent;
+}
+
+/* The lead from now on, at most NR_AIOT_READER_MAX_LEAD_SLOTS. */
+static void set_lead(nr_aiot_reader_t *r, int64_t lead)
+{
+  r->lead = (int)cmin(lead, (int64_t)NR_AIOT_READER_MAX_LEAD_SLOTS);
+}
+
+static void stat_add(int64_t v, int64_t *sum, int64_t *min)
+{
+  *sum += v;
+  *min = cmin(*min, v);
+}
+
+static void stat_add_max(int64_t v, int64_t *sum, int64_t *max)
+{
+  *sum += v;
+  *max = cmax(*max, v);
 }
 
 /* The protocol's next R2D, to the UE that sends it for symbol `symbol` of (frame, slot). Returns its
@@ -714,16 +697,30 @@ static int send_remote_r2d(nr_aiot_reader_t *r, int frame, int slot, int symbol,
   return n_sym;
 }
 
+/* The MAC's window e gets an empty outcome at once: as if nothing was heard in it. */
+static void give_up_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, int64_t now)
+{
+  aiot_d2r_outcome_t *out = &r->remote_outcome->outcome;
+  out->expect = *e;
+  out->n_decoded = 0;
+  out->collided = 0;
+  if (aiot_reader_d2r_outcome(r->mac, out, now) != 0)
+    LOG_E(NR_MAC, "A-IoT Reader: the MAC did not take the empty outcome of the window at %ld\n", (long)e->start);
+}
+
 /* A window the MAC opened, to the UE that receives the D2R. */
-static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e)
+static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, int64_t now)
 {
   aiot_node_window_t w = {.expect = *e};
   int i = 0;
   while (i < MAX_EXPECTS && r->windows[i].used)
     i++;
   if (i == MAX_EXPECTS || cell_time(r, e->start, &w.at) != 0) {
-    LOG_E(NR_MAC, "A-IoT Reader: no room for the window at %ld\n", (long)e->start);
-    return; /* cannot happen: the MAC opens at most MAX_EXPECTS, after the node has sent a slot */
+    /* the UE's outcomes are this far behind: the protocol goes on without this window */
+    r->stats.windows_lost++;
+    LOG_E(NR_MAC, "A-IoT Reader: %d windows open at the UE: the window at %ld is given up as empty\n", MAX_EXPECTS, (long)e->start);
+    give_up_window(r, e, now);
+    return;
   }
   const int64_t end = e->start + e->te + aiot_frame_samples(e->a_bits, &e->params);
   r->windows[i] = (remote_window_t){.used = 1,
@@ -733,11 +730,6 @@ static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e)
                                     .early = !r->d2r_up};
   r->stats.windows_remote++;
   peer_send(r, &r->d2r_peer, aiot_node_msg_pack_window(&w, r->msg, AIOT_NODE_SPLIT_MAX_BYTES), "a window");
-}
-
-static int from(const struct sockaddr_in *a, const struct sockaddr_in *b)
-{
-  return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
 }
 
 static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
@@ -762,30 +754,30 @@ static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
       s->r2d_early_late++;
     return;
   }
-  s->r2d_ahead_sum += d.ahead;
-  if (d.ahead < s->r2d_ahead_min)
-    s->r2d_ahead_min = d.ahead;
-  const int64_t rtt = now - r->sent_at[d.seq % SENT_RING];
-  s->r2d_rtt_sum += rtt;
-  if (rtt > s->r2d_rtt_max)
-    s->r2d_rtt_max = rtt;
+  stat_add(d.ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
+  stat_add_max(now - r->sent_at[d.seq % SENT_RING], &s->r2d_rtt_sum, &s->r2d_rtt_max);
   if (d.result == NR_AIOT_R2D_ETOOLATE) {
     s->too_late++;
     /* the UE says by how much it was late: the lead grows by that, and a margin. An R2D sent before
      * the lead last grew was planned with the shorter lead. */
-    if ((int32_t)(d.seq - r->lead_seq) >= 0 && r->lead < MAX_LEAD_SLOTS) {
-      const int64_t lead = (int64_t)r->lead + 1 - d.ahead + LEAD_MARGIN_SLOTS;
-      r->lead = lead < MAX_LEAD_SLOTS ? (int)lead : MAX_LEAD_SLOTS;
+    if ((int32_t)(d.seq - r->lead_seq) >= 0 && r->lead < NR_AIOT_READER_MAX_LEAD_SLOTS) {
+      set_lead(r, (int64_t)r->lead + 1 - d.ahead + LEAD_MARGIN_SLOTS);
       r->lead_seq = r->r2d_seq;
     }
-    LOG_W(NR_MAC,
-          "A-IoT Reader: the UE got R2D %u too late (%d slots ahead); %d slots ahead from now on\n",
-          d.seq,
-          d.ahead,
-          r->lead);
+    if (aiot_log_due(s->too_late))
+      LOG_W(NR_MAC,
+            "A-IoT Reader: the UE got R2D %u too late (%d slots ahead); %d slots ahead from now on (%lu too late so far)\n",
+            d.seq,
+            d.ahead,
+            r->lead,
+            (unsigned long)s->too_late);
   } else if (d.result < 0) {
-    if (s->r2d_refused++ == 0)
-      LOG_E(NR_MAC, "A-IoT Reader: the UE cannot send R2D %u (%d)\n", d.seq, d.result);
+    if (aiot_log_due(++s->r2d_refused))
+      LOG_E(NR_MAC,
+            "A-IoT Reader: the UE cannot send R2D %u (%d; %lu refused so far)\n",
+            d.seq,
+            d.result,
+            (unsigned long)s->r2d_refused);
   }
 }
 
@@ -821,26 +813,21 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
     if (o->ahead < 0)
       s->windows_early_late++;
   } else {
-    s->window_ahead_sum += o->ahead;
-    if (o->ahead < s->window_ahead_min)
-      s->window_ahead_min = o->ahead;
-    const int64_t delay = now - (w->deadline - WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES);
-    s->outcome_delay_sum += delay;
-    if (delay > s->outcome_delay_max)
-      s->outcome_delay_max = delay;
+    stat_add(o->ahead, &s->window_ahead_sum, &s->window_ahead_min);
+    stat_add_max(now - (w->deadline - WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES), &s->outcome_delay_sum, &s->outcome_delay_max);
     if (o->ahead < 0) {
       /* the UE opened it after its receiver had passed its start, and decoded what was left: the lead
        * grows by the slots it lacked, and a margin, unless it grew since the window was opened */
       s->windows_late++;
-      if (w->lead == r->lead && r->lead < MAX_LEAD_SLOTS) {
-        const int64_t lead = (int64_t)r->lead + (-o->ahead + SLOT_SAMPLES - 1) / SLOT_SAMPLES + LEAD_MARGIN_SLOTS;
-        r->lead = lead < MAX_LEAD_SLOTS ? (int)lead : MAX_LEAD_SLOTS;
-      }
-      LOG_W(NR_MAC,
-            "A-IoT Reader: the UE got the window at %.2f ms %.2f ms late; %d slots ahead from now on\n",
-            ms(w->e.start),
-            ms(-o->ahead),
-            r->lead);
+      if (w->lead == r->lead && r->lead < NR_AIOT_READER_MAX_LEAD_SLOTS)
+        set_lead(r, (int64_t)r->lead + (-o->ahead + SLOT_SAMPLES - 1) / SLOT_SAMPLES + LEAD_MARGIN_SLOTS);
+      if (aiot_log_due(s->windows_late))
+        LOG_W(NR_MAC,
+              "A-IoT Reader: the UE got the window at %.2f ms %.2f ms late; %d slots ahead from now on (%lu late so far)\n",
+              ms(w->e.start),
+              ms(-o->ahead),
+              r->lead,
+              (unsigned long)s->windows_late);
     }
   }
   /* back on the node's clock: the UE counts each D2R from the window's start */
@@ -854,24 +841,24 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
   return 1;
 }
 
+/* One datagram from a remote end: an answer the Reader waits for, from the UE it waits for it from. */
+static void on_peer_datagram(void *ctx, const struct sockaddr_in *src, int n)
+{
+  nr_aiot_reader_t *r = ctx;
+  const int type = aiot_node_msg_type(r->msg, n);
+  if (type == AIOT_NODE_MSG_R2D_DONE && r->remote_r2d && nr_aiot_udp_same(src, &r->r2d_peer))
+    on_r2d_done(r, n, r->now);
+  else if (type == AIOT_NODE_MSG_OUTCOME && r->remote_d2r && nr_aiot_udp_same(src, &r->d2r_peer))
+    on_outcome(r, n, r->now);
+  else
+    r->stats.peer_refused++;
+}
+
 /* The answers of the remote ends that came in. */
 static int take_peer_messages(nr_aiot_reader_t *r, int64_t now)
 {
-  int acted = 0;
-  ssize_t n;
-  struct sockaddr_in src;
-  socklen_t len = sizeof(src);
-  while ((n = recvfrom(r->peer_sock, r->msg, AIOT_NODE_SPLIT_MAX_BYTES + 1, MSG_DONTWAIT, (struct sockaddr *)&src, &len)) > 0) {
-    const int type = aiot_node_msg_type(r->msg, (int)n);
-    if (type == AIOT_NODE_MSG_R2D_DONE && r->remote_r2d && from(&src, &r->r2d_peer))
-      on_r2d_done(r, (int)n, now);
-    else if (type == AIOT_NODE_MSG_OUTCOME && r->remote_d2r && from(&src, &r->d2r_peer))
-      acted += on_outcome(r, (int)n, now);
-    else
-      r->stats.peer_refused++;
-    len = sizeof(src);
-  }
-  return acted;
+  r->now = now;
+  return nr_aiot_udp_drain(r->peer_sock, r->msg, AIOT_NODE_SPLIT_MAX_BYTES + 1, on_peer_datagram, r, &r->recv_errno);
 }
 
 /* Gives the MAC an empty outcome for each remote window whose outcome has not come back in time, so
@@ -884,15 +871,12 @@ static int give_up_windows(nr_aiot_reader_t *r, int64_t now)
     if (!w->used || now <= w->deadline)
       continue;
     w->used = 0;
-    aiot_d2r_outcome_t *out = &r->remote_outcome->outcome;
-    out->expect = w->e;
-    out->n_decoded = 0;
-    out->collided = 0;
-    if (r->stats.windows_lost++ == 0)
+    if (aiot_log_due(++r->stats.windows_lost))
       LOG_W(NR_MAC,
-            "A-IoT Reader: no outcome came back for the window at %.3f ms: given up as empty (logged once)\n",
-            ms(w->e.start));
-    aiot_reader_d2r_outcome(r->mac, out, now);
+            "A-IoT Reader: no outcome came back for the window at %.3f ms: given up as empty (%lu so far)\n",
+            ms(w->e.start),
+            (unsigned long)r->stats.windows_lost);
+    give_up_window(r, &w->e, now);
     acted++;
   }
   return acted;
@@ -951,8 +935,9 @@ static void report_split(nr_aiot_reader_t *r, int64_t now)
 
 /* Puts the protocol's next R2D on the grid, on the node's clock: the slot it mapped last starts at
  * its radio timestamp, A-IoT sample ts / D of the D2R receiver. With a remote R2D, sends it to the
- * UE for the same time of the cell. Returns 1 when sent, 0 when it waits for a later pass, or -1 when
- * the node cannot send it at all. */
+ * UE for the same time of the cell. Returns 1 when sent with windows to wait for, 2 when sent without
+ * any (the next R2D is ready), 0 when it waits for a later pass, or -1 when the node cannot send it at
+ * all. */
 static int send_next(nr_aiot_reader_t *r, int64_t now)
 {
   int64_t tx_ts;
@@ -970,16 +955,22 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
   /* the node's next half-subframe from there: symbol 0 or 7 of slot tx_slot + k / 2 */
   const int64_t k = (start - tx_start + AIOT_HALF_SUBFRAME - 1) / AIOT_HALF_SUBFRAME;
   start = tx_start + k * AIOT_HALF_SUBFRAME;
-  const int slot = (int)((tx_slot + k / 2) % WRAP_SLOTS);
-  const int frame = slot / SLOTS_PER_FRAME, sl = slot % SLOTS_PER_FRAME, symbol = k % 2 ? 7 : 0;
+  const int slot = (int)((tx_slot + k / 2) % AIOT_CELL_WRAP_SLOTS);
+  const int frame = slot / AIOT_CELL_SLOTS_PER_FRAME, sl = slot % AIOT_CELL_SLOTS_PER_FRAME;
+  const int symbol = k % 2 ? NR_SYMBOLS_PER_SLOT / 2 : 0;
   int n_sym = r->remote_r2d
                   ? send_remote_r2d(r, frame, sl, symbol, now)
                   : nr_aiot_r2d_schedule(r->r2d, frame, sl, symbol, r->next.bits, r->next.n_bits, r->cfg.link.m_chip_symb, r->n_rb);
   if (n_sym == NR_AIOT_R2D_ETOOLATE) {
     r->stats.too_late++;
-    if (r->lead < MAX_LEAD_SLOTS)
-      r->lead *= 2;
-    LOG_W(NR_MAC, "A-IoT Reader: the R2D for %d.%d was ready too late; %d slots ahead from now on\n", frame, sl, r->lead);
+    set_lead(r, 2 * (int64_t)r->lead);
+    if (aiot_log_due(r->stats.too_late))
+      LOG_W(NR_MAC,
+            "A-IoT Reader: the R2D for %d.%d was ready too late; %d slots ahead from now on (%lu too late so far)\n",
+            frame,
+            sl,
+            r->lead,
+            (unsigned long)r->stats.too_late);
     return 0;
   }
   if (n_sym == AIOT_ESPACE)
@@ -994,7 +985,7 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
   r->stats.r2d_sent++;
   for (int i = 0; i < n; i++)
     if (r->remote_d2r)
-      open_remote_window(r, &r->expects[i]);
+      open_remote_window(r, &r->expects[i], now);
     else if (nr_aiot_d2r_expect(r->d2r, &r->expects[i]) != 0)
       LOG_E(NR_MAC, "A-IoT Reader: the D2R receiver refused a window at %ld\n", (long)r->expects[i].start);
   LOG_D(NR_MAC, "A-IoT Reader: R2D in %d.%d from symbol %d, %d symbols, %d windows\n", frame, sl, symbol, n_sym, n);

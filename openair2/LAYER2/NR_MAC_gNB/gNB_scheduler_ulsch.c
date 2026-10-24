@@ -789,13 +789,13 @@ static void nr_rx_ra_sdu(gNB_MAC_INST *mac,
     configure_UE_BWP(cell, scc, UE, false, ss_type, -1, -1);
     // initialize ta_frame in case there is no Msg3 received
     UE->UE_sched_ctrl.ta_frame = (frame + 100) % MAX_FRAME_NUMBER;
+    const rnti_t cfra_rnti = UE->rnti;
     if (!transition_ra_connected_nr_ue(mac, UE)) {
-      LOG_E(NR_MAC, "cannot add UE %04x: list is full\n", UE->rnti);
-      delete_nr_ue_data(mac, UE);
+      // add_connected_nr_ue() has freed the UE already
+      LOG_E(NR_MAC, "cannot add UE %04x: list is full\n", cfra_rnti);
       return;
-    } else {
-      LOG_A(NR_MAC, "(rnti 0x%04x) CFRA procedure succeeded!\n", UE->rnti);
     }
+    LOG_A(NR_MAC, "(rnti 0x%04x) CFRA procedure succeeded!\n", UE->rnti);
   }
 
   if (ul_cqi != 0xff) {

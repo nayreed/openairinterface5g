@@ -250,7 +250,7 @@ int aiot_r2d_transmission(const uint8_t *tb_bits, int a_bits, int m_chip_symb, i
 {
   if (!aiot_m_valid(m_chip_symb) || a_bits < 0)
     return AIOT_EINVAL;
-  int max_chips = 4 * (a_bits + 16) + 64; /* the body, the forced chips of M = 24 and the padding */
+  int max_chips = AIOT_R2D_MAX_CHIPS(a_bits);
   uint8_t *chips = malloc((size_t)max_chips);
   if (!chips)
     return AIOT_ENOMEM;

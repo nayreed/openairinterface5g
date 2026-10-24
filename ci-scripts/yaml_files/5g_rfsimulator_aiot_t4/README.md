@@ -80,6 +80,9 @@ docker logs -f rfsim5g-oai-nr-ue | grep A-IoT
 
 ## First run, against topology 1 with a CW node
 
+> These numbers come from a run made before the review fixes (the R2D now gives way to the NR channels in
+> its slot, and a split Reader's lead stops at 64 slots); they have not been measured again since.
+
 Over the scenario's 8 s, with the same Tags. The topology 1 column is a run of the
 [topology 1 CW room](../5g_rfsimulator_aiot_t1_cw_ul/README.md) on the same build, with the same
 filter on the Tags' links.

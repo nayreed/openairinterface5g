@@ -438,7 +438,9 @@ int nrue_ru_read(PHY_VARS_NR_UE *UE, openair0_timestamp_t *ptimestamp, void **bu
     dev->firstTS_initialized = true;
   }
   *ptimestamp = tmp_timestamp - dev->firstTS;
-  // Ambient IoT D2R: every sample the radio delivers, whatever the read (sync, slot, frame end)
+  // Ambient IoT D2R: every sample the radio delivers, whatever the read (sync, slot, frame end). With
+  // the RFsimulator push() waits for the receiver; with a real radio, samples it has no room for are
+  // counted as overruns in its statistics and received as zeros, so the return needs no handling here.
   if (UE->aiot_d2r && ret > 0)
     nr_aiot_d2r_push(UE->aiot_d2r, *ptimestamp, (const c16_t *)buff[0], ret);
 

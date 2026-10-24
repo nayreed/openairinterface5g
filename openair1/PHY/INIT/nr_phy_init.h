@@ -15,6 +15,9 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue);
 /* The slots the UE can send an Ambient IoT R2D in, from its configuration: those whose symbols are all
  * uplink (every slot with FDD), and none before the UE has its configuration. */
 void nr_ue_aiot_r2d_set_tx_slots(PHY_VARS_NR_UE *ue);
+/*! \brief Stops and frees the UE's Ambient IoT D2R receiver and R2D, after its A-IoT Reader or peer,
+ * which use them, has been freed by its owner. */
+void nr_ue_aiot_free(PHY_VARS_NR_UE *ue);
 void init_nr_ue_transport(PHY_VARS_NR_UE *ue);
 void init_phy_nr_measurements(PHY_VARS_NR_UE *ue);
 void phy_init_nr_gNB(PHY_VARS_gNB *gNB);

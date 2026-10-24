@@ -973,9 +973,9 @@ static int64_t last_sample(const aiot_d2r_expect_t *e)
   return e->start + e->te + SEARCH_GUARD + m;
 }
 
-int aiot_d2r_rx_expect(aiot_d2r_rx_t *rx, const aiot_d2r_expect_t *e)
+int aiot_d2r_expect_check(const aiot_d2r_expect_t *e)
 {
-  if (!rx || !e || e->a_bits < 0 || e->a_bits > AIOT_MAX_TB_BITS || e->te < 0 || e->n_r_sfs < 0 || e->n_r_sfs > AIOT_MAX_SHIFTS)
+  if (!e || e->a_bits < 0 || e->a_bits > AIOT_MAX_TB_BITS || e->te < 0 || e->n_r_sfs < 0 || e->n_r_sfs > AIOT_MAX_SHIFTS)
     return AIOT_EINVAL;
   for (int i = 0; i < n_shifts(e); i++) {
     aiot_d2r_params_t p = e->params;
@@ -983,6 +983,13 @@ int aiot_d2r_rx_expect(aiot_d2r_rx_t *rx, const aiot_d2r_expect_t *e)
     if (aiot_d2r_params_check(&p) != 0)
       return AIOT_EINVAL;
   }
+  return 0;
+}
+
+int aiot_d2r_rx_expect(aiot_d2r_rx_t *rx, const aiot_d2r_expect_t *e)
+{
+  if (!rx || aiot_d2r_expect_check(e) != 0)
+    return AIOT_EINVAL;
   if (rx->n_ex == rx->cap_ex) {
     int cap = rx->cap_ex ? 2 * rx->cap_ex : 4;
     aiot_d2r_expect_t *ne = realloc(rx->ex, sizeof(*ne) * (size_t)cap);

@@ -25,12 +25,18 @@ static void init_tables(void)
   phy_generate_viterbi_tables_lte();
 }
 
-static void pack(const uint8_t *bits, int n, uint8_t *bytes)
+void aiot_pack_bits(const uint8_t *bits, int n, uint8_t *bytes)
 {
   memset(bytes, 0, (size_t)(n + 7) / 8);
   for (int i = 0; i < n; i++)
     if (bits[i] & 1)
       bytes[i >> 3] |= 0x80 >> (i & 7);
+}
+
+void aiot_unpack_bits(const uint8_t *bytes, int n, uint8_t *bits)
+{
+  for (int i = 0; i < n; i++)
+    bits[i] = (bytes[i >> 3] >> (7 - (i & 7))) & 1;
 }
 
 int aiot_crc(const uint8_t *bits, int n, int L, uint8_t *parity)
@@ -41,7 +47,7 @@ int aiot_crc(const uint8_t *bits, int n, int L, uint8_t *parity)
   uint8_t *bytes = malloc((size_t)n / 8 + 1);
   if (!bytes)
     return AIOT_ENOMEM;
-  pack(bits, n, bytes);
+  aiot_pack_bits(bits, n, bytes);
   /* OAI returns the parity in the top L bits of 32 */
   unsigned reg = (L == 16 ? crc16(bytes, n) : crc6(bytes, n)) >> (32 - L);
   free(bytes);
