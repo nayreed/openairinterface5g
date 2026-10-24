@@ -5,9 +5,9 @@ name: oai-amber image
 # publishes it. The gNB and UE images come from the oai-gnb and oai-nr-ue workflow
 # (oai-5g-images.yml); this workflow pulls them and never builds them.
 #
-# It has no push trigger. On a push to aiot-rfsim the oai-gnb and oai-nr-ue workflow starts it:
-# after building a new gNB and UE (oai_5g_tag=<commit>), or straight away with oai_5g_tag=latest
-# when the push changed only oai-amber or the rooms. It also runs on pull requests and by hand.
+# It never starts on a push or a pull request. The oai-gnb and oai-nr-ue workflow starts it once it
+# has pushed a new gNB and UE (oai_5g_tag=<commit>); start it by hand with oai_5g_tag=latest to run
+# the rooms with the :latest gNB and UE.
 #
 #   gnb-ue     the oai-gnb and oai-nr-ue to run the rooms with (:<oai_5g_tag>); nothing else runs
 #              without them
@@ -19,19 +19,10 @@ name: oai-amber image
 #   publish    on aiot-rfsim, once the rooms pass: oai-amber as :<commit> and :latest, and the gNB
 #              and UE the rooms ran with as :latest
 #
-# A pull request runs everything but publish. A room then runs from the published images with
+# On another branch everything but publish runs. A room then runs from the published images with
 #   REGISTRY=ghcr.io/<owner>/ TAG=latest AMBER_IMG=ghcr.io/<owner>/oai-amber:latest docker compose up -d
 
 on:
-  pull_request:
-    branches: [aiot-rfsim]
-    paths:
-      - 'docker/Dockerfile.amber.ubuntu'
-      - 'docker/scripts/amber_*'
-      - 'docker/scripts/aiot_check_room.sh'
-      - 'ci-scripts/yaml_files/5g_rfsimulator_aiot*/**'
-      - 'ci-scripts/conf_files/**'
-      - '.github/workflows/amber-image.yml'
   workflow_dispatch:
     inputs:
       oai_5g_tag:
@@ -55,7 +46,6 @@ jobs:
       packages: read
     outputs:
       tag: ${{ steps.find.outputs.tag }}
-      found: ${{ steps.find.outputs.found }}
     steps:
       - name: Find oai-gnb and oai-nr-ue
         id: find
@@ -68,17 +58,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           for name in oai-gnb oai-nr-ue; do
             if ! docker manifest inspect "$registry/$name:$TAG" > /dev/null 2>&1; then
-              if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$TAG" = latest ]; then
-                # Only before the oai-gnb and oai-nr-ue workflow has published anything.
-                echo "::warning::$registry/$name:latest does not exist yet: nothing runs. Run the oai-gnb and oai-nr-ue workflow."
-                echo "found=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
               echo "$registry/$name:$TAG does not exist: run the oai-gnb and oai-nr-ue workflow first" >&2
               exit 1
             fi
           done
-          echo "found=true" >> "$GITHUB_OUTPUT"
 
   scripts:
     runs-on: ubuntu-24.04
@@ -95,7 +78,6 @@ jobs:
 
   build:
     needs: [scripts, gnb-ue]
-    if: needs.gnb-ue.outputs.found == 'true'
     runs-on: ubuntu-24.04
     outputs:
       image: ${{ steps.name.outputs.image }}
@@ -206,7 +188,7 @@ jobs:
   # Nothing is published unless every room passed with these images.
   publish:
     needs: [build, scenarios, gnb-ue, rooms]
-    if: github.ref == 'refs/heads/aiot-rfsim' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/aiot-rfsim'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
