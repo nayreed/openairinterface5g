@@ -36,7 +36,9 @@
 #define WINDOW_TIMEOUT_SLOTS 200 /* a remote window's outcome not back this long after its end: given up as empty */
 #define REPORT_SAMPLES (1000 * (int64_t)SLOT_SAMPLES) /* the split's delays are logged once a second of the cell */
 #define SENT_RING 256 /* the times of the R2Ds last sent to the remote R2D, for their round trip */
-#define PROBE_SLOTS 100 /* until the remote R2D has answered, one R2D this often */
+/* until the remote R2D has answered, one R2D this often; until the remote D2R has answered, one probe
+ * window this often */
+#define PROBE_SLOTS 100
 
 typedef struct {
   int used;
@@ -76,7 +78,8 @@ struct nr_aiot_reader {
   int peer_up; /* the remote R2D has answered: until then the Reader sends it one R2D at a time */
   int64_t probe_at; /* when the last of those went */
   uint32_t up_seq; /* the first R2D sent after it answered */
-  int d2r_up; /* the remote D2R has answered */
+  int d2r_up; /* the remote D2R has answered: until then the Reader sends no R2D, only probe windows */
+  int64_t d2r_probe_at; /* when the last of those went */
   int64_t sent_at[SENT_RING]; /* when the R2D of seq % SENT_RING was sent, in A-IoT samples */
   remote_window_t windows[MAX_EXPECTS];
   uint8_t *msg; /* AIOT_NODE_SPLIT_MAX_BYTES + 1 */
@@ -708,6 +711,15 @@ static void give_up_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, int6
     LOG_E(NR_MAC, "A-IoT Reader: the MAC did not take the empty outcome of the window at %ld\n", (long)e->start);
 }
 
+/* A window that opens nothing, to the UE that receives the D2R: it answers once it can. */
+static void send_probe(nr_aiot_reader_t *r, int64_t now)
+{
+  const aiot_node_window_t w = {.expect = {.tag = AIOT_NODE_PROBE_TAG}};
+  r->d2r_probe_at = now;
+  r->stats.probes++;
+  peer_send(r, &r->d2r_peer, aiot_node_msg_pack_window(&w, r->msg, AIOT_NODE_SPLIT_MAX_BYTES), "a probe window");
+}
+
 /* A window the MAC opened, to the UE that receives the D2R. */
 static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, int64_t now)
 {
@@ -789,6 +801,15 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
     return 0;
   }
   aiot_d2r_outcome_t *out = &o->outcome;
+  if (out->expect.tag == AIOT_NODE_PROBE_TAG) {
+    if (!r->d2r_up) {
+      r->d2r_up = 1;
+      LOG_I(NR_MAC,
+            "A-IoT Reader: the UE that receives the D2R has answered (%lu probe windows): the protocol starts\n",
+            (unsigned long)r->stats.probes);
+    }
+    return 0;
+  }
   if (!r->d2r_up) {
     r->d2r_up = 1;
     LOG_I(NR_MAC,
@@ -948,6 +969,14 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
    * time: those the gNB would send meanwhile would wait for it, and reach it late all together. */
   if (r->remote_r2d && !r->peer_up && r->r2d_seq > 0 && now - r->probe_at < PROBE_SLOTS * (int64_t)SLOT_SAMPLES)
     return 0;
+  /* Until the UE that receives the D2R has answered (it may not have its user plane yet), no R2D at
+   * all: the D2Rs the Tags would send meanwhile go into windows the UE never gets, and a Tag that
+   * answered a paging there may not answer it again. A probe window every PROBE_SLOTS instead. */
+  if (r->remote_d2r && !r->d2r_up) {
+    if (r->stats.probes == 0 || now - r->d2r_probe_at >= PROBE_SLOTS * (int64_t)SLOT_SAMPLES)
+      send_probe(r, now);
+    return 0;
+  }
   const int64_t tx_start = to_aiot(r, tx_ts); /* the slot mapped last, in A-IoT samples */
   int64_t start = tx_start + (int64_t)(1 + r->lead) * SLOT_SAMPLES;
   if (r->next.earliest_start > start)

@@ -218,8 +218,8 @@ static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
   answer(p, from, aiot_node_msg_pack_r2d_done(&done, p->msg, AIOT_NODE_SPLIT_MAX_BYTES), "R2D done");
 }
 
-/* An empty outcome at once, for a window the UE cannot open: the Reader's MAC moves on. */
-static void answer_empty(nr_aiot_peer_t *p, const struct sockaddr_in *to, int64_t tag)
+/* An empty outcome of window tag, at once. */
+static void send_empty(nr_aiot_peer_t *p, const struct sockaddr_in *to, int64_t tag)
 {
   aiot_node_outcome_t *o = p->out;
   o->ahead = 0;
@@ -227,8 +227,14 @@ static void answer_empty(nr_aiot_peer_t *p, const struct sockaddr_in *to, int64_
   o->outcome.expect.tag = tag;
   o->outcome.n_decoded = 0;
   o->outcome.collided = 0;
-  p->stats.windows_refused++;
   answer(p, to, aiot_node_msg_pack_outcome(o, p->msg, AIOT_NODE_SPLIT_MAX_BYTES), "an empty outcome");
+}
+
+/* An empty outcome at once, for a window the UE cannot open: the Reader's MAC moves on. */
+static void answer_empty(nr_aiot_peer_t *p, const struct sockaddr_in *to, int64_t tag)
+{
+  p->stats.windows_refused++;
+  send_empty(p, to, tag);
 }
 
 static void on_window(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
@@ -240,6 +246,12 @@ static void on_window(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
     return;
   }
   nr_aiot_peer_stats_t *s = &p->stats;
+  if (tag == AIOT_NODE_PROBE_TAG) {
+    /* the gNB asks whether this UE is there, before it starts: it is */
+    s->probes++;
+    send_empty(p, from, tag);
+    return;
+  }
   s->windows++;
   if (aiot_node_msg_parse_window(p->msg, n, &w) != 0) {
     /* a window the receiver cannot open: the Reader's MAC moves on at once, not after its timeout */
