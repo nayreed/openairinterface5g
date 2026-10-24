@@ -379,12 +379,8 @@ int main(int argc, char **argv)
       init_nr_ue_vars(UE_CC, inst);
       // the Ambient IoT Reader of the "aiot" section, if any, on the R2D and D2R init_nr_ue_vars made,
       // or the UE's end of a split Reader in the gNB
-      if (inst == 0 && CC_id == 0) {
-        UE_CC->aiot_reader = nr_aiot_reader_from_config(&UE_CC->aiot_r2d, UE_CC->aiot_d2r);
-        UE_CC->aiot_peer = nr_aiot_peer_from_config(&UE_CC->aiot_r2d, UE_CC->aiot_d2r);
-        AssertFatal(!UE_CC->aiot_reader || !UE_CC->aiot_peer,
-                    "aiot.protocol and aiot.serve_port: the UE is the Reader, or serves the gNB's\n");
-      }
+      if (inst == 0 && CC_id == 0)
+        nr_aiot_ue_from_config(&UE_CC->aiot_r2d, UE_CC->aiot_d2r, &UE_CC->aiot_reader, &UE_CC->aiot_peer);
 
       if (UE_CC->sl_mode) {
         AssertFatal(UE_CC->sl_mode == 2, "Only Sidelink mode 2 supported. Mode 1 not yet supported\n");
@@ -459,10 +455,12 @@ int main(int argc, char **argv)
           ret = pthread_join(phy_vars->stat_thread, NULL);
           AssertFatal(ret == 0, "pthread_join error %d, errno %d (%s)\n", ret, errno, strerror(errno));
         }
+        /* the UE's threads and radio have stopped: the A-IoT Reader or peer, then the R2D and D2R they use */
         nr_aiot_reader_free(phy_vars->aiot_reader); /* writes what it has left */
         phy_vars->aiot_reader = NULL;
         nr_aiot_peer_free(phy_vars->aiot_peer); /* logs what it served */
         phy_vars->aiot_peer = NULL;
+        nr_ue_aiot_free(phy_vars);
       }
     }
   }

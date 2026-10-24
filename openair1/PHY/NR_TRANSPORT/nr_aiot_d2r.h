@@ -31,6 +31,7 @@
 #ifndef NR_AIOT_D2R_H
 #define NR_AIOT_D2R_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "common/platform_types.h" /* c16_t */
 #include "PHY/AIOT/aiot_phy.h"
@@ -45,7 +46,7 @@ typedef struct {
    * are its guard band in the radio's samples: sample rate / 180 kHz PRBs in all, the last ones above
    * the carrier and wrapping round below it (at 5.76 Msps, 25 PRBs and 7 of guard band) */
   int prb_start;
-  int n_rb; /* UL PRBs reserved for the D2R, from prb_start; the CW and the D2R are at their centre */
+  int n_rb; /* PRBs reserved for the D2R, from prb_start; the CW and the D2R are at their centre */
   double noise_counts; /* the receiver's noise floor, rms on I and on Q, in ADC counts */
   int enable_sic; /* 1: cancel each decoded D2R and look again (successive interference cancellation) */
 } nr_aiot_d2r_config_t;
@@ -95,7 +96,7 @@ nr_aiot_d2r_t *nr_aiot_d2r_open(const nr_aiot_d2r_config_t *cfg,
                                 int scs_hz,
                                 int64_t sample_rate_hz,
                                 int slot_samples,
-                                int wait_when_full,
+                                bool wait_when_full,
                                 const char *band);
 /* Hands n radio samples, the first at radio timestamp ts, to the worker: copies them and returns. A
  * read longer than max_slot_samples takes several of the worker's slots. Returns 0, or AIOT_ESPACE

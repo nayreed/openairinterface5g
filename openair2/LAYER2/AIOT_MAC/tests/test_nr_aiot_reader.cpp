@@ -29,6 +29,7 @@
 extern "C" {
 #include "LAYER2/AIOT_MAC/nr_aiot_reader.h"
 #include "LAYER2/AIOT_MAC/nr_aiot_peer.h"
+#include "LAYER2/AIOT_MAC/nr_aiot_config.h"
 #include "LAYER2/AIOT_MAC/aiot_node_msg.h"
 #include "common/utils/LOG/log.h"
 #include "common/config/config_load_configmodule.h"
@@ -39,6 +40,39 @@ namespace {
 
 const int kSym = 14, kFft = AIOT_N_FFT, kPrb = 25, kAmp = 519, kSlot = AIOT_SAMPLES_PER_MS, kAhead = 4;
 const double kShiftHz = 1080000.0, kCwCounts = 400, kTagCounts = 20;
+
+// Steps the peer until it has handled want messages, or a second has passed. Returns how many it handled.
+int StepPeer(nr_aiot_peer_t *peer, int want)
+{
+  int done = 0;
+  for (int i = 0; i < 1000 && done < want; i++) {
+    const int n = nr_aiot_peer_step(peer);
+    done += n;
+    if (n == 0)
+      usleep(1000);
+  }
+  return done;
+}
+
+// A window the D2R receiver can open: a 16-bit Msg1 at R_SFS 1, T_bit 1/8.
+aiot_node_window_t ValidWindow(int64_t tag)
+{
+  aiot_node_window_t w = {};
+  w.expect.tag = tag;
+  w.expect.a_bits = 16;
+  aiot_d2r_params_t &p = w.expect.params;
+  p.t_bit_num = 1;
+  p.t_bit_den = 8;
+  p.r_sfs = 1;
+  p.r_block = 1;
+  p.r_code = 1;
+  p.l_amble = 31;
+  int i_bit[4];
+  EXPECT_GT(aiot_i_bit_values(1, 8, i_bit), 0);
+  p.i_bit = i_bit[0];
+  EXPECT_EQ(aiot_d2r_expect_check(&w.expect), 0);
+  return w;
+}
 
 aiot_link_config_t RoomLink()
 {
@@ -158,16 +192,17 @@ struct Room {
   {
     // the gNB's R2D has no PRBs when the UE sends it: it is then only the gNB's clock
     nr_aiot_r2d_config_t rc = {split == Split::kRemoteR2d ? -1 : 0, 3, 0.0};
-    EXPECT_EQ(nr_aiot_r2d_init(&r2d, &rc, 10, kSym, kFft, kPrb, kAmp), 0);
+    EXPECT_EQ(nr_aiot_r2d_init(&rc, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &r2d), 0);
     nr_aiot_r2d_config_t uc = {split == Split::kRemoteR2d ? 0 : -1, 3, 0.0};
-    EXPECT_EQ(nr_aiot_r2d_init(&ue_r2d, &uc, 10, kSym, kFft, kPrb, kAmp), 0);
+    EXPECT_EQ(nr_aiot_r2d_init(&uc, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &ue_r2d), 0);
     nr_aiot_d2r_config_t dc = {15, 7, 1.0, 1};
     (split == Split::kRemoteD2r ? ue_d2r : d2r) = nr_aiot_d2r_new(&dc, kPrb, AIOT_SCS_HZ, AIOT_SAMPLE_RATE_HZ);
     EXPECT_TRUE(d2r || ue_d2r);
     nr_aiot_reader_config_t cfg = {};
     if (split != Split::kNone) {
       char err[256] = "";
-      peer = nr_aiot_peer_new(0, &ue_r2d, ue_d2r, err, sizeof(err));
+      const nr_aiot_peer_config_t pc = {.port = 0, .addr = "127.0.0.1", .reader = "127.0.0.1"};
+      peer = nr_aiot_peer_new(&pc, &ue_r2d, ue_d2r, err, sizeof(err));
       EXPECT_NE(peer, nullptr) << err;
       const std::string at = "127.0.0.1:" + std::to_string(peer ? nr_aiot_peer_port(peer) : 9);
       EXPECT_EQ(nr_aiot_reader_parse_address(split == Split::kRemoteR2d ? cfg.remote_r2d : cfg.remote_d2r, at.c_str()), 0);
@@ -219,7 +254,7 @@ struct Room {
     const int frame = (int)((tx / 10) % 1024), tx_slot = (int)(tx % 10);
     std::vector<c16_t> grid(kSym * kFft, c16_t{0, 0});
     nr_aiot_r2d_set_slot_time(&r2d, frame, tx_slot, tx_at);
-    nr_aiot_r2d_map(&r2d, frame, tx_slot, grid.data(), nullptr, nullptr);
+    nr_aiot_r2d_map(&r2d, frame, tx_slot, nullptr, grid.data());
     if (split != Split::kRemoteR2d) {
       dl.resize(std::max<size_t>(dl.size(), tx_at + kSlot));
       Modulate(grid, dl.data() + tx_at);
@@ -227,7 +262,7 @@ struct Room {
       const int64_t ut = slot + ue_ahead, ut_at = ut * kSlot;
       std::vector<c16_t> ue_grid(kSym * kFft, c16_t{0, 0});
       nr_aiot_r2d_set_slot_time(&ue_r2d, (int)((ut / 10) % 1024), (int)(ut % 10), ut_at + ue_offset);
-      nr_aiot_r2d_map(&ue_r2d, (int)((ut / 10) % 1024), (int)(ut % 10), ue_grid.data(), nullptr, nullptr);
+      nr_aiot_r2d_map(&ue_r2d, (int)((ut / 10) % 1024), (int)(ut % 10), nullptr, ue_grid.data());
       dl.resize(std::max<size_t>(dl.size(), ut_at + kSlot));
       Modulate(ue_grid, dl.data() + ut_at);
     }
@@ -696,12 +731,13 @@ TEST(NrAiotReader, ThePeerServesOnlyWhatItHas)
   char err[256] = "";
   nr_aiot_r2d_t none;
   nr_aiot_r2d_config_t nc = {-1, 0, 0.0};
-  ASSERT_EQ(nr_aiot_r2d_init(&none, &nc, 10, kSym, kFft, kPrb, kAmp), 0);
-  EXPECT_EQ(nr_aiot_peer_new(0, &none, nullptr, err, sizeof(err)), nullptr);
+  ASSERT_EQ(nr_aiot_r2d_init(&nc, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &none), 0);
+  const nr_aiot_peer_config_t pc = {};
+  EXPECT_EQ(nr_aiot_peer_new(&pc, &none, nullptr, err, sizeof(err)), nullptr);
   EXPECT_NE(std::string(err).find("neither"), std::string::npos) << err;
   nr_aiot_d2r_config_t dc = {15, 7, 1.0, 1};
   nr_aiot_d2r_t *d2r = nr_aiot_d2r_new(&dc, kPrb, AIOT_SCS_HZ, AIOT_SAMPLE_RATE_HZ);
-  nr_aiot_peer_t *peer = nr_aiot_peer_new(0, &none, d2r, err, sizeof(err));
+  nr_aiot_peer_t *peer = nr_aiot_peer_new(&pc, &none, d2r, err, sizeof(err));
   ASSERT_NE(peer, nullptr) << err;
 
   const int s = socket(AF_INET, SOCK_DGRAM, 0);
@@ -716,21 +752,23 @@ TEST(NrAiotReader, ThePeerServesOnlyWhatItHas)
   r2d.a_bits = 8;
   uint8_t buf[AIOT_NODE_SPLIT_MAX_BYTES];
   send(buf, aiot_node_msg_pack_r2d(&r2d, buf, sizeof(buf))); // the UE has no R2D PRBs
-  aiot_node_window_t w = {};
-  w.expect.tag = 42;
-  w.expect.a_bits = 16;
+  aiot_node_window_t w = ValidWindow(42);
   send(buf, aiot_node_msg_pack_window(&w, buf, sizeof(buf))); // before the UE has received a slot
-  usleep(10000);
-  EXPECT_EQ(nr_aiot_peer_step(peer), 3);
+  aiot_node_window_t bad = ValidWindow(43);
+  bad.expect.params.l_amble = 8; // no preamble the receiver has
+  send(buf, aiot_node_msg_pack_window(&bad, buf, sizeof(buf)));
+  EXPECT_EQ(StepPeer(peer, 4), 4);
   const nr_aiot_peer_stats_t ps = nr_aiot_peer_stats(peer);
   EXPECT_EQ(ps.refused, 2u);
-  EXPECT_EQ(ps.windows, 1u);
-  EXPECT_EQ(ps.windows_refused, 1u);
-  const ssize_t n = recv(s, buf, sizeof(buf), MSG_DONTWAIT);
+  EXPECT_EQ(ps.windows, 2u);
+  EXPECT_EQ(ps.windows_refused, 2u);
   auto o = std::make_unique<aiot_node_outcome_t>();
-  ASSERT_EQ(aiot_node_msg_parse_outcome(buf, (int)n, o.get()), 0);
-  EXPECT_EQ(o->outcome.expect.tag, 42);
-  EXPECT_EQ(o->outcome.n_decoded, 0);
+  for (int tag : {42, 43}) { // each answered at once, empty
+    const ssize_t n = recv(s, buf, sizeof(buf), MSG_DONTWAIT);
+    ASSERT_EQ(aiot_node_msg_parse_outcome(buf, (int)n, o.get()), 0);
+    EXPECT_EQ(o->outcome.expect.tag, tag);
+    EXPECT_EQ(o->outcome.n_decoded, 0);
+  }
   EXPECT_LT(recv(s, buf, sizeof(buf), MSG_DONTWAIT), 0); // nothing for the junk or the R2D
   close(s);
   nr_aiot_peer_free(peer);
@@ -738,13 +776,186 @@ TEST(NrAiotReader, ThePeerServesOnlyWhatItHas)
   nr_aiot_r2d_free(&none);
 }
 
+// A UE given the gNB's address serves no one else.
+TEST(NrAiotReader, ThePeerServesOnlyTheGnb)
+{
+  char err[256] = "";
+  nr_aiot_r2d_t none;
+  nr_aiot_r2d_config_t nc = {-1, 0, 0.0};
+  ASSERT_EQ(nr_aiot_r2d_init(&nc, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &none), 0);
+  nr_aiot_d2r_config_t dc = {15, 7, 1.0, 1};
+  nr_aiot_d2r_t *d2r = nr_aiot_d2r_new(&dc, kPrb, AIOT_SCS_HZ, AIOT_SAMPLE_RATE_HZ);
+  const nr_aiot_peer_config_t pc = {.port = 0, .addr = "127.0.0.1", .reader = "127.0.0.2"};
+  nr_aiot_peer_t *peer = nr_aiot_peer_new(&pc, &none, d2r, err, sizeof(err));
+  ASSERT_NE(peer, nullptr) << err;
+  const nr_aiot_peer_config_t bad = {.port = 0, .addr = "", .reader = "gnb"};
+  EXPECT_EQ(nr_aiot_peer_new(&bad, &none, d2r, err, sizeof(err)), nullptr);
+
+  const int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  to.sin_port = htons(nr_aiot_peer_port(peer));
+  uint8_t buf[AIOT_NODE_SPLIT_MAX_BYTES];
+  aiot_node_window_t w = ValidWindow(42);
+  const int n = aiot_node_msg_pack_window(&w, buf, sizeof(buf));
+  ASSERT_EQ(sendto(s, buf, n, 0, (sockaddr *)&to, sizeof(to)), n); // from 127.0.0.1
+  EXPECT_EQ(StepPeer(peer, 1), 1);
+  const nr_aiot_peer_stats_t ps = nr_aiot_peer_stats(peer);
+  EXPECT_EQ(ps.foreign, 1u);
+  EXPECT_EQ(ps.windows, 0u);
+  EXPECT_LT(recv(s, buf, sizeof(buf), MSG_DONTWAIT), 0);
+  close(s);
+  nr_aiot_peer_free(peer);
+  nr_aiot_d2r_free(d2r);
+  nr_aiot_r2d_free(&none);
+}
+
+// With more windows open than the UE keeps, the oldest one goes back to the Reader empty at once.
+TEST(NrAiotReader, ThePeerAnswersItsOldestWindowWhenTooManyAreOpen)
+{
+  char err[256] = "";
+  nr_aiot_r2d_t none;
+  nr_aiot_r2d_config_t nc = {-1, 0, 0.0};
+  ASSERT_EQ(nr_aiot_r2d_init(&nc, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &none), 0);
+  nr_aiot_d2r_config_t dc = {15, 7, 1.0, 1};
+  nr_aiot_d2r_t *d2r = nr_aiot_d2r_new(&dc, kPrb, AIOT_SCS_HZ, AIOT_SAMPLE_RATE_HZ);
+  nr_aiot_d2r_set_slot_time(d2r, 0, 0, 0); // the UE has received slot 0.0
+  const nr_aiot_peer_config_t pc = {.port = 0, .addr = "127.0.0.1", .reader = "127.0.0.1"};
+  nr_aiot_peer_t *peer = nr_aiot_peer_new(&pc, &none, d2r, err, sizeof(err));
+  ASSERT_NE(peer, nullptr) << err;
+
+  const int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  to.sin_port = htons(nr_aiot_peer_port(peer));
+  uint8_t buf[AIOT_NODE_SPLIT_MAX_BYTES];
+  const int kOpen = AIOT_NODE_MAX_WINDOWS + 1;
+  for (int i = 0; i < kOpen; i++) {
+    aiot_node_window_t w = ValidWindow(100 + i);
+    w.at.frame = 10; // ahead of the receiver
+    w.at.sample = i;
+    const int n = aiot_node_msg_pack_window(&w, buf, sizeof(buf));
+    ASSERT_EQ(sendto(s, buf, n, 0, (sockaddr *)&to, sizeof(to)), n);
+  }
+  EXPECT_EQ(StepPeer(peer, kOpen), kOpen);
+  const nr_aiot_peer_stats_t ps = nr_aiot_peer_stats(peer);
+  EXPECT_EQ(ps.windows, (uint64_t)kOpen);
+  EXPECT_EQ(ps.windows_evicted, 1u);
+  EXPECT_EQ(ps.windows_refused, 1u);
+  auto o = std::make_unique<aiot_node_outcome_t>();
+  const ssize_t n = recv(s, buf, sizeof(buf), MSG_DONTWAIT);
+  ASSERT_EQ(aiot_node_msg_parse_outcome(buf, (int)n, o.get()), 0);
+  EXPECT_EQ(o->outcome.expect.tag, 100);
+  EXPECT_EQ(o->outcome.n_decoded, 0);
+  EXPECT_LT(recv(s, buf, sizeof(buf), MSG_DONTWAIT), 0);
+  close(s);
+  nr_aiot_peer_free(peer);
+  nr_aiot_d2r_free(d2r);
+  nr_aiot_r2d_free(&none);
+}
+
+// A lead past the most the Reader grows it to is refused.
+TEST(NrAiotReader, RefusesALeadTooLong)
+{
+  nr_aiot_r2d_t r2d;
+  nr_aiot_r2d_config_t rc = {0, 3, 0.0};
+  ASSERT_EQ(nr_aiot_r2d_init(&rc, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &r2d), 0);
+  nr_aiot_d2r_config_t dc = {15, 7, 1.0, 1};
+  nr_aiot_d2r_t *d2r = nr_aiot_d2r_new(&dc, kPrb, AIOT_SCS_HZ, AIOT_SAMPLE_RATE_HZ);
+  nr_aiot_reader_config_t cfg = {};
+  snprintf(cfg.protocol, sizeof(cfg.protocol), "registration");
+  cfg.link = RoomLink();
+  cfg.node_ids[cfg.n_nodes++] = 0;
+  char err[256] = "";
+  for (int lead : {-1, NR_AIOT_READER_MAX_LEAD_SLOTS + 1}) {
+    cfg.lead_slots = lead;
+    EXPECT_EQ(nr_aiot_reader_new(&cfg, &r2d, d2r, err, sizeof(err)), nullptr) << lead;
+    EXPECT_NE(std::string(err).find("aiot.lead_slots"), std::string::npos) << err;
+  }
+  cfg.lead_slots = NR_AIOT_READER_MAX_LEAD_SLOTS;
+  nr_aiot_reader_t *r = nr_aiot_reader_new(&cfg, &r2d, d2r, err, sizeof(err));
+  EXPECT_NE(r, nullptr) << err;
+  EXPECT_TRUE(r2d.clock); // the Reader plans on the node's slots
+  nr_aiot_reader_free(r);
+  nr_aiot_d2r_free(d2r);
+  nr_aiot_r2d_free(&r2d);
+}
+
+// The options of this process from now on, as if it had been started with them (a death test's child).
+void UseOptions(std::vector<const char *> options)
+{
+  options.insert(options.begin(), "test_nr_aiot_reader");
+  uniqCfg->argc = (int)options.size();
+  uniqCfg->argv = (char **)calloc(options.size() + 1, sizeof(char *));
+  for (size_t i = 0; i < options.size(); i++)
+    uniqCfg->argv[i] = strdup(options[i]);
+  uniqCfg->argv_info = (uint32_t *)calloc(options.size() + 1, sizeof(uint32_t));
+  dup2(STDERR_FILENO, STDOUT_FILENO); // the log, for the death test to match
+}
+
+// Without an aiot section, the node has no R2D, D2R, Reader nor peer.
+TEST(NrAiotConfig, NoSectionNoAiot)
+{
+  nr_aiot_r2d_config_t r2d;
+  nr_aiot_d2r_config_t d2r;
+  nr_aiot_config_phy(&r2d, &d2r);
+  EXPECT_LT(r2d.prb_start, 0);
+  EXPECT_LT(d2r.prb_start, 0);
+  nr_aiot_reader_t *reader = (nr_aiot_reader_t *)&r2d;
+  nr_aiot_peer_t *peer = (nr_aiot_peer_t *)&d2r;
+  nr_aiot_ue_from_config(nullptr, nullptr, &reader, &peer);
+  EXPECT_EQ(reader, nullptr);
+  EXPECT_EQ(peer, nullptr);
+  EXPECT_EQ(nr_aiot_reader_from_config(nullptr, nullptr), nullptr);
+}
+
+// A section that does not fit stops the node with the reason, not an assertion.
+TEST(NrAiotConfig, StopsTheNodeOnASectionThatDoesNotFit)
+{
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  nr_aiot_r2d_config_t r2d;
+  nr_aiot_d2r_config_t d2r;
+  nr_aiot_reader_t *reader;
+  nr_aiot_peer_t *peer;
+  EXPECT_EXIT(
+      {
+        UseOptions({"--aiot.r2d_prb_start", "0", "--aiot.r2d_n_rb", "0"});
+        nr_aiot_config_phy(&r2d, &d2r);
+      },
+      testing::ExitedWithCode(EXIT_FAILURE),
+      "give the R2D at least one PRB");
+  EXPECT_EXIT(
+      {
+        UseOptions({"--aiot.protocol", "registration", "--aiot.nodes", "0", "--aiot.serve_port", "38392"});
+        nr_aiot_ue_from_config(nullptr, nullptr, &reader, &peer);
+      },
+      testing::ExitedWithCode(EXIT_FAILURE),
+      "either a Reader or the UE of a gNB's split Reader");
+  EXPECT_EXIT(
+      {
+        UseOptions({"--aiot.serve_port", "38392", "--aiot.serve_reader", "gnb"});
+        nr_aiot_ue_from_config(nullptr, nullptr, &reader, &peer);
+      },
+      testing::ExitedWithCode(EXIT_FAILURE),
+      "A-IoT peer");
+  EXPECT_EXIT(
+      {
+        UseOptions({"--aiot.protocol", "registration", "--aiot.nodes", "3-1"});
+        nr_aiot_reader_from_config(nullptr, nullptr);
+      },
+      testing::ExitedWithCode(EXIT_FAILURE),
+      "must list the Tags");
+}
+
 // A Reader with both ends of one of its links, or neither, is refused.
 TEST(NrAiotReader, ASplitReaderHasEachLinkOnce)
 {
   nr_aiot_r2d_t with_prbs, clock_only;
   nr_aiot_r2d_config_t a = {0, 3, 0.0}, b = {-1, 0, 0.0};
-  ASSERT_EQ(nr_aiot_r2d_init(&with_prbs, &a, 10, kSym, kFft, kPrb, kAmp), 0);
-  ASSERT_EQ(nr_aiot_r2d_init(&clock_only, &b, 10, kSym, kFft, kPrb, kAmp), 0);
+  ASSERT_EQ(nr_aiot_r2d_init(&a, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &with_prbs), 0);
+  ASSERT_EQ(nr_aiot_r2d_init(&b, 10, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &clock_only), 0);
   nr_aiot_d2r_config_t dc = {15, 7, 1.0, 1};
   nr_aiot_d2r_t *d2r = nr_aiot_d2r_new(&dc, kPrb, AIOT_SCS_HZ, AIOT_SAMPLE_RATE_HZ);
   auto refused = [&](nr_aiot_r2d_t *r2d, nr_aiot_d2r_t *rx, const char *remote_r2d, const char *remote_d2r) {
@@ -809,8 +1020,8 @@ TEST(NrAiotReader, ParsesItsSettings)
 
 int main(int argc, char **argv)
 {
+  testing::InitGoogleTest(&argc, argv); // first: it takes its own options out of argv
   logInit();
   uniqCfg = load_configmodule(argc, argv, CONFIG_ENABLECMDLINEONLY);
-  testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

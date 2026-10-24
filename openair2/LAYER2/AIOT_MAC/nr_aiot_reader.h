@@ -44,6 +44,9 @@ extern "C" {
 
 #define NR_AIOT_READER_MAX_PARAMS 8
 #define NR_AIOT_READER_MAX_NODES 1024
+#define NR_AIOT_READER_ADDRESS_LEN 64 /* "ipv4:port" and its end */
+#define NR_AIOT_READER_LEAD_SLOTS 2 /* the lead when none is given */
+#define NR_AIOT_READER_MAX_LEAD_SLOTS 64 /* the most a lead grows to, and the most one can give */
 
 typedef struct nr_aiot_reader_config {
   char protocol[32]; /* "": the node is no Reader */
@@ -53,11 +56,12 @@ typedef struct nr_aiot_reader_config {
   int node_ids[NR_AIOT_READER_MAX_NODES];
   int n_nodes;
   aiot_link_config_t link;
-  int lead_slots; /* slots between the slot the node sent last and an R2D's first; doubles when late */
+  int lead_slots; /* slots between the slot the node sent last and an R2D's first, 0 to
+                     NR_AIOT_READER_MAX_LEAD_SLOTS (0: NR_AIOT_READER_LEAD_SLOTS); grows when an R2D is late */
   char output_dir[256]; /* "": no CSV files */
-  char data_dest[64]; /* "ipv4:port" for each message heard from a Tag, as Tag data; "": none */
-  char remote_r2d[64]; /* "ipv4:port" of the UE that sends the R2D; "": the node sends it */
-  char remote_d2r[64]; /* "ipv4:port" of the UE that receives the D2R; "": the node receives it */
+  char data_dest[NR_AIOT_READER_ADDRESS_LEN]; /* "ipv4:port" for each message heard from a Tag, as Tag data; "": none */
+  char remote_r2d[NR_AIOT_READER_ADDRESS_LEN]; /* "ipv4:port" of the UE that sends the R2D; "": the node sends it */
+  char remote_d2r[NR_AIOT_READER_ADDRESS_LEN]; /* "ipv4:port" of the UE that receives the D2R; "": the node receives it */
 } nr_aiot_reader_config_t;
 
 typedef struct nr_aiot_reader nr_aiot_reader_t;
@@ -90,21 +94,21 @@ typedef struct {
   uint64_t peer_refused; /* datagrams that were no answer the Reader waits for */
 } nr_aiot_reader_stats_t;
 
-/* Parses "name=value,name=value" into cfg->params. Returns 0 or -1. */
+/*! \brief Parses "name=value,name=value" into cfg->params. \return 0 or -1. */
 int nr_aiot_reader_parse_params(nr_aiot_reader_config_t *cfg, const char *s);
-/* Parses "0,1,2" (and ranges "0-7") into cfg->node_ids. Returns 0 or -1. */
+/*! \brief Parses "0,1,2" (and ranges "0-7") into cfg->node_ids. \return 0 or -1. */
 int nr_aiot_reader_parse_nodes(nr_aiot_reader_config_t *cfg, const char *s);
-/* Parses a list of R_SFS values "1,2,4,8" into cfg->link. Returns 0 or -1. */
+/*! \brief Parses a list of R_SFS values "1,2,4,8" into cfg->link. \return 0 or -1. */
 int nr_aiot_reader_parse_r_sfs(nr_aiot_reader_config_t *cfg, const char *s);
-/* Parses a bit duration in tau, "2", "1", "1/2" ... "1/96", into cfg->link. Returns 0 or -1. */
+/*! \brief Parses a bit duration in tau, "2", "1", "1/2" ... "1/96", into cfg->link. \return 0 or -1. */
 int nr_aiot_reader_parse_t_bit(nr_aiot_reader_config_t *cfg, const char *s);
-/* Parses a data destination "10.0.1.1:38391" (empty: none) into cfg->data_dest. Returns 0 or -1. */
+/*! \brief Parses a data destination "10.0.1.1:38391" (empty: none) into cfg->data_dest. \return 0 or -1. */
 int nr_aiot_reader_parse_data_dest(nr_aiot_reader_config_t *cfg, const char *s);
-/* Parses an address "10.0.1.2:38392" (empty: none) into dst, of 64 bytes, as cfg->remote_r2d and
- * cfg->remote_d2r take it. Returns 0 or -1. */
+/*! \brief Parses an address "10.0.1.2:38392" (empty: none) into dst, of NR_AIOT_READER_ADDRESS_LEN bytes, as cfg->remote_r2d and
+ * cfg->remote_d2r take it. \return 0 or -1. */
 int nr_aiot_reader_parse_address(char *dst, const char *s);
 
-/* A Reader on the node's R2D transmitter and D2R receiver. r2d must be initialised, with PRBs unless
+/*! \brief A Reader on the node's R2D transmitter and D2R receiver. r2d must be initialised, with PRBs unless
  * the R2D is remote; d2r is NULL when, and only when, the D2R is remote. Returns NULL with the reason
  * in err. */
 nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
@@ -112,16 +116,17 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
                                      nr_aiot_d2r_t *d2r,
                                      char *err,
                                      int err_len);
-/* Stops the thread, if any, writes what is left and frees everything. */
+/*! \brief Stops the thread, if any, writes what is left and frees everything. */
 void nr_aiot_reader_free(nr_aiot_reader_t *r);
 
-/* One pass: gives the MAC the outcomes that came in, and sends the R2Ds that are ready. Returns how
+/*! \brief One pass: gives the MAC the outcomes that came in, and sends the R2Ds that are ready. Returns how
  * many of either it handled. The thread calls it once per slot received; tests call it. */
 int nr_aiot_reader_step(nr_aiot_reader_t *r);
-/* Starts the thread (threadCreate(), which stops the node if it cannot). Returns 0, or -1 when it runs already. */
+/*! \brief Starts the thread (threadCreate(), which stops the node if it cannot). Returns 0, or -1 when it runs already. */
 int nr_aiot_reader_start(nr_aiot_reader_t *r);
-/* 1 once the protocol has ended and every answer is in. */
+/*! \brief 1 once the protocol has ended and every answer is in. */
 int nr_aiot_reader_done(nr_aiot_reader_t *r);
+/*! \brief What the Reader has done so far. */
 nr_aiot_reader_stats_t nr_aiot_reader_stats(nr_aiot_reader_t *r);
 
 #ifdef __cplusplus

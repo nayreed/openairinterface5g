@@ -58,6 +58,18 @@ extern "C" {
 #define AIOT_MAX_TBS_BYTES 125
 #define AIOT_MAX_TB_BITS (8 * AIOT_MAX_TBS_BYTES)
 
+/* The NR cell's time, which A-IoT nodes count in: 15 kHz, 10 slots of 1 ms a frame, the SFN wrapping
+ * at 1024 frames (TS 38.211 §4.3.1). */
+#define AIOT_CELL_FRAMES 1024
+#define AIOT_CELL_SLOTS_PER_FRAME 10
+#define AIOT_CELL_WRAP_SLOTS (AIOT_CELL_FRAMES * AIOT_CELL_SLOTS_PER_FRAME)
+
+/* An event to log when it is the 1st, 2nd, 4th, 8th... (n counts it): for what can repeat every slot. */
+static inline int aiot_log_due(uint64_t n)
+{
+  return n && !(n & (n - 1));
+}
+
 /* 1 when m is an R2D M_chip^symb (2, 6, 12, 24); the minimum N_RB for it, or AIOT_EINVAL. */
 int aiot_m_valid(int m_chip_symb);
 int aiot_n_rb_min(int m_chip_symb);
@@ -147,6 +159,11 @@ int aiot_combine_repetitions(const double *soft, int n, int r_block, double *out
 /* Manchester line code (§8.5): 0 -> (1, 0), 1 -> (0, 1). Returns 2n. */
 int aiot_manchester(const uint8_t *bits, int n, uint8_t *out);
 /* All chips of one R2D transmission: SIP, CAP, Manchester(TB + CRC), postamble, padding (§6.2.5). */
+/* n bits, one a byte, into (n + 7) / 8 bytes, the first in the top bit of the first byte; and back. */
+void aiot_pack_bits(const uint8_t *bits, int n, uint8_t *bytes);
+void aiot_unpack_bits(const uint8_t *bytes, int n, uint8_t *bits);
+/* Room for the chips of a transport block of a_bits: the body, the forced chips of M = 24 and the padding. */
+#define AIOT_R2D_MAX_CHIPS(a_bits) (4 * ((a_bits) + 16) + 64)
 int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t *chips, int max_chips);
 int aiot_r2d_n_symbols(int n_chips, int m_chip_symb);
 /* Samples of n_sym symbols starting with symbol l = 0 (long CP at l mod 7 == 0). */
@@ -233,6 +250,8 @@ typedef struct aiot_d2r_rx aiot_d2r_rx_t;
 
 aiot_d2r_rx_t *aiot_d2r_rx_new(double noise_w, int enable_sic);
 void aiot_d2r_rx_free(aiot_d2r_rx_t *rx);
+/* 0 when the receiver can open window e (its length, and each R_SFS's parameters), else AIOT_EINVAL. */
+int aiot_d2r_expect_check(const aiot_d2r_expect_t *e);
 int aiot_d2r_rx_expect(aiot_d2r_rx_t *rx, const aiot_d2r_expect_t *e);
 /* Feed the next n samples (signal plus noise). Decodes every expected D2R whose window has fully
  * arrived, in the order they were expected. Returns how many outcomes it

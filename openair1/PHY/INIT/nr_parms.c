@@ -427,10 +427,10 @@ int nr_ue_slot_select(const fapi_nr_config_request_t *cfg, int nr_slot)
     return NR_UPLINK_SLOT | NR_DOWNLINK_SLOT;
 
   const fapi_nr_tdd_table_t *tdd_table = &cfg->tdd_table;
-  int rel_slot = nr_slot % tdd_table->tdd_period_in_slots;
-
-  if (tdd_table->max_tdd_periodicity_list == NULL) // this happens before receiving TDD configuration
+  // before the TDD configuration, when the period is not known yet either
+  if (tdd_table->max_tdd_periodicity_list == NULL || tdd_table->tdd_period_in_slots <= 0)
     return NR_DOWNLINK_SLOT;
+  int rel_slot = nr_slot % tdd_table->tdd_period_in_slots;
 
   const fapi_nr_max_tdd_periodicity_t *current_slot = &tdd_table->max_tdd_periodicity_list[rel_slot];
 

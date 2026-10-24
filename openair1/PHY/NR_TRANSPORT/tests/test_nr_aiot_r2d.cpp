@@ -27,8 +27,8 @@ struct Cell {
   nr_aiot_r2d_t r2d;
   explicit Cell(int prb_start = 0, int n_rb_max = 3, double offset_db = 0, int carrier = 0)
   {
-    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, carrier};
-    EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), 0);
+    nr_aiot_r2d_config_t cfg = {prb_start, n_rb_max, offset_db, carrier != 0};
+    EXPECT_EQ(nr_aiot_r2d_init(&cfg, kSlots, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &r2d), 0);
   }
   ~Cell()
   {
@@ -42,6 +42,14 @@ std::vector<uint8_t> RandomBits(std::mt19937 &gen, int n)
   for (auto &x : b)
     x = gen() & 1;
   return b;
+}
+
+// map(), with the symbols written: take() and put()
+int MapUsed(nr_aiot_r2d_t *r2d, int frame, int slot, c16_t *grid, bool *used)
+{
+  nr_aiot_r2d_slot_t s;
+  nr_aiot_r2d_take(r2d, frame, slot, &s);
+  return nr_aiot_r2d_put(r2d, &s, nullptr, grid, used);
 }
 
 // One slot's grid, as phy_procedures_gNB_TX has it: the carrier's subcarriers from index 0.
@@ -80,7 +88,7 @@ void Modulate(Grid &g, std::vector<std::complex<double>> &out)
 // 10^(offset/20), rounded. re[l * K + q] is subcarrier q of R2D symbol l.
 std::vector<c16_t> Expected(const std::vector<uint8_t> &tb, int m, int n_rb, double offset_db = 0)
 {
-  std::vector<uint8_t> chips(4 * (tb.size() + 16) + 64);
+  std::vector<uint8_t> chips(AIOT_R2D_MAX_CHIPS((int)tb.size()));
   const int n_chips = aiot_r2d_chips(tb.data(), tb.size(), m, chips.data(), chips.size());
   EXPECT_GT(n_chips, 0);
   const int n_sym = aiot_r2d_n_symbols(n_chips, m), K = n_rb * 12;
@@ -111,7 +119,7 @@ TEST(NrAiotR2D, WritesItsPrbsAndSymbolsOnly)
       int seen = 0;
       for (int slot = 3; seen < n_sym; slot++) {
         Grid g;
-        const int w = nr_aiot_r2d_map(&cell.r2d, 5, slot, g.re.data(), nullptr, nullptr);
+        const int w = nr_aiot_r2d_map(&cell.r2d, 5, slot, nullptr, g.re.data());
         for (int s = 0; s < kSym; s++) {
           const int l = (slot - 3) * kSym + s - symbol;
           const bool r2d = l >= 0 && l < n_sym;
@@ -146,7 +154,7 @@ TEST(NrAiotR2D, DeviceDecodesWhatTheGnbSends)
       std::vector<std::complex<double>> air;
       for (int slot = 0; slot < 1 + (7 + n_sym + kSym - 1) / kSym + 1; slot++) {
         Grid g;
-        nr_aiot_r2d_map(&cell.r2d, 0, slot, g.re.data(), nullptr, nullptr);
+        nr_aiot_r2d_map(&cell.r2d, 0, slot, nullptr, g.re.data());
         Modulate(g, air);
       }
       // the device's own scale: its envelope detector does not care about the absolute level
@@ -187,7 +195,7 @@ TEST(NrAiotR2D, EpreFollowsTheOffset)
         ASSERT_GT(n_sym, 0);
         for (int slot = 0; cell.r2d.n_pending; slot++) {
           Grid g;
-          nr_aiot_r2d_map(&cell.r2d, 0, slot, g.re.data(), nullptr, nullptr);
+          nr_aiot_r2d_map(&cell.r2d, 0, slot, nullptr, g.re.data());
           for (int s = 0; s < kSym && slot * kSym + s < n_sym; s++)
             for (int k = 48; k < 48 + K; k++) {
               sum += (double)g.at(s, k).r * g.at(s, k).r + (double)g.at(s, k).i * g.at(s, k).i;
@@ -201,7 +209,8 @@ TEST(NrAiotR2D, EpreFollowsTheOffset)
     }
 }
 
-// The phase rotation of the slot's symbols is applied as to the NR channels.
+// The phase rotation of the slot's symbols is applied as to the NR channels: rotate_cpx_vector(), which
+// truncates the Q15 product.
 TEST(NrAiotR2D, AppliesTheSymbolRotation)
 {
   std::mt19937 gen(4);
@@ -213,14 +222,14 @@ TEST(NrAiotR2D, AppliesTheSymbolRotation)
   for (int s = 0; s < kSym; s++)
     rot[s] = c16_t{(int16_t)lround(32767 * cos(0.3 * s)), (int16_t)lround(32767 * sin(0.3 * s))};
   Grid a, b;
-  nr_aiot_r2d_map(&plain.r2d, 0, 0, a.re.data(), nullptr, nullptr);
-  nr_aiot_r2d_map(&rotated.r2d, 0, 0, b.re.data(), rot.data(), nullptr);
+  nr_aiot_r2d_map(&plain.r2d, 0, 0, nullptr, a.re.data());
+  nr_aiot_r2d_map(&rotated.r2d, 0, 0, rot.data(), b.re.data());
   for (int s = 0; s < kSym; s++)
     for (int k = 0; k < kFft; k++) {
       const std::complex<double> want =
           std::complex<double>(a.at(s, k).r, a.at(s, k).i) * std::complex<double>(rot[s].r, rot[s].i) / 32768.0;
-      EXPECT_NEAR(b.at(s, k).r, want.real(), 0.5) << s << " " << k;
-      EXPECT_NEAR(b.at(s, k).i, want.imag(), 0.5) << s << " " << k;
+      EXPECT_NEAR(b.at(s, k).r, want.real(), 1.0) << s << " " << k;
+      EXPECT_NEAR(b.at(s, k).i, want.imag(), 1.0) << s << " " << k;
     }
 }
 
@@ -248,19 +257,20 @@ TEST(NrAiotR2D, RejectsWhatItCannotSend)
   Cell off(-1, 3);
   EXPECT_EQ(nr_aiot_r2d_schedule(&off.r2d, 0, 0, 0, tb.data(), 96, 6, 1), AIOT_EINVAL);
   Grid g;
-  EXPECT_EQ(nr_aiot_r2d_map(&off.r2d, 0, 0, g.re.data(), nullptr, nullptr), 0);
+  EXPECT_EQ(nr_aiot_r2d_map(&off.r2d, 0, 0, nullptr, g.re.data()), 0);
   nr_aiot_r2d_t zeroed; // a gNB that never read a configuration
   nr_aiot_r2d_config_t none = {};
-  EXPECT_EQ(nr_aiot_r2d_init(&zeroed, &none, kSlots, kSym, kFft, kPrb, kAmp), 0);
+  EXPECT_EQ(nr_aiot_r2d_init(&none, kSlots, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &zeroed), 0);
   EXPECT_EQ(nr_aiot_r2d_schedule(&zeroed, 0, 0, 0, tb.data(), 96, 6, 1), AIOT_EINVAL);
   nr_aiot_r2d_free(&zeroed);
 
   nr_aiot_r2d_t bad;
   nr_aiot_r2d_config_t cfg = {23, 3, 0};
-  EXPECT_EQ(nr_aiot_r2d_init(&bad, &cfg, kSlots, kSym, kFft, kPrb, kAmp), -1) << "PRBs 23 to 25 of 25";
+  EXPECT_EQ(nr_aiot_r2d_init(&cfg, kSlots, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &bad), -1)
+      << "PRBs 23 to 25 of 25";
   nr_aiot_r2d_free(&bad);
   cfg = {0, 3, 0};
-  EXPECT_EQ(nr_aiot_r2d_init(&bad, &cfg, 20, kSym, kFft, kPrb, kAmp), -1) << "30 kHz";
+  EXPECT_EQ(nr_aiot_r2d_init(&cfg, 20, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &bad), -1) << "30 kHz";
   nr_aiot_r2d_free(&bad);
 }
 
@@ -273,15 +283,15 @@ TEST(NrAiotR2D, DropsATransmissionThatMissesASlot)
   Cell cell(0, 3);
   ASSERT_GT(nr_aiot_r2d_schedule(&cell.r2d, 3, 2, 0, tb.data(), 96, 6, 1), 0);
   Grid g;
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 3, 1, g.re.data(), nullptr, nullptr), 0) << "not yet";
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 3, 1, nullptr, g.re.data()), 0) << "not yet";
   EXPECT_EQ(cell.r2d.n_pending, 1);
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 3, 3, g.re.data(), nullptr, nullptr), 0) << "slot 2 was skipped";
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 3, 3, nullptr, g.re.data()), 0) << "slot 2 was skipped";
   EXPECT_EQ(cell.r2d.dropped, 1u);
   EXPECT_EQ(cell.r2d.n_pending, 0);
 
   ASSERT_GT(nr_aiot_r2d_schedule(&cell.r2d, 4, 0, 0, tb.data(), 96, 6, 1), 0);
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 4, 0, g.re.data(), nullptr, nullptr), kSym);
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 4, 2, g.re.data(), nullptr, nullptr), 0) << "slot 1 was skipped";
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 4, 0, nullptr, g.re.data()), kSym);
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 4, 2, nullptr, g.re.data()), 0) << "slot 1 was skipped";
   EXPECT_EQ(cell.r2d.dropped, 2u);
   EXPECT_EQ(cell.r2d.sent, 0u);
 }
@@ -296,34 +306,47 @@ TEST(NrAiotR2D, CrossesTheFrameNumberWrap)
   ASSERT_GT(n_sym, 7);
   EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 96, 6, 1), AIOT_EINVAL) << "overlaps across the wrap";
   Grid first;
-  int seen = nr_aiot_r2d_map(&cell.r2d, 1023, 9, first.re.data(), nullptr, nullptr);
+  int seen = nr_aiot_r2d_map(&cell.r2d, 1023, 9, nullptr, first.re.data());
   EXPECT_EQ(seen, 7);
   for (int f = 0, s = 0; cell.r2d.n_pending; s++, f += s / 10, s %= 10) {
     Grid g;
-    seen += nr_aiot_r2d_map(&cell.r2d, f, s, g.re.data(), nullptr, nullptr);
+    seen += nr_aiot_r2d_map(&cell.r2d, f, s, nullptr, g.re.data());
   }
   EXPECT_EQ(seen, n_sym);
   EXPECT_EQ(cell.r2d.sent, 1u);
   EXPECT_EQ(cell.r2d.collisions, 0u);
 }
 
-// A resource element already used by an NR channel counts as a collision; the R2D still goes out.
+// An R2D symbol whose resource elements an NR channel already uses is not written: the NR channel keeps
+// them, and the resource elements count as collisions. The other symbols go out.
 TEST(NrAiotR2D, CountsCollisionsWithNrChannels)
 {
   std::mt19937 gen(8);
   std::vector<uint8_t> tb = RandomBits(gen, 8);
   Cell cell(0, 3);
   const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 0, tb.data(), 8, 6, 1);
-  ASSERT_GT(n_sym, 0);
+  ASSERT_GT(n_sym, 2);
   ASSERT_LE(n_sym, kSym);
   Grid g;
   g.at(0, 5) = c16_t{100, 0};
   g.at(1, 11) = c16_t{0, -3};
-  g.at(1, 12) = c16_t{7, 7}; // PRB 1: not the R2D's
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 0, 0, g.re.data(), nullptr, nullptr), n_sym);
+  g.at(1, 10) = c16_t{1, 0};
+  g.at(2, 12) = c16_t{7, 7}; // PRB 1: not the R2D's
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 0, 0, nullptr, g.re.data()), n_sym - 2);
   EXPECT_EQ(cell.r2d.sent, 1u);
-  EXPECT_EQ(cell.r2d.collisions, 2u);
-  EXPECT_EQ(g.at(1, 12).r, 7);
+  EXPECT_EQ(cell.r2d.collisions, 3u);
+  EXPECT_EQ(cell.r2d.collided_symbols, 2u);
+  EXPECT_EQ(cell.r2d.collided_slots, 1u);
+  // symbols 0 and 1 are left as the NR channels had them, symbol 2 has the R2D besides PRB 1
+  for (int k = 0; k < 12; k++) {
+    EXPECT_EQ(g.at(0, k).r, k == 5 ? 100 : 0) << k;
+    EXPECT_EQ(g.at(1, k).i, k == 11 ? -3 : 0) << k;
+  }
+  EXPECT_EQ(g.at(2, 12).r, 7);
+  bool any = false;
+  for (int k = 0; k < 12; k++)
+    any |= g.at(2, k).r || g.at(2, k).i;
+  EXPECT_TRUE(any);
 }
 
 // The same slot mapped again (a repeated TX of it) leaves the transmission as it is.
@@ -335,13 +358,13 @@ TEST(NrAiotR2D, MappingASlotAgainChangesNothing)
   const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 2, 0, 0, tb.data(), 96, 6, 1);
   ASSERT_GT(n_sym, kSym);
   Grid g;
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 2, 0, g.re.data(), nullptr, nullptr), kSym);
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 2, 0, nullptr, g.re.data()), kSym);
   Grid again;
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 2, 0, again.re.data(), nullptr, nullptr), 0);
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 2, 0, nullptr, again.re.data()), 0);
   int seen = kSym;
   for (int slot = 1; cell.r2d.n_pending; slot++) {
     Grid h;
-    seen += nr_aiot_r2d_map(&cell.r2d, 2, slot, h.re.data(), nullptr, nullptr);
+    seen += nr_aiot_r2d_map(&cell.r2d, 2, slot, nullptr, h.re.data());
   }
   EXPECT_EQ(seen, n_sym);
   EXPECT_EQ(cell.r2d.sent, 1u);
@@ -373,10 +396,10 @@ TEST(NrAiotR2D, RefusesAPowerThatWouldClip)
   nr_aiot_r2d_config_t cfg = {0, 3, 0};
   // peak = 519 sqrt(36) 10^(x/20) <= 32767: x <= 20.4 dB
   cfg.power_offset_db = 20.0;
-  EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), 0);
+  EXPECT_EQ(nr_aiot_r2d_init(&cfg, kSlots, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &r2d), 0);
   nr_aiot_r2d_free(&r2d);
   cfg.power_offset_db = 21.0;
-  EXPECT_EQ(nr_aiot_r2d_init(&r2d, &cfg, kSlots, kSym, kFft, kPrb, kAmp), -1);
+  EXPECT_EQ(nr_aiot_r2d_init(&cfg, kSlots, kSym, kFft, kFft * 160 / 2048, kFft * 144 / 2048, kPrb, kAmp, &r2d), -1);
   nr_aiot_r2d_free(&r2d);
 }
 
@@ -390,13 +413,13 @@ TEST(NrAiotR2D, RefusesASlotAlreadyMapped)
   EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), -1);
   EXPECT_EQ(ts, -1);
   Grid g;
-  nr_aiot_r2d_map(&cell.r2d, 5, 4, g.re.data(), nullptr, nullptr);
+  nr_aiot_r2d_map(&cell.r2d, 5, 4, nullptr, g.re.data());
   EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 54);
   EXPECT_EQ(ts, -1); // the node did not say when
   EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 5, 4, 7, tb.data(), 96, 6, 1), NR_AIOT_R2D_ETOOLATE);
   EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 5, 1, 0, tb.data(), 96, 6, 1), NR_AIOT_R2D_ETOOLATE);
   EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 5, 5, 0, tb.data(), 96, 6, 1), 0);
-  nr_aiot_r2d_map(&cell.r2d, 1023, 9, g.re.data(), nullptr, nullptr); // across the wrap, 0.0 is next
+  nr_aiot_r2d_map(&cell.r2d, 1023, 9, nullptr, g.re.data()); // across the wrap, 0.0 is next
   EXPECT_GT(nr_aiot_r2d_schedule(&cell.r2d, 0, 0, 7, tb.data(), 96, 6, 1), 0);
 }
 
@@ -413,7 +436,7 @@ TEST(NrAiotR2D, MarksTheSymbolsItWrites)
     Grid g;
     bool used[kSym] = {};
     used[0] = slot == 3; // an NR channel's
-    const int w = nr_aiot_r2d_map(&cell.r2d, 2, slot, g.re.data(), nullptr, used);
+    const int w = MapUsed(&cell.r2d, 2, slot, g.re.data(), used);
     int marked = 0;
     for (int s = 0; s < kSym; s++) {
       const int l = (slot - 4) * kSym + s - 7;
@@ -427,7 +450,7 @@ TEST(NrAiotR2D, MarksTheSymbolsItWrites)
   Cell carrier(0, 3, 0, 1);
   Grid g;
   bool used[kSym] = {};
-  EXPECT_EQ(nr_aiot_r2d_map(&carrier.r2d, 0, 0, g.re.data(), nullptr, used), 0);
+  EXPECT_EQ(MapUsed(&carrier.r2d, 0, 0, g.re.data(), used), 0);
   for (int s = 0; s < kSym; s++)
     EXPECT_TRUE(used[s]) << "the carrier, symbol " << s;
 }
@@ -440,15 +463,16 @@ TEST(NrAiotR2D, KeepsTheTimeOfTheSlotMappedLast)
   int64_t ts = 0;
   nr_aiot_r2d_set_slot_time(&cell.r2d, 7, 3, 123457);
   EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), -1); // given, not mapped yet
-  nr_aiot_r2d_map(&cell.r2d, 7, 3, g.re.data(), nullptr, nullptr);
+  nr_aiot_r2d_map(&cell.r2d, 7, 3, nullptr, g.re.data());
   EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 73);
   EXPECT_EQ(ts, 123457);
-  nr_aiot_r2d_map(&cell.r2d, 7, 4, g.re.data(), nullptr, nullptr);
+  nr_aiot_r2d_map(&cell.r2d, 7, 4, nullptr, g.re.data());
   EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 74);
   EXPECT_EQ(ts, -1);
 }
 
-// A node whose R2D another node sends (a split Reader) keeps the clock and writes nothing.
+// A node whose R2D another node sends (a split Reader) writes nothing; its clock runs once the Reader
+// starts it (nr_aiot_r2d_start_clock()).
 TEST(NrAiotR2D, KeepsTheClockWithoutPrbs)
 {
   Cell cell(-1, 0);
@@ -456,12 +480,41 @@ TEST(NrAiotR2D, KeepsTheClockWithoutPrbs)
   int64_t ts = 0;
   const std::vector<uint8_t> tb(40, 1);
   EXPECT_EQ(nr_aiot_r2d_schedule(&cell.r2d, 0, 2, 0, tb.data(), tb.size(), 6, 1), AIOT_EINVAL);
+  // off until a Reader runs it: a node without A-IoT does nothing per slot
+  nr_aiot_r2d_set_slot_time(&cell.r2d, 1023, 8, 98);
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 1023, 8, nullptr, g.re.data()), 0);
+  EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), -1);
+  EXPECT_EQ(ts, -1);
+  nr_aiot_r2d_start_clock(&cell.r2d);
   nr_aiot_r2d_set_slot_time(&cell.r2d, 1023, 9, 99);
-  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 1023, 9, g.re.data(), nullptr, nullptr), 0);
+  EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 1023, 9, nullptr, g.re.data()), 0);
   EXPECT_EQ(nr_aiot_r2d_now(&cell.r2d, &ts), 10239);
   EXPECT_EQ(ts, 99);
   for (auto &v : g.re)
     ASSERT_TRUE(!v.r && !v.i);
+}
+
+// A UE's slots: take_new() gives a slot only when it has R2D, and a slot the UE does not send
+// (take() with no slot, its PRACH slot) drops the transmissions in it.
+TEST(NrAiotR2D, TakesSlotsOnlyWithR2DAndDropsUnsentOnes)
+{
+  std::mt19937 gen(9);
+  std::vector<uint8_t> tb = RandomBits(gen, 96);
+  Cell cell(0, 3);
+  const int n_sym = nr_aiot_r2d_schedule(&cell.r2d, 0, 2, 0, tb.data(), 96, 6, 1);
+  ASSERT_GT(n_sym, kSym);
+  EXPECT_EQ(nr_aiot_r2d_take_new(&cell.r2d, 0, 1), nullptr) << "before it";
+  nr_aiot_r2d_slot_t *s = nr_aiot_r2d_take_new(&cell.r2d, 0, 2);
+  ASSERT_NE(s, nullptr);
+  Grid g;
+  EXPECT_EQ(nr_aiot_r2d_put(&cell.r2d, s, nullptr, g.re.data(), nullptr), kSym);
+  free(s);
+  EXPECT_EQ(nr_aiot_r2d_put(&cell.r2d, nullptr, nullptr, g.re.data(), nullptr), 0);
+  EXPECT_EQ(nr_aiot_r2d_take(&cell.r2d, 0, 3, nullptr), 0) << "a PRACH slot";
+  EXPECT_EQ(cell.r2d.dropped, 1u);
+  EXPECT_EQ(cell.r2d.n_pending, 0);
+  EXPECT_EQ(nr_aiot_r2d_take_new(&cell.r2d, 0, 4), nullptr);
+  EXPECT_EQ(cell.r2d.sent, 0u);
 }
 
 // A Reader whose R2D another node sends counts its symbols without scheduling it: as many as
@@ -495,7 +548,7 @@ TEST(NrAiotR2D, TheCarrierRunsUnbroken)
       std::vector<std::complex<double>> air;
       for (int slot = 0; slot < 3; slot++) {
         Grid g;
-        EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 7, slot, g.re.data(), nullptr, nullptr), 0);
+        EXPECT_EQ(nr_aiot_r2d_map(&cell.r2d, 7, slot, nullptr, g.re.data()), 0);
         for (int s = 0; s < kSym; s++)
           for (int k = 0; k < kFft; k++)
             if (k != prb_start * 12 + 6 * n_rb_max) {
@@ -530,7 +583,7 @@ TEST(NrAiotR2D, TheR2DKeysTheCarrier)
     Grid g;
     if (slot == n_slots - 1)
       g.at(2, 18) = c16_t{5, 5}; // an NR channel on the carrier's resource element
-    nr_aiot_r2d_map(&cell.r2d, 0, slot, g.re.data(), nullptr, nullptr);
+    nr_aiot_r2d_map(&cell.r2d, 0, slot, nullptr, g.re.data());
     for (int s = 0; s < kSym; s++) {
       const int l = (slot - 1) * kSym + s - 7;
       const c16_t v = g.at(s, 18);

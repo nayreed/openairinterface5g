@@ -499,8 +499,9 @@ void init_eNB_afterRU(void)
   for (int inst = 0; inst < RC.nb_nr_L1_inst; inst++) {
     PHY_VARS_gNB *gNB = RC.gNB[inst];
     phy_init_nr_gNB(gNB);
-    // the Ambient IoT Reader of the "aiot" section, if any, on the R2D and D2R phy_init_nr_gNB made
-    gNB->aiot_reader = nr_aiot_reader_from_config(&gNB->aiot_r2d, gNB->aiot_d2r);
+    // the Ambient IoT Reader of the "aiot" section, if any, on the R2D and D2R phy_init_nr_gNB made; the
+    // section is the first L1's, as other L1s would read the same Tags on the same PRBs
+    gNB->aiot_reader = inst == 0 ? nr_aiot_reader_from_config(&gNB->aiot_r2d, gNB->aiot_d2r) : NULL;
 
     // map antennas and PRACH signals to gNB RX
     if (0) AssertFatal(gNB->num_RU>0,"Number of RU attached to gNB %d is zero\n",gNB->Mod_id);

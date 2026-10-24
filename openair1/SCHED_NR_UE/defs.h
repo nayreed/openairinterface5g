@@ -65,8 +65,9 @@
 */
 void phy_procedures_nrUE_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_tx_t *phy_data, c16_t **txp);
 
-/*! \brief The slot's Ambient IoT R2D into phy_data, for phy_procedures_nrUE_TX(). The TX slots must call
-  it one by one in order, as processSlotTX() does before its barrier: after it they run in parallel.
+/*! \brief The slot's Ambient IoT R2D into phy_data, for phy_procedures_nrUE_TX(), which frees it. The
+  TX slots must call it one by one in order, as processSlotTX() does before its barrier: after it they
+  run in parallel. Without A-IoT it does nothing.
 */
 void nr_ue_aiot_r2d_take(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_tx_t *phy_data);
 
