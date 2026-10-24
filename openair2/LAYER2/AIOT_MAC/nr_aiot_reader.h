@@ -72,11 +72,18 @@ typedef struct {
   /* a split Reader */
   uint64_t r2d_done; /* R2D done messages back from the remote R2D */
   uint64_t r2d_refused; /* R2Ds it could not send, other than too late */
+  uint64_t r2d_early; /* of the R2D done, those of R2Ds sent before the remote R2D first answered */
+  uint64_t r2d_early_late; /* and of those, the ones it got too late: too_late counts the others */
+  /* the R2Ds sent after the remote R2D first answered: */
   int64_t r2d_ahead_min, r2d_ahead_sum; /* slots it had in hand when each R2D reached it */
   int64_t r2d_rtt_max, r2d_rtt_sum; /* A-IoT samples of the cell from each R2D sent to its R2D done */
   uint64_t windows_remote; /* windows sent to the remote D2R */
   uint64_t outcomes_remote; /* their outcomes back */
   uint64_t windows_lost; /* windows given up as empty, their outcome not back in time */
+  uint64_t outcomes_early; /* of the outcomes, those of windows opened before the remote D2R first answered */
+  uint64_t windows_early_late; /* and of those, the ones that reached it after their start */
+  /* the windows opened after the remote D2R first answered: */
+  uint64_t windows_late; /* those that reached it after their start */
   int64_t window_ahead_min, window_ahead_sum; /* A-IoT samples it had in hand when each window reached it */
   int64_t outcome_delay_max, outcome_delay_sum; /* A-IoT samples of the cell from each window's end to its outcome */
   uint64_t peer_unsent; /* messages to a remote end the socket did not take */

@@ -174,6 +174,8 @@ static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
     p->stats.refused++;
     return;
   }
+  const int rc = nr_aiot_r2d_schedule(p->r2d, m->frame, m->slot, m->symbol, m->bits, m->a_bits, m->m_chip_symb, m->n_rb);
+  /* after scheduling it, as the UE's TX may take several slots at once: at least this much in hand */
   int64_t ts;
   const int now = nr_aiot_r2d_now(p->r2d, &ts);
   int ahead = 0;
@@ -182,7 +184,6 @@ static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
     if (ahead > WRAP_SLOTS / 2)
       ahead -= WRAP_SLOTS;
   }
-  const int rc = nr_aiot_r2d_schedule(p->r2d, m->frame, m->slot, m->symbol, m->bits, m->a_bits, m->m_chip_symb, m->n_rb);
   nr_aiot_peer_stats_t *s = &p->stats;
   s->r2ds++;
   s->r2d_ahead_sum += ahead;

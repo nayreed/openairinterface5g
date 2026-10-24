@@ -29,18 +29,22 @@
 #define FRAMES 1024
 #define WRAP_SLOTS (FRAMES * SLOTS_PER_FRAME)
 #define MAX_LEAD_SLOTS 64
+#define LEAD_MARGIN_SLOTS 2 /* a remote R2D's lead over the delay of the one that came too late */
 #define MAX_EXPECTS 64
 #define MAX_OUTCOMES 8
 #define FULL_SCALE2 (32767.0 * 32767.0) /* counts squared of a full-scale sample */
 /* a split Reader */
 #define WINDOW_TIMEOUT_SLOTS 200 /* a remote window's outcome not back this long after its end: given up as empty */
 #define REPORT_SAMPLES (1000 * (int64_t)SLOT_SAMPLES) /* the split's delays are logged once a second of the cell */
-#define SENT_RING 16 /* the times of the R2Ds last sent to the remote R2D, for their round trip */
+#define SENT_RING 256 /* the times of the R2Ds last sent to the remote R2D, for their round trip */
+#define PROBE_SLOTS 100 /* until the remote R2D has answered, one R2D this often */
 
 typedef struct {
   int used;
   aiot_d2r_expect_t e;
   int64_t deadline;
+  int lead; /* the lead it was opened with */
+  int early; /* opened before the remote D2R first answered */
 } remote_window_t;
 
 struct nr_aiot_reader {
@@ -70,6 +74,10 @@ struct nr_aiot_reader {
   struct sockaddr_in r2d_peer, d2r_peer;
   uint32_t r2d_seq; /* R2Ds sent to the remote R2D */
   uint32_t lead_seq; /* the first R2D sent with the current lead */
+  int peer_up; /* the remote R2D has answered: until then the Reader sends it one R2D at a time */
+  int64_t probe_at; /* when the last of those went */
+  uint32_t up_seq; /* the first R2D sent after it answered */
+  int d2r_up; /* the remote D2R has answered */
   int64_t sent_at[SENT_RING]; /* when the R2D of seq % SENT_RING was sent, in A-IoT samples */
   remote_window_t windows[MAX_EXPECTS];
   uint8_t *msg; /* AIOT_NODE_SPLIT_MAX_BYTES + 1 */
@@ -701,6 +709,7 @@ static int send_remote_r2d(nr_aiot_reader_t *r, int frame, int slot, int symbol,
   if (len < 0)
     return len;
   r->sent_at[r->r2d_seq++ % SENT_RING] = now;
+  r->probe_at = now;
   peer_send(r, &r->r2d_peer, len, "an R2D");
   return n_sym;
 }
@@ -717,7 +726,11 @@ static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e)
     return; /* cannot happen: the MAC opens at most MAX_EXPECTS, after the node has sent a slot */
   }
   const int64_t end = e->start + e->te + aiot_frame_samples(e->a_bits, &e->params);
-  r->windows[i] = (remote_window_t){.used = 1, .e = *e, .deadline = end + WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES};
+  r->windows[i] = (remote_window_t){.used = 1,
+                                    .e = *e,
+                                    .deadline = end + WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES,
+                                    .lead = r->lead,
+                                    .early = !r->d2r_up};
   r->stats.windows_remote++;
   peer_send(r, &r->d2r_peer, aiot_node_msg_pack_window(&w, r->msg, AIOT_NODE_SPLIT_MAX_BYTES), "a window");
 }
@@ -736,6 +749,19 @@ static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
   }
   nr_aiot_reader_stats_t *s = &r->stats;
   s->r2d_done++;
+  if (!r->peer_up) {
+    r->peer_up = 1;
+    r->up_seq = r->lead_seq = r->r2d_seq;
+    LOG_I(NR_MAC, "A-IoT Reader: the UE that sends the R2D has answered (R2D %u, %d slots ahead)\n", d.seq, d.ahead);
+  }
+  if ((int32_t)(d.seq - r->up_seq) < 0) {
+    /* sent before the UE answered, maybe before it had its user plane: they waited for it, and say
+     * nothing of the delay or the lead */
+    s->r2d_early++;
+    if (d.result == NR_AIOT_R2D_ETOOLATE)
+      s->r2d_early_late++;
+    return;
+  }
   s->r2d_ahead_sum += d.ahead;
   if (d.ahead < s->r2d_ahead_min)
     s->r2d_ahead_min = d.ahead;
@@ -745,9 +771,11 @@ static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
     s->r2d_rtt_max = rtt;
   if (d.result == NR_AIOT_R2D_ETOOLATE) {
     s->too_late++;
-    /* an R2D sent before the lead last grew was planned with the shorter lead */
+    /* the UE says by how much it was late: the lead grows by that, and a margin. An R2D sent before
+     * the lead last grew was planned with the shorter lead. */
     if ((int32_t)(d.seq - r->lead_seq) >= 0 && r->lead < MAX_LEAD_SLOTS) {
-      r->lead *= 2;
+      const int64_t lead = (int64_t)r->lead + 1 - d.ahead + LEAD_MARGIN_SLOTS;
+      r->lead = lead < MAX_LEAD_SLOTS ? (int)lead : MAX_LEAD_SLOTS;
       r->lead_seq = r->r2d_seq;
     }
     LOG_W(NR_MAC,
@@ -769,6 +797,13 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
     return 0;
   }
   aiot_d2r_outcome_t *out = &o->outcome;
+  if (!r->d2r_up) {
+    r->d2r_up = 1;
+    LOG_I(NR_MAC,
+          "A-IoT Reader: the UE that receives the D2R has answered (window %ld, %.2f ms ahead)\n",
+          (long)out->expect.tag,
+          ms(o->ahead));
+  }
   int i = 0;
   while (i < MAX_EXPECTS && !(r->windows[i].used && r->windows[i].e.tag == out->expect.tag))
     i++;
@@ -780,13 +815,34 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
   w->used = 0;
   nr_aiot_reader_stats_t *s = &r->stats;
   s->outcomes_remote++;
-  s->window_ahead_sum += o->ahead;
-  if (o->ahead < s->window_ahead_min)
-    s->window_ahead_min = o->ahead;
-  const int64_t delay = now - (w->deadline - WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES);
-  s->outcome_delay_sum += delay;
-  if (delay > s->outcome_delay_max)
-    s->outcome_delay_max = delay;
+  if (w->early) {
+    /* opened before the UE answered, maybe before it had its user plane: says nothing of the delay */
+    s->outcomes_early++;
+    if (o->ahead < 0)
+      s->windows_early_late++;
+  } else {
+    s->window_ahead_sum += o->ahead;
+    if (o->ahead < s->window_ahead_min)
+      s->window_ahead_min = o->ahead;
+    const int64_t delay = now - (w->deadline - WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES);
+    s->outcome_delay_sum += delay;
+    if (delay > s->outcome_delay_max)
+      s->outcome_delay_max = delay;
+    if (o->ahead < 0) {
+      /* the UE opened it after its receiver had passed its start, and decoded what was left: the lead
+       * grows by the slots it lacked, and a margin, unless it grew since the window was opened */
+      s->windows_late++;
+      if (w->lead == r->lead && r->lead < MAX_LEAD_SLOTS) {
+        const int64_t lead = (int64_t)r->lead + (-o->ahead + SLOT_SAMPLES - 1) / SLOT_SAMPLES + LEAD_MARGIN_SLOTS;
+        r->lead = lead < MAX_LEAD_SLOTS ? (int)lead : MAX_LEAD_SLOTS;
+      }
+      LOG_W(NR_MAC,
+            "A-IoT Reader: the UE got the window at %.2f ms %.2f ms late; %d slots ahead from now on\n",
+            ms(w->e.start),
+            ms(-o->ahead),
+            r->lead);
+    }
+  }
   /* back on the node's clock: the UE counts each D2R from the window's start */
   out->expect = w->e;
   for (int k = 0; k < out->n_decoded; k++) {
@@ -850,28 +906,38 @@ static void report_split(nr_aiot_reader_t *r, int64_t now)
     return;
   r->next_report = now + REPORT_SAMPLES;
   const nr_aiot_reader_stats_t *s = &r->stats;
-  if (r->remote_r2d && s->r2d_done)
+  const uint64_t timed = s->r2d_done - s->r2d_early;
+  if (r->remote_r2d && timed)
     LOG_I(NR_MAC,
-          "A-IoT Reader: split R2D: %lu sent by the UE, %lu too late, %lu refused; the UE had %ld slots in hand at least, %.1f on "
-          "average; %.2f ms round trip on average, %.2f at most\n",
-          (unsigned long)s->r2d_done,
+          "A-IoT Reader: split R2D: %lu sent by the UE, %lu too late, %lu refused; lead %d slots; the UE had %ld slots in hand at "
+          "least, %.1f on average; %.2f ms round trip on average, %.2f at most (before it answered: %lu sent, %lu too late)\n",
+          (unsigned long)timed,
           (unsigned long)s->too_late,
           (unsigned long)s->r2d_refused,
+          r->lead,
           (long)s->r2d_ahead_min,
-          (double)s->r2d_ahead_sum / s->r2d_done,
-          ms(s->r2d_rtt_sum) / s->r2d_done,
-          ms(s->r2d_rtt_max));
+          (double)s->r2d_ahead_sum / timed,
+          ms(s->r2d_rtt_sum) / timed,
+          ms(s->r2d_rtt_max),
+          (unsigned long)s->r2d_early,
+          (unsigned long)s->r2d_early_late);
+  const uint64_t timed_outcomes = s->outcomes_remote - s->outcomes_early;
   if (r->remote_d2r && s->windows_remote)
     LOG_I(NR_MAC,
-          "A-IoT Reader: split D2R: %lu windows, %lu outcomes back, %lu given up; the UE had %.2f ms in hand at least, %.2f on "
-          "average; an outcome came %.2f ms after its window on average, %.2f at most\n",
+          "A-IoT Reader: split D2R: %lu windows, %lu outcomes back, %lu late, %lu given up; lead %d slots; the UE had %.2f ms in "
+          "hand at least, %.2f on average; an outcome came %.2f ms after its window on average, %.2f at most (before it "
+          "answered: %lu outcomes back, %lu late)\n",
           (unsigned long)s->windows_remote,
-          (unsigned long)s->outcomes_remote,
+          (unsigned long)timed_outcomes,
+          (unsigned long)s->windows_late,
           (unsigned long)s->windows_lost,
-          s->outcomes_remote ? ms(s->window_ahead_min) : 0.0,
-          s->outcomes_remote ? ms(s->window_ahead_sum) / s->outcomes_remote : 0.0,
-          s->outcomes_remote ? ms(s->outcome_delay_sum) / s->outcomes_remote : 0.0,
-          ms(s->outcome_delay_max));
+          r->lead,
+          timed_outcomes ? ms(s->window_ahead_min) : 0.0,
+          timed_outcomes ? ms(s->window_ahead_sum) / timed_outcomes : 0.0,
+          timed_outcomes ? ms(s->outcome_delay_sum) / timed_outcomes : 0.0,
+          ms(s->outcome_delay_max),
+          (unsigned long)s->outcomes_early,
+          (unsigned long)s->windows_early_late);
   if (s->peer_unsent || s->peer_refused)
     LOG_W(NR_MAC,
           "A-IoT Reader: split: %lu messages not sent to the UE, %lu datagrams refused\n",
@@ -893,6 +959,10 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
   const int tx_slot = nr_aiot_r2d_now(r->r2d, &tx_ts);
   if (tx_slot < 0 || tx_ts < 0)
     return 0; /* the node has sent nothing yet */
+  /* Until the UE that sends the R2D has answered (it may not have its user plane yet), one R2D at a
+   * time: those the gNB would send meanwhile would wait for it, and reach it late all together. */
+  if (r->remote_r2d && !r->peer_up && r->r2d_seq > 0 && now - r->probe_at < PROBE_SLOTS * (int64_t)SLOT_SAMPLES)
+    return 0;
   const int64_t tx_start = to_aiot(r, tx_ts); /* the slot mapped last, in A-IoT samples */
   int64_t start = tx_start + (int64_t)(1 + r->lead) * SLOT_SAMPLES;
   if (r->next.earliest_start > start)

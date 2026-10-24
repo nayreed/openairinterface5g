@@ -138,6 +138,7 @@ struct Room {
   nr_aiot_d2r_t *ue_d2r = nullptr;
   nr_aiot_peer_t *peer = nullptr;
   bool serve = true; // false: the UE does not answer
+  int serve_every = 1; // the UE serves the Reader every serve_every slots
   std::vector<std::unique_ptr<Tag>> tags;
   std::mt19937_64 gen{11};
   std::vector<std::complex<double>> dl; // the air's DL from sample 0
@@ -282,7 +283,7 @@ struct Room {
       nr_aiot_d2r_set_slot_time(ue_d2r, (int)((slot / 10) % 1024), (int)(slot % 10), t0 + ue_offset);
       ASSERT_EQ(nr_aiot_d2r_feed(ue_d2r, t0 + ue_offset, c.data(), kSlot), 0);
     }
-    if (peer && serve)
+    if (peer && serve && slot % serve_every == 0)
       nr_aiot_peer_step(peer);
     nr_aiot_reader_step(reader);
     slot++;
@@ -580,17 +581,43 @@ TEST(NrAiotReader, SplitEveryTagRegistersWithTheR2dFromTheUe)
 }
 
 // A UE that maps its UL further ahead than the gNB's lead allows gets the first R2Ds too late: the
-// lead doubles until they are in time, and every Tag still registers.
+// one sent before it answered, which says nothing of the lead, and the next, which says by how much.
+// The lead grows by that, the R2Ds after it are in time, and every Tag registers.
 TEST(NrAiotReader, SplitLeadGrowsUntilTheUeGetsTheR2dInTime)
 {
   Room room("registration", "", 4, "split_r2d_late", 0, "", Split::kRemoteR2d, 9);
   ASSERT_NE(room.reader, nullptr);
   room.Run(900);
   const nr_aiot_reader_stats_t st = nr_aiot_reader_stats(room.reader);
-  EXPECT_GE(st.too_late, 1u);
-  EXPECT_LE(st.too_late, 3u);
-  EXPECT_EQ(nr_aiot_peer_stats(room.peer).r2d_too_late, st.too_late);
+  EXPECT_EQ(st.r2d_early_late, 1u);
+  EXPECT_EQ(st.too_late, 1u);
+  EXPECT_EQ(nr_aiot_peer_stats(room.peer).r2d_too_late, 2u);
   EXPECT_GT(st.r2d_sent, 8u);
+  room.ExpectEveryTagRegistered();
+}
+
+// A UE that answers only from slot 350 on, as one that gets its user plane late: until then the gNB
+// sends it one R2D every 100 slots, which reach it together and too late. They neither grow the lead
+// nor count in the delay, and every Tag registers once the UE answers.
+TEST(NrAiotReader, SplitSendsOneR2dAtATimeUntilTheUeAnswers)
+{
+  Room room("registration", "", 4, "split_r2d_up", 0, "", Split::kRemoteR2d);
+  ASSERT_NE(room.reader, nullptr);
+  room.serve = false;
+  room.Run(350);
+  const uint64_t early = nr_aiot_reader_stats(room.reader).r2d_sent;
+  EXPECT_GE(early, 3u);
+  EXPECT_LE(early, 4u);
+  room.serve = true;
+  room.Run(1200);
+  const nr_aiot_reader_stats_t st = nr_aiot_reader_stats(room.reader);
+  EXPECT_EQ(st.r2d_early, early);
+  EXPECT_EQ(st.r2d_early_late, early);
+  EXPECT_EQ(nr_aiot_peer_stats(room.peer).r2d_too_late, early);
+  EXPECT_EQ(st.too_late, 0u);
+  EXPECT_GT(st.r2d_done, early + 8);
+  EXPECT_GE(st.r2d_ahead_min, 1);
+  EXPECT_LT(st.r2d_rtt_max, 3 * kSlot);
   room.ExpectEveryTagRegistered();
 }
 
@@ -613,6 +640,8 @@ TEST(NrAiotReader, SplitEveryTagRegistersWithTheD2rAtTheUe)
   EXPECT_EQ(ps.windows, st.windows_remote);
   EXPECT_EQ(ps.windows_late + ps.windows_refused, 0u);
   EXPECT_GT(st.window_ahead_min, 0);
+  EXPECT_EQ(st.outcomes_early, 1u); // the first window's, opened before the UE answered
+  EXPECT_EQ(st.windows_late + st.windows_early_late, 0u);
   EXPECT_EQ(nr_aiot_d2r_stats(room.ue_d2r).late, 0u);
   EXPECT_EQ(st.collisions, 0u);
   const auto on_air = room.OnAir(580 * kSlot);
@@ -626,6 +655,23 @@ TEST(NrAiotReader, SplitEveryTagRegistersWithTheD2rAtTheUe)
       }
     }
   EXPECT_GT(heard, 30);
+  room.ExpectEveryTagRegistered();
+}
+
+// A UE that serves the gNB only every 12 slots, longer than the windows' lead: the first windows
+// that reach it after their start say by how much, the lead grows by that, and every Tag registers.
+TEST(NrAiotReader, SplitLeadGrowsUntilTheWindowsReachTheUeInTime)
+{
+  Room room("registration", "", 4, "split_d2r_late", 0, "", Split::kRemoteD2r);
+  ASSERT_NE(room.reader, nullptr);
+  room.serve_every = 12;
+  room.Run(1500);
+  const nr_aiot_reader_stats_t st = nr_aiot_reader_stats(room.reader);
+  const nr_aiot_peer_stats_t ps = nr_aiot_peer_stats(room.peer);
+  EXPECT_GE(st.windows_late, 1u);
+  EXPECT_LE(st.windows_late, 3u);
+  EXPECT_EQ(ps.windows_late, st.windows_late + st.windows_early_late);
+  EXPECT_EQ(st.windows_lost, 0u);
   room.ExpectEveryTagRegistered();
 }
 

@@ -126,6 +126,10 @@ timestamps of the UE's reads, the same radio clock. With `data_dest` too, the UE
 message it hears from a Tag to the network over its own user plane (topology 2; see
 [the MAC](#the-mac)).
 
+With `serve_port` set instead, the UE is the far end of a split Reader whose MAC is in the gNB
+(topology 3, [below](#a-split-reader)): it sends in its UL the R2Ds the gNB gives it, with its
+`r2d_*` PRBs, or opens on its DL receiver the D2R windows the gNB gives it, with its `d2r_*` PRBs.
+
 ## The MAC
 
 `openair2/LAYER2/AIOT_MAC` is the 38.391 MAC, built into the same library: the Reader with its
@@ -137,7 +141,8 @@ protocols against the device MAC over an ideal air.
 the node's R2D and D2R. In its own thread, woken by each slot the D2R receiver takes, it puts the R2D
 the protocol sends next on the first half-subframe the node has not sent yet (`lead_slots` ahead,
 twice as many after one that came too late), opens the D2R windows the MAC asks for, and gives the
-MAC their outcomes. It needs both the R2D and the D2R, and is set in the same `aiot` section (or with
+MAC their outcomes. It needs both the R2D and the D2R, its own or a UE's (see
+[a split Reader](#a-split-reader)), and is set in the same `aiot` section (or with
 `--aiot.protocol registration --aiot.nodes 0-3 ...`):
 
 ```
@@ -151,6 +156,9 @@ aiot = {
   lead_slots = 2;
   output_dir = "/tmp/aiot";      # reader_tx.csv, reader_rx.csv and the protocol's tables; "": none
   data_dest = "";                # ipv4:port for each message heard from a Tag, as Tag data; "": none
+  remote_r2d = "";               # a gNB: ipv4:port of the UE that sends its R2D; "": its own
+  remote_d2r = "";               # a gNB: ipv4:port of the UE that receives its D2R; "": its own
+  serve_port = 0;                # a UE: the UDP port it serves a gNB's split Reader on; 0: none
 };
 ```
 
@@ -168,6 +176,41 @@ nodes, in the same library, so Amber decodes Tag data with it too (`amber.sink`)
 SDU, big-endian, with a sequence number that shows a lost datagram. The socket never blocks the
 Reader: a datagram it cannot take is counted and lost. `ctest -R test_aiot_mac_node_msg` checks the
 layout byte by byte, and `test_nr_aiot_reader` that the datagrams are the rows of `reader_rx.csv`.
+
+### A split Reader
+
+In topology 3 the Reader's MAC stays in the gNB and a UE does half of its radio work: it sends the
+R2D in its UL PRBs (the gNB's `remote_r2d`, which the gNB then has no `r2d_*` PRBs for) or receives
+the D2R in its DL (`remote_d2r`, no `d2r_*` PRBs). The UE listens on `serve_port`
+(`openair2/LAYER2/AIOT_MAC/nr_aiot_peer.h`). The gNB talks to it over its own user plane, in four
+more messages of `aiot_node_msg.h`, one datagram each, and the UE answers to the address each came
+from:
+
+| Message | From | Holds |
+|:--|:--|:--|
+| R2D | gNB | the transport block, M, N_RB, and the frame, slot and symbol to send it in |
+| R2D done | UE | what `nr_aiot_r2d_schedule()` said, and how many slots the UE had in hand |
+| window | gNB | the D2R window the MAC opened, its start as frame, slot and A-IoT sample of the slot |
+| outcome | UE | the window's outcome, each D2R's start counted from the window's start |
+
+Both nodes count time in the cell's frames and slots, which a synced UE follows: an R2D goes in the
+UE's UL slot of that number, which timing advance aligns with the gNB's UL, and a window opens at
+that sample of the UE's DL slot of that number. So the gNB plans every R2D and window on its own TX
+clock, as for its own R2D, which `nr_aiot_r2d` keeps also without R2D PRBs, and the UE turns a time
+of the cell into a sample of its receiver with `nr_aiot_d2r_cell_time()`.
+
+With a remote R2D the gNB plans on as if it had sent each R2D, and opens its own windows. An R2D
+that reaches the UE too late is lost on the air, and the UE says by how many slots: the lead grows by
+those, and 2 more. Until the UE has answered once, the gNB sends one R2D every 100 slots, as the UE
+may not have its user plane yet. With a remote D2R the MAC waits for each window's outcome from the
+UE, and a window whose outcome is not back 200 slots after its end is given up as empty, so the
+protocol goes on. A window that reaches the UE after its start is decoded on what is left, and the
+outcome says how late it was: the lead grows by that, and 2 slots more, as it plans the R2D the
+window follows. The R2Ds and windows sent before the UE first answered count apart, as they waited
+for it. The
+gNB logs the split's delays once a second of the cell: how far ahead each R2D or window reached the
+UE, and how long the answers took. `ctest -R test_nr_aiot_reader` runs both splits with the UE over
+loopback, against the same Tags as the gNB alone.
 
 ## Tests
 
