@@ -3,7 +3,7 @@
  */
 
 /*! \file aiot_mac_device.c
- * \brief The device's MAC, 3GPP TS 38.391 V19.0.0 clause 5: paging (5.2), contention-based access
+ * \brief The device's MAC, 3GPP TS 38.391 V19.4.0 clause 5: paging (5.2), contention-based access
  * (5.3.1), contention-free access (5.3.2), upper layer data (5.4) and failure detection (5.5).
  *
  * The device never touches the air or a clock: each decoded R2D message goes in through
@@ -103,6 +103,13 @@ static int upper_paging_id_matched(const aiot_device_t *d, const uint8_t *id, in
   return d->upper.paging_id_matched ? d->upper.paging_id_matched(d->upper.user, id, len) : 1;
 }
 
+/* 5.2: forward the Security Parameter of a paging, when SPPI says it is present */
+static void upper_security_param(const aiot_device_t *d, const aiot_mac_r2d_msg_t *m)
+{
+  if (m->has_security_param && d->upper.security_param)
+    d->upper.security_param(d->upper.user, m->security_param, AIOT_MAC_SECURITY_PARAM_BITS);
+}
+
 /* ---------------------------------------------------------------------------------------------
  * D2R transmission
  * ------------------------------------------------------------------------------------------- */
@@ -168,7 +175,7 @@ static int segment(aiot_device_t *d, const aiot_sched_info_t *sched, int x, data
 /* 5.4.2: send upper layer data now, segmenting it when it does not fit the D2R TBS. */
 static int d2r_data(aiot_device_t *d, const aiot_sched_info_t *sched, data_kind_t kind, int r_sfs, aiot_device_send_t *out)
 {
-  int len = -1;
+  int len = AIOT_UPPER_SDU_NONE;
   if (d->upper.next_sdu)
     len = d->upper.next_sdu(d->upper.user, d->sending, SENDING_CAP);
   if (len > SENDING_CAP)
@@ -178,8 +185,10 @@ static int d2r_data(aiot_device_t *d, const aiot_sched_info_t *sched, data_kind_
     d->sending_len = len;
     return segment(d, sched, 0, kind, r_sfs, out);
   }
+  /* 5.4.2: MDI 1 when the data is not available yet due to processing delay, else 0 */
+  const int mdi = len == AIOT_UPPER_SDU_PENDING;
   aiot_mac_d2r_msg_t m;
-  if (aiot_mac_d2r_for_tbs(d->sending, len > 0 ? len : 0, sched->d2r_tbs, 0, &m) < 0)
+  if (aiot_mac_d2r_for_tbs(d->sending, len > 0 ? len : 0, sched->d2r_tbs, mdi, &m) < 0)
     return AIOT_EINVAL;
   return send_data_msg(d, &m, sched, kind, r_sfs, out);
 }
@@ -249,8 +258,9 @@ static void stop_cbra(aiot_device_t *d)
 
 static int access_trigger(aiot_device_t *d, aiot_device_send_t *out)
 {
-  if (d->cbra_active && d->counter < 0 && d->msg2_budget > 0 && !d->cbra_success)
-    d->msg2_budget--; /* 5.3.1.3: Msg2 is monitored until K triggers or pagings */
+  /* 5.3.1.3: Msg2 is monitored until K Access Triggers, from Msg1 on, success or not */
+  if (d->cbra_active && d->counter < 0 && d->msg2_budget > 0)
+    d->msg2_budget--;
   if (d->cbra_active && d->counter >= 0) {
     d->counter -= occasions(d);
     return try_occasion(d, out);
@@ -280,6 +290,7 @@ static int paging(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_sen
     d->transaction_id = tid;
     d->failed_tid = -1;
     d->cfa_in_procedure = 0;
+    upper_security_param(d, m);
     int selected;
     if (!m->has_paging_id) {
       if (d->upper.selected)
@@ -297,6 +308,7 @@ static int paging(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_sen
   d->as_id = -1;
   d->transaction_id = -1;
   d->failed_tid = -1;
+  upper_security_param(d, m);
   if (!upper_paging_id_matched(d, m->paging_id, m->paging_id_len)) {
     d->cfa_in_procedure = 0;
     return 0;
@@ -322,6 +334,8 @@ static int after_msg2(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, int i, aiot
 
 static int random_id_response(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_send_t *out)
 {
+  if (d->msg2_budget <= 0)
+    return 0; /* 5.3.1.3: the Random ID Response is no longer monitored */
   if (d->as_id < 0) {
     if (!d->cbra_active || d->counter >= 0 || d->msg2_budget <= 0)
       return 0;
@@ -350,28 +364,35 @@ static int random_id_response(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aio
  * 5.4.3 R2D data
  * ------------------------------------------------------------------------------------------- */
 
-static void deliver(const aiot_device_t *d, const aiot_mac_r2d_msg_t *m)
+/* 0, or nonzero when the upper layer indicates an integrity protection failure */
+static int deliver(const aiot_device_t *d, const aiot_mac_r2d_msg_t *m)
 {
-  if (d->upper.deliver)
-    d->upper.deliver(d->upper.user, m->sdu, m->sdu_len);
+  return d->upper.deliver ? d->upper.deliver(d->upper.user, m->sdu, m->sdu_len) : 0;
 }
 
 static int r2d_data(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_send_t *out)
 {
   if (d->as_id >= 0 && m->as_id == d->as_id) {
-    d->nack_monitoring = 0; /* 5.5.2: monitoring ends at R2D data addressed to the device */
+    /* 5.5.2, 5.3.1.3: NACK and Random ID Response monitoring end at R2D data addressed to the device */
+    d->nack_monitoring = 0;
+    d->msg2_budget = 0;
     if (m->has_sdu) {
-      deliver(d, m);
-      return d2r_data(d, &m->sched, SEND_DATA, 0, out);
+      /* 5.4.2: no D2R after an integrity protection failure */
+      return deliver(d, m) ? 0 : d2r_data(d, &m->sched, SEND_DATA, 0, out);
     }
     if (m->received_data_size == 0)
       return d2r_data(d, &m->sched, SEND_DATA, 0, out);
     return segment(d, &m->sched, m->received_data_size, SEND_DATA, 0, out);
   }
-  if (d->as_id < 0 && d->cfa_in_procedure && m->has_sdu) {
-    d->as_id = m->as_id;
-    deliver(d, m);
-    return d2r_data(d, &m->sched, SEND_DATA, 0, out);
+  if (d->as_id < 0 && d->cfa_in_procedure) {
+    if (m->has_sdu) {
+      d->as_id = m->as_id;
+      return deliver(d, m) ? 0 : d2r_data(d, &m->sched, SEND_DATA, 0, out);
+    }
+    if (m->received_data_size == 0) { /* 5.4.3: the AS ID is taken from this too */
+      d->as_id = m->as_id;
+      return d2r_data(d, &m->sched, SEND_DATA, 0, out);
+    }
   }
   return 0;
 }
@@ -382,16 +403,19 @@ static int r2d_data(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_s
 
 static void nack(aiot_device_t *d, const aiot_mac_r2d_msg_t *m)
 {
-  if (!d->nack_monitoring || d->as_id < 0)
+  if (d->as_id < 0)
     return;
-  for (int i = 0; i < m->n_as_ids; i++) {
-    if (m->as_ids[i] == d->as_id) {
-      d->as_id = -1;
-      d->failed_tid = d->transaction_id;
-      d->nack_monitoring = 0;
-      return;
-    }
-  }
+  int named = 0;
+  for (int i = 0; i < m->n_as_ids && !named; i++)
+    named = m->as_ids[i] == d->as_id;
+  if (!named)
+    return;
+  d->msg2_budget = 0; /* 5.3.1.3: a NACK naming the device ends the Random ID Response monitoring */
+  if (!d->nack_monitoring)
+    return;
+  d->as_id = -1;
+  d->failed_tid = d->transaction_id;
+  d->nack_monitoring = 0;
 }
 
 int aiot_device_on_r2d(aiot_device_t *d, const aiot_mac_r2d_msg_t *msg, aiot_device_send_t *out)

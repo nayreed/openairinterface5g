@@ -3,7 +3,7 @@
  */
 
 /*! \file aiot_mac.h
- * \brief The Rel-19 Ambient IoT MAC procedures, 3GPP TS 38.391 V19.0.0 clause 5: the Reader's MAC
+ * \brief The Rel-19 Ambient IoT MAC procedures, 3GPP TS 38.391 V19.4.0 clause 5: the Reader's MAC
  * with its protocols, and the device's MAC.
  *
  * One implementation for every node that runs them: the Amber simulator (through libaiot_phy.so),
@@ -32,6 +32,12 @@
  *   bitmap (Table 6.2.1.6-1, derived-parameter column).
  * - 5.5.3 is checked before 5.2 when a paging arrives, so that a failed CBRA lets the same
  *   Transaction ID start access again.
+ * - The Security Parameter of a paging (5.2) is the Reader's own: each paging a Reader protocol
+ *   sends carries 128 bits drawn from the Reader's generator (fixed seed, aiot_reader_seed), and a
+ *   message pushed to the Reader is sent as the caller built it, SPPI and bits included.
+ * - The Msg2 window of 5.3.1.3 (K Access Triggers) runs from the Access Random ID message, whether
+ *   or not a Random ID Response succeeded in it, and ends at the next paging, at R2D data
+ *   addressed to the device's AS ID, or at a NACK Feedback naming the device's AS ID.
  *
  * Conventions are those of aiot_phy.h: no globals, no threads, caller buffers with a capacity,
  * negative AIOT_E* codes. Random numbers come from the caller (draw callbacks), so a simulator
@@ -118,6 +124,9 @@ aiot_reader_t *aiot_reader_new(const aiot_link_config_t *cfg,
                                char *err,
                                int err_len);
 void aiot_reader_free(aiot_reader_t *r);
+/* Seeds the generator the Reader draws the Security Parameter of its pagings from (a fixed seed
+ * until this is called, so runs repeat). */
+void aiot_reader_seed(aiot_reader_t *r, uint64_t seed);
 
 /* The R2D the protocol sends next. */
 typedef struct {
@@ -194,6 +203,12 @@ int aiot_reader_pop_rows(aiot_reader_t *r, double *rows, int max_rows);
 
 typedef struct aiot_device aiot_device_t;
 
+/* 5.4.2: next_sdu returns for upper layer data not to send now */
+#define AIOT_UPPER_SDU_NONE (-1) /* no upper layer data (or the NAS message was ignored, TS 24.369): MDI 0 */
+#define AIOT_UPPER_SDU_PENDING (-2) /* not available yet due to processing delay: MDI 1, SDU Length 0 */
+/* deliver returns this (any nonzero value) for an integrity protection failure */
+#define AIOT_UPPER_INTEGRITY_FAILURE 1
+
 /* What the device's upper layer and its random numbers give the MAC. Any callback may be NULL:
  * every Paging ID matches, nothing is delivered or sent. draw must not be NULL. */
 typedef struct {
@@ -202,13 +217,16 @@ typedef struct {
   int (*paging_id_matched)(void *user, const uint8_t *paging_id, int len);
   /* 5.2: a paging without Paging ID selected the device */
   void (*selected)(void *user);
-  /* 5.4.3: an R2D Data SDU for this device */
-  void (*deliver)(void *user, const uint8_t *sdu, int len);
-  /* 5.4.2: upper layer data to send now, written into sdu (room for cap bytes): its length, or -1
-   * for none */
+  /* 5.4.3: an R2D Data SDU for this device. Returns 0, or nonzero for an integrity protection
+   * failure: the SDU is delivered all the same, but the MAC sends no D2R for it (5.4.2). */
+  int (*deliver)(void *user, const uint8_t *sdu, int len);
+  /* 5.4.2: upper layer data to send now, written into sdu (room for cap bytes): its length,
+   * AIOT_UPPER_SDU_NONE (any other negative value too) or AIOT_UPPER_SDU_PENDING */
   int (*next_sdu)(void *user, uint8_t *sdu, int cap);
   /* a uniform whole number in [0, n) */
   uint32_t (*draw)(void *user, uint32_t n);
+  /* 5.2: the Security Parameter of a paging (n_bits bits, 0/1, first = MSB), when SPPI is 1 */
+  void (*security_param)(void *user, const uint8_t *bits, int n_bits);
 } aiot_device_upper_t;
 
 aiot_device_t *aiot_device_new(const aiot_device_upper_t *upper, aiot_mod_t modulation);

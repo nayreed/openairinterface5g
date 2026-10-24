@@ -597,8 +597,9 @@ Rel-19 Ambient IoT (A-IoT): a gNB or a UE reads A-IoT devices (Tags) in the air 
 
 ### A-IoT MAC
 
-* TS 38.391 V19.0.0: packer and parser of every R2D and D2R message and of the D2R scheduling
-  information
+* TS 38.391 V19.4.0: packer and parser of every R2D and D2R message and of the D2R scheduling
+  information, with the Security Parameter (SPPI) of the Paging messages and the 10-bit Paging ID
+  Length
 * The Reader and the device MAC, with the registration, broadcast, unicast, gen2_q and
   adaptive_aloha protocols
 * The Reader in the gNB or in the UE, on the node's R2D and D2R, with Amber's records

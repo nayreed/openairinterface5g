@@ -18,7 +18,11 @@
  *
  * The Reader answers the Msg1s a CBRA paging or Access Trigger brings itself, with one Random ID
  * Response to at most aiot_link_max_entries() of them, in the order they were decoded, each given
- * the next AS ID (1 to 65535, wrapping) and its Frequency Index. */
+ * the next AS ID (1 to 65535, wrapping) and its Frequency Index.
+ *
+ * Every paging the protocol sends carries SPPI 1 and a 128-bit Security Parameter (38.391 5.2, the
+ * RAND_AIOT_n of TS 33.369) from the Reader's own generator (splitmix64, fixed seed, so runs repeat).
+ * A pushed message is sent as the caller built it. */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -30,6 +34,7 @@
 
 #define MAX_EXPECTS 16
 #define HEARD_QUEUE 16
+#define READER_SEED 0x41494F5452414E44ULL /* "AIOTRAND" */
 
 typedef struct {
   aiot_answer_kind_t kind;
@@ -55,6 +60,8 @@ struct aiot_reader {
   int ready;
   aiot_policy_msg_t next;
   int next_is_ridr;
+  uint64_t rand_state; /* splitmix64 */
+  int fill_sec; /* next was built by the protocol: its paging gets a Security Parameter */
   /* the R2D in flight */
   aiot_reader_heard_t *open;
   int open_access, open_ridr;
@@ -69,6 +76,27 @@ struct aiot_reader {
   double *rows;
   int n_rows, cap_rows;
 };
+
+static uint64_t splitmix64(uint64_t *state)
+{
+  uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+/* SPPI 1 and 128 bits (first = MSB) for a paging the protocol built without one. */
+static void fill_security(aiot_reader_t *r, aiot_mac_r2d_msg_t *m)
+{
+  if ((m->kind != AIOT_R2D_PAGING_CBRA && m->kind != AIOT_R2D_PAGING_CFA) || m->has_security_param)
+    return;
+  m->has_security_param = 1;
+  for (int w = 0; w < AIOT_MAC_SECURITY_PARAM_BITS / 64; w++) {
+    const uint64_t v = splitmix64(&r->rand_state);
+    for (int j = 0; j < 64; j++)
+      m->security_param[64 * w + j] = (v >> (63 - j)) & 1;
+  }
+}
 
 static void add_row(void *reader, const double *row)
 {
@@ -107,6 +135,7 @@ static int step(aiot_reader_t *r, int64_t now, const aiot_reader_heard_t *h1, co
   }
   r->ready = 1;
   r->next_is_ridr = 0;
+  r->fill_sec = 1;
   return 1;
 }
 
@@ -184,6 +213,7 @@ aiot_reader_t *aiot_reader_new(const aiot_link_config_t *cfg,
     memcpy(nodes, node_ids, n_nodes * sizeof(int));
   r->n_nodes = n_nodes;
   r->next_as_id = 1;
+  r->rand_state = READER_SEED;
   step(r, 0, NULL, NULL);
   return r;
 }
@@ -199,6 +229,11 @@ void aiot_reader_free(aiot_reader_t *r)
   free(r->node_ids);
   free(r->rows);
   free(r);
+}
+
+void aiot_reader_seed(aiot_reader_t *r, uint64_t seed)
+{
+  r->rand_state = seed;
 }
 
 int aiot_reader_done(const aiot_reader_t *r)
@@ -218,6 +253,7 @@ int aiot_reader_push(aiot_reader_t *r, const aiot_mac_r2d_msg_t *msg, int access
   r->next = (aiot_policy_msg_t){.msg = *msg, .access = access};
   r->ready = 1;
   r->next_is_ridr = 0;
+  r->fill_sec = 0; /* as the caller built it */
   return 0;
 }
 
@@ -230,6 +266,10 @@ int aiot_reader_next_r2d(aiot_reader_t *r, int64_t now, aiot_reader_r2d_t *out)
 {
   if (r->done || !r->ready)
     return 0;
+  if (r->fill_sec) { /* once: asking again gives the same bits */
+    fill_security(r, &r->next.msg);
+    r->fill_sec = 0;
+  }
   out->msg = r->next.msg;
   const int n = aiot_mac_pack_r2d(&out->msg, out->bits, AIOT_MAC_MAX_PDU_BITS);
   if (n < 0)
@@ -387,12 +427,17 @@ static void close_open(aiot_reader_t *r, int64_t now)
   r->next = (aiot_policy_msg_t){.msg = ridr, .access = 0};
   r->ready = 1;
   r->next_is_ridr = 1;
+  r->fill_sec = 0;
 }
 
 int aiot_reader_r2d_sent(aiot_reader_t *r, int64_t start, int64_t end, int64_t now, aiot_d2r_expect_t *out, int max)
 {
   if (r->done || !r->ready || end < start)
     return AIOT_EINVAL;
+  if (r->fill_sec) { /* next_r2d not asked: what is recorded is still what would be packed */
+    fill_security(r, &r->next.msg);
+    r->fill_sec = 0;
+  }
   aiot_reader_heard_t *h = r->open;
   h->sent = r->next.msg;
   h->r2d_start = start;

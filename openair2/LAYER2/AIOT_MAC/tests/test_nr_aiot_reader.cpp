@@ -218,7 +218,7 @@ struct Room {
       t->id = i;
       t->rng.seed(500 + i);
       t->phase = 0.7 * i;
-      aiot_device_upper_t up = {t.get(), Matched, nullptr, nullptr, NextSdu, Draw};
+      aiot_device_upper_t up = {t.get(), Matched, nullptr, nullptr, NextSdu, Draw, nullptr};
       t->mac = aiot_device_new(&up, AIOT_BPSK);
       t->rx = aiot_r2d_rx_new();
       cfg.node_ids[cfg.n_nodes++] = i;
@@ -607,7 +607,9 @@ TEST(NrAiotReader, SplitEveryTagRegistersWithTheR2dFromTheUe)
   EXPECT_GE(st.r2d_done + 1, st.r2d_sent); // the last one's may still be on its way
   EXPECT_EQ(ps.r2ds, st.r2d_done);
   EXPECT_EQ(ps.r2d_too_late + ps.r2d_refused, 0u);
-  EXPECT_EQ(room.ue_r2d.sent, st.r2d_done);
+  // the UE may still be sending the last one when the run stops: a V19.4.0 paging spans several slots
+  EXPECT_LE(room.ue_r2d.sent, st.r2d_done);
+  EXPECT_GE(room.ue_r2d.sent + 1, st.r2d_done);
   EXPECT_GE(st.r2d_ahead_min, 1);
   EXPECT_EQ(st.collisions, 0u);
   for (auto &t : room.tags)

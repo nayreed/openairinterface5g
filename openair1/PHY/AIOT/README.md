@@ -3,7 +3,7 @@
 # Ambient IoT physical layer (3GPP Rel-19)
 
 This folder is the physical layer of Rel-19 Ambient IoT (A-IoT), 3GPP TS 38.291 V19.3.0, and the
-codec of its MAC PDUs, TS 38.391 V19.0.0 clause 6, as a plain C library with no OAI context, no
+codec of its MAC PDUs, TS 38.391 V19.4.0 clause 6, as a plain C library with no OAI context, no
 globals and no threads.
 
 | File | Content |
@@ -219,7 +219,8 @@ files: they check the CRC and the convolutional code against encoders written fr
 polynomials, the m-sequences against the bits written in 38.291 §8.3, the R2D chips, the fewest
 PRBs and the OFDM band limit against 38.291 §6.2 and Table 4.3.3.3-1, the D2R frame layout against
 the formulas of §6.1.3, the frame lengths of the fixed reference channels of 38.194 Annex B, the
-Scheduling Info and the Access Trigger, NACK Feedback and D2R messages against hand-built 38.391
+Scheduling Info, the Paging messages (SPPI, the 128-bit Security Parameter, the 10-bit Paging ID
+Length) and the Access Trigger, NACK Feedback and D2R messages against hand-built 38.391
 field layouts (the other R2D messages by packing and parsing), and that each receiver gets back
 what its transmitter sent, in noise and across the parameters the spec allows, and that a device
 decodes the R2D's resource elements wherever a carrier's grid puts them, and under a carrier wave
