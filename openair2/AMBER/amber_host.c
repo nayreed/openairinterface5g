@@ -54,7 +54,10 @@ void amber_read_params(amber_params_t *params, bool with_node_id)
   if (ret >= 0)
     ret = with_node_id ? config_get(config_get_if(), tag_desc, sizeofArray(tag_desc), AMBER_SECTION)
                        : config_get(config_get_if(), reader_desc, sizeofArray(reader_desc), AMBER_SECTION);
-  AssertFatal(ret >= 0, "cannot read the %s configuration section\n", AMBER_SECTION);
+  if (ret < 0) {
+    LOG_E(UTIL, "cannot read the %s configuration section\n", AMBER_SECTION);
+    exit(EXIT_FAILURE);
+  }
   if (params->scenario == NULL || params->scenario[0] == '\0') {
     LOG_E(UTIL, "set %s.scenario to the scenario module to run\n", AMBER_SECTION);
     exit(EXIT_FAILURE);
@@ -86,9 +89,14 @@ void amber_radio_start(amber_radio_t *radio, int block_bytes)
 
   loader_shlibfunc_t init = {.fname = "device_init"};
   int ret = load_module_shlib(OAI_RFSIM_LIBNAME, &init, 1, NULL);
-  AssertFatal(ret >= 0, "cannot load library %s\n", OAI_RFSIM_LIBNAME);
-  ret = ((amber_devfunc_t)init.fptr)(&radio->device, cfg);
-  AssertFatal(ret == 0, "%s device_init() failed\n", OAI_RFSIM_LIBNAME);
+  if (ret < 0) {
+    LOG_E(HW, "cannot load library %s\n", OAI_RFSIM_LIBNAME);
+    exit(EXIT_FAILURE);
+  }
+  if (((amber_devfunc_t)init.fptr)(&radio->device, cfg) != 0) {
+    LOG_E(HW, "%s device_init() failed\n", OAI_RFSIM_LIBNAME);
+    exit(EXIT_FAILURE);
+  }
   if (radio->device.trx_start_func(&radio->device) != 0) {
     LOG_E(HW, "cannot start the rfsimulator device\n");
     exit(EXIT_FAILURE);

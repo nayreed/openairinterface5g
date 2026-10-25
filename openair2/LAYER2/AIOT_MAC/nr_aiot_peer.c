@@ -22,6 +22,7 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
 #include "common/utils/utils.h"
+#include "common/utils/threadPool/pthread_utils.h"
 
 #define MAX_WINDOWS AIOT_NODE_MAX_WINDOWS /* open at a time */
 #define REPORT_SLOTS 1000 /* the peer logs what it served once a second of the UE's slots */
@@ -89,7 +90,7 @@ nr_aiot_peer_t *nr_aiot_peer_new(const nr_aiot_peer_config_t *cfg, nr_aiot_r2d_t
   p->r2d = r2d;
   p->d2r = d2r;
   p->report_slot = -1;
-  pthread_mutex_init(&p->lock, NULL);
+  mutexinit(p->lock);
   p->stats.r2d_ahead_min = INT64_MAX;
   p->stats.window_ahead_min = INT64_MAX;
   p->msg = malloc_or_fail(AIOT_NODE_SPLIT_MAX_BYTES + 1);
@@ -152,9 +153,9 @@ void nr_aiot_peer_free(nr_aiot_peer_t *p)
   if (!p)
     return;
   if (p->running) {
-    pthread_mutex_lock(&p->lock);
+    mutexlock(p->lock);
     p->stop = 1;
-    pthread_mutex_unlock(&p->lock);
+    mutexunlock(p->lock);
     pthread_join(p->thread, NULL);
   }
   if (p->sock >= 0)
@@ -163,7 +164,7 @@ void nr_aiot_peer_free(nr_aiot_peer_t *p)
     close(p->sock);
   free(p->msg);
   free(p->out);
-  pthread_mutex_destroy(&p->lock);
+  mutexdestroy(p->lock);
   free(p);
 }
 
@@ -176,12 +177,6 @@ static void answer(nr_aiot_peer_t *p, const struct sockaddr_in *to, int len, con
 static int clamp(int64_t v, int lo, int hi)
 {
   return (int)cmax((int64_t)lo, cmin(v, (int64_t)hi));
-}
-
-static void stat_add(int64_t v, int64_t *sum, int64_t *min)
-{
-  *sum += v;
-  *min = cmin(*min, v);
 }
 
 static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
@@ -198,7 +193,7 @@ static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
   const int ahead = now >= 0 ? nr_aiot_cell_slot_diff(now, m->frame * AIOT_CELL_SLOTS_PER_FRAME + m->slot) : 0;
   nr_aiot_peer_stats_t *s = &p->stats;
   s->r2ds++;
-  stat_add(ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
+  aiot_node_stat_add(ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
   if (rc == NR_AIOT_R2D_ETOOLATE) {
     s->r2d_too_late++;
   } else if (rc < 0) {
@@ -269,7 +264,7 @@ static void on_window(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
     return;
   }
   const int64_t ahead = e.start - nr_aiot_d2r_received_until(p->d2r);
-  stat_add(ahead, &s->window_ahead_sum, &s->window_ahead_min);
+  aiot_node_stat_add(ahead, &s->window_ahead_sum, &s->window_ahead_min);
   if (ahead < 0)
     s->windows_late++;
   window_t *slot = &p->windows[p->next_local % MAX_WINDOWS];
@@ -365,20 +360,20 @@ static void on_datagram(void *ctx, const struct sockaddr_in *from, int n)
 
 int nr_aiot_peer_step(nr_aiot_peer_t *p)
 {
-  pthread_mutex_lock(&p->lock);
+  mutexlock(p->lock);
   int handled = nr_aiot_udp_drain(p->sock, p->msg, AIOT_NODE_SPLIT_MAX_BYTES + 1, on_datagram, p, &p->recv_errno);
   if (p->d2r)
     handled += send_outcomes(p);
   report(p);
-  pthread_mutex_unlock(&p->lock);
+  mutexunlock(p->lock);
   return handled;
 }
 
 nr_aiot_peer_stats_t nr_aiot_peer_stats(nr_aiot_peer_t *p)
 {
-  pthread_mutex_lock(&p->lock);
+  mutexlock(p->lock);
   nr_aiot_peer_stats_t s = p->stats;
-  pthread_mutex_unlock(&p->lock);
+  mutexunlock(p->lock);
   return s;
 }
 
@@ -386,9 +381,9 @@ static void *peer_thread(void *arg)
 {
   nr_aiot_peer_t *p = arg;
   for (;;) {
-    pthread_mutex_lock(&p->lock);
+    mutexlock(p->lock);
     const int stop = p->stop;
-    pthread_mutex_unlock(&p->lock);
+    mutexunlock(p->lock);
     if (stop)
       break;
     nr_aiot_peer_step(p);

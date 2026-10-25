@@ -66,7 +66,7 @@ typedef struct {
   int t_bit_num; /* D2R bit duration t_bit_num / t_bit_den tau: 2, 1, 1/2 ... 1/96 */
   int t_bit_den;
   int n_r_sfs; /* the R_SFS values a paging offers (its bitmap), ascending */
-  int r_sfs[8];
+  int r_sfs[AIOT_MAX_SHIFTS];
   int x; /* time slots of access occasions per paging or Access Trigger, 1 or 2 */
   int r_code; /* FEC on the D2R */
   int r_block; /* block repetition, 1 or 2 */
@@ -78,6 +78,8 @@ typedef struct {
 
 /* 0 when the settings make a valid CBRA Scheduling Info (38.391 Table 6.2.1.6-1), else AIOT_EINVAL. */
 int aiot_link_config_check(const aiot_link_config_t *cfg);
+/* Sorts n R_SFS values ascending, the order a paging's bitmap and a Scheduling Info list them in. */
+void aiot_link_sort_r_sfs(int *r_sfs, int n);
 /* R2D PRBs: cfg->n_rb, or the fewest M allows. */
 int aiot_link_n_rb(const aiot_link_config_t *cfg);
 /* Devices one Random ID Response can answer: min(8, R_SFS values the bit duration allows). */
@@ -229,6 +231,7 @@ typedef struct {
   void (*security_param)(void *user, const uint8_t *bits, int n_bits);
 } aiot_device_upper_t;
 
+/* NULL without upper->draw or with a modulation other than OOK and BPSK. */
 aiot_device_t *aiot_device_new(const aiot_device_upper_t *upper, aiot_mod_t modulation);
 void aiot_device_free(aiot_device_t *d);
 

@@ -31,6 +31,7 @@
 
 #include "aiot_node_msg.h"
 #include "aiot_protocols.h"
+#include "common/utils/utils.h" /* cmin, cmax */
 
 #define MAX_EXPECTS 16
 #define HEARD_QUEUE 16
@@ -41,6 +42,7 @@ typedef struct {
   int slot;
   int entry;
   int as_id;
+  int in; /* its outcome came */
 } expect_info_t;
 
 struct aiot_reader {
@@ -198,12 +200,7 @@ aiot_reader_t *aiot_reader_new(const aiot_link_config_t *cfg,
     return NULL;
   }
   r->cfg = *cfg;
-  for (int i = 1; i < r->cfg.n_r_sfs; i++) /* ascending, as a paging's bitmap lists them */
-    for (int j = i; j > 0 && r->cfg.r_sfs[j - 1] > r->cfg.r_sfs[j]; j--) {
-      const int t = r->cfg.r_sfs[j];
-      r->cfg.r_sfs[j] = r->cfg.r_sfs[j - 1];
-      r->cfg.r_sfs[j - 1] = t;
-    }
+  aiot_link_sort_r_sfs(r->cfg.r_sfs, r->cfg.n_r_sfs);
   r->proto = proto;
   memcpy(r->params, p, sizeof(p));
   r->open = open;
@@ -275,11 +272,11 @@ int aiot_reader_next_r2d(aiot_reader_t *r, int64_t now, aiot_reader_r2d_t *out)
   if (n < 0)
     return n;
   out->n_bits = n;
-  out->earliest_start = r->free_at > now ? r->free_at : now;
+  out->earliest_start = cmax(r->free_at, now);
   return 1;
 }
 
-/* T_R->D of a D2R the Reader expects (link.d2r_start_offset). */
+/* T_R->D of a D2R the Reader expects (38.291 Tables 7.1.2-1 to 7.1.2-3, aiot_t_r_to_d). */
 static int
 offset(const aiot_reader_t *r, aiot_d2r_msg_t kind, const aiot_d2r_params_t *p, int tbs, const int *cand, int n_cand, int slot)
 {
@@ -314,9 +311,8 @@ static int add_expect(aiot_reader_t *r,
   for (int k = 0; k < n_r_sfs; k++) {
     aiot_d2r_params_t pr = *p;
     pr.r_sfs = r_sfs[k];
-    const int64_t last = e->start + e->te + (int64_t)aiot_frame_bits(a_bits, &pr) * aiot_bit_samples(&pr) + aiot_t_d2r_min(&pr);
-    if (last > r->last_d2r_end)
-      r->last_d2r_end = last;
+    const int64_t last = e->start + e->te + aiot_frame_samples(a_bits, &pr) + aiot_t_d2r_min(&pr);
+    r->last_d2r_end = cmax(r->last_d2r_end, last);
   }
   return 0;
 }
@@ -409,13 +405,16 @@ static void close_open(aiot_reader_t *r, int64_t now)
     if (a->kind != AIOT_ANSWER_MSG1)
       continue;
     int fi = 0;
-    while (fi < 8 && aiot_mac_freq_index_to_r_sfs(fi) != a->r_sfs)
+    while (fi < AIOT_MAX_SHIFTS && aiot_mac_freq_index_to_r_sfs(fi) != a->r_sfs)
       fi++;
     aiot_mac_rid_entry_t *e = &ridr.entries[ridr.n_entries++];
     e->echoed_random_id = a->message.random_id;
     e->assigned_as_id = r->next_as_id;
-    e->freq_index = fi < 8 ? fi : -1;
-    r->next_as_id = (r->next_as_id + 1) & 0xFFFF;
+    e->freq_index = fi < AIOT_MAX_SHIFTS ? fi : -1;
+    /* AS IDs are 16 bits and wrap past 0. A Tag drops its AS ID at the next paging of another
+     * Transaction ID (38.391 5.2), so a wrap reuses one still held only after 65535 Msg1s answered
+     * under one Transaction ID. */
+    r->next_as_id = (r->next_as_id + 1) & UINT16_MAX;
     if (!r->next_as_id)
       r->next_as_id = 1;
   }
@@ -462,9 +461,10 @@ int aiot_reader_r2d_sent(aiot_reader_t *r, int64_t start, int64_t end, int64_t n
 int aiot_reader_d2r_outcome(aiot_reader_t *r, const aiot_d2r_outcome_t *o, int64_t now)
 {
   const int64_t tag = o->expect.tag;
-  if (r->waiting == 0 || tag / MAX_EXPECTS != r->seq || tag % MAX_EXPECTS >= r->n_expects)
+  if (r->waiting == 0 || tag / MAX_EXPECTS != r->seq || tag % MAX_EXPECTS >= r->n_expects || r->exp[tag % MAX_EXPECTS].in)
     return AIOT_EINVAL;
-  const expect_info_t *info = &r->exp[tag % MAX_EXPECTS];
+  expect_info_t *info = &r->exp[tag % MAX_EXPECTS];
+  info->in = 1;
   aiot_reader_heard_t *h = r->open;
   h->collided += o->collided;
   for (int i = 0; i < o->n_decoded; i++) {
@@ -518,7 +518,7 @@ int aiot_reader_table(const aiot_reader_t *r, const char **name, const char *con
 int aiot_reader_pop_rows(aiot_reader_t *r, double *rows, int max_rows)
 {
   const int nc = r->proto->n_cols;
-  const int n = r->n_rows < max_rows ? r->n_rows : max_rows;
+  const int n = cmin(r->n_rows, max_rows);
   if (n <= 0 || !nc)
     return 0;
   memcpy(rows, r->rows, (size_t)n * nc * sizeof(double));

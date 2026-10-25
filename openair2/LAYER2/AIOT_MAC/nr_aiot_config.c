@@ -45,7 +45,7 @@
   {"interval_cp", "Interval Bits codepoint 0..3", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
   {"i_add",       "1: additional midamble", 0, .iptr=NULL, .defintval=0, TYPE_INT, 0}, \
   {"d2r_tbs",     "D2R transport block for data, bytes", 0, .iptr=NULL, .defintval=5, TYPE_INT, 0}, \
-  {"lead_slots",  "slots between the slot the node sent last and an R2D's first, 1 to 64; it grows when an R2D is late", 0, .iptr=NULL, .defintval=NR_AIOT_READER_LEAD_SLOTS, TYPE_INT, 0}, \
+  {"lead_slots",  "slots between the slot the node sent last and an R2D's first, 1 to 64 (0: the default); it grows when an R2D is late", 0, .iptr=NULL, .defintval=NR_AIOT_READER_LEAD_SLOTS, TYPE_INT, 0}, \
   {"output_dir",  "folder for reader_tx.csv and reader_rx.csv; empty: none", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
   {"data_dest",   "ipv4:port to send each message heard from a Tag to, one UDP datagram of Tag data each (aiot_node_msg.h); empty: none. A UE gives the network's end of its user plane", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \
   {"remote_r2d",  "a split Reader: ipv4:port of the UE that sends the R2D in its UL (its aiot.serve_port), over the gNB's user plane; the gNB then has no R2D PRBs. Empty: the node sends the R2D", 0, .strptr=NULL, .defstrval="", TYPE_STRING, 0}, \

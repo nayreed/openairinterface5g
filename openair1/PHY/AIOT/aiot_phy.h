@@ -57,6 +57,12 @@ extern "C" {
 
 #define AIOT_MAX_TBS_BYTES 125
 #define AIOT_MAX_TB_BITS (8 * AIOT_MAX_TBS_BYTES)
+#define AIOT_MAX_CRC_LEN 16 /* L, the longer of the two CRCs */
+#define AIOT_MAX_WORD_BITS (AIOT_MAX_TB_BITS + AIOT_MAX_CRC_LEN) /* B = A + L */
+#define AIOT_MAX_R_BLOCK 2 /* D2R block repetition R_block */
+#define AIOT_MAX_BLOCK_BITS (AIOT_MAX_R_BLOCK * AIOT_MAX_WORD_BITS) /* B x R_block, the TBCC input */
+#define AIOT_TBCC_RATE 3 /* TBCC coded bits per input bit */
+#define AIOT_MAX_E_BITS (AIOT_TBCC_RATE * AIOT_MAX_BLOCK_BITS) /* E */
 
 /* The NR cell's time, which A-IoT nodes count in: 15 kHz, 10 slots of 1 ms a frame, the SFN wrapping
  * at 1024 frames (TS 38.211 §4.3.1). */
@@ -95,6 +101,22 @@ typedef struct {
   aiot_mod_t modulation;
 } aiot_d2r_params_t;
 
+/* The bit durations of 38.391 Table 6.2.1.6-1, in the order of their Bit Duration codepoint, and the
+ * Interval Bits codepoints of each: I_bit = S x 48, 96, 168 or 240. */
+#define AIOT_N_BIT_DURATIONS 8
+#define AIOT_N_I_BIT 4
+
+typedef struct {
+  int num, den; /* T_bit = num / den tau */
+  int max_r_sfs; /* the largest R_SFS allowed with it */
+  int scale; /* S, the scale factor of the Interval Bits */
+} aiot_bit_duration_t;
+
+/* The Bit Duration codepoint of T_bit = num / den tau (any equal fraction), or AIOT_EINVAL. */
+int aiot_bit_duration_code(int t_bit_num, int t_bit_den);
+/* The bit duration of codepoint code, 0 to AIOT_N_BIT_DURATIONS - 1, or NULL. */
+const aiot_bit_duration_t *aiot_bit_duration(int code);
+
 /* 0 when the spec allows these values together and a chip is a whole number of samples, else
  * AIOT_EINVAL. */
 int aiot_d2r_params_check(const aiot_d2r_params_t *p);
@@ -102,7 +124,8 @@ int aiot_bit_samples(const aiot_d2r_params_t *p);
 int aiot_chip_samples(const aiot_d2r_params_t *p);
 /* The R_SFS values 38.391 allows with this bit duration; returns how many (out has room for 8). */
 int aiot_allowed_r_sfs(int t_bit_num, int t_bit_den, int *out);
-/* The I_bit values allowed with this bit duration; returns how many (out has room for 4). */
+/* The I_bit values allowed with this bit duration, by Interval Bits codepoint; returns how many (out
+ * has room for AIOT_N_I_BIT). */
 int aiot_i_bit_values(int t_bit_num, int t_bit_den, int *out);
 
 /* V, the bits on air for an a_bits transport block (§6.1.2, §6.1.3). */
@@ -130,10 +153,11 @@ int aiot_t_d2r_min(const aiot_d2r_params_t *p);
  * Coding (38.291 clause 8)
  * ------------------------------------------------------------------------------------------- */
 
-/* The L parity bits (L = 16 or 6) of bits[0..n-1]: zero start, no final XOR. */
+/* The L parity bits (L = 16 or 6) of bits[0..n-1]: zero start, no final XOR. Returns L, or
+ * AIOT_EINVAL for another L or n beyond the longest word (AIOT_MAX_WORD_BITS + 8). */
 int aiot_crc(const uint8_t *bits, int n, int L, uint8_t *parity);
 int aiot_crc_length(int a_bits); /* 16 if A > 24 else 6 */
-/* out = bits followed by their CRC; returns A + L. out may not alias bits. */
+/* out = bits followed by their CRC; returns A + L, or AIOT_EINVAL when A is too long. */
 int aiot_attach_crc(const uint8_t *bits, int a_bits, uint8_t *out);
 /* Checks a received B = A + L bit word. Returns 1 if the CRC holds, 0 if not, AIOT_EINVAL for
  * B in 31..40 or B < L. *a_bits gets B - L. */
@@ -141,8 +165,8 @@ int aiot_check_crc(const uint8_t *word, int b_bits, int *a_bits);
 
 /* Tail-biting convolutional code, rate 1/3, K = 7, generators 133, 171, 165 (octal):
  * e[3k + i] = d^(i)_k. The encoder works on unpacked bits, so OAI's ccodelte packing rule for
- * K mod 8 != 0 does not apply. */
-void aiot_tbcc_encode(const uint8_t *c, int k, uint8_t *e);
+ * K mod 8 != 0 does not apply. Returns 3K, or AIOT_EINVAL for K outside 1..AIOT_MAX_BLOCK_BITS. */
+int aiot_tbcc_encode(const uint8_t *c, int k, uint8_t *e);
 /* Soft Viterbi with wrap-around decoding: n_soft = 3K values, K bits out.
  * Returns K, or AIOT_EINVAL / AIOT_ENOMEM. */
 int aiot_tbcc_decode(const double *soft, int n_soft, uint8_t *out);
@@ -158,12 +182,13 @@ int aiot_combine_repetitions(const double *soft, int n, int r_block, double *out
 
 /* Manchester line code (§8.5): 0 -> (1, 0), 1 -> (0, 1). Returns 2n. */
 int aiot_manchester(const uint8_t *bits, int n, uint8_t *out);
-/* All chips of one R2D transmission: SIP, CAP, Manchester(TB + CRC), postamble, padding (§6.2.5). */
 /* n bits, one a byte, into (n + 7) / 8 bytes, the first in the top bit of the first byte; and back. */
 void aiot_pack_bits(const uint8_t *bits, int n, uint8_t *bytes);
 void aiot_unpack_bits(const uint8_t *bytes, int n, uint8_t *bits);
 /* Room for the chips of a transport block of a_bits: the body, the forced chips of M = 24 and the padding. */
-#define AIOT_R2D_MAX_CHIPS(a_bits) (4 * ((a_bits) + 16) + 64)
+#define AIOT_R2D_MAX_CHIPS(a_bits) (4 * ((a_bits) + AIOT_MAX_CRC_LEN) + 64)
+/* All chips of one R2D transmission: SIP, CAP, Manchester(TB + CRC), postamble, padding (§6.2.5).
+ * Returns how many, AIOT_EINVAL for a bad M or a TB beyond AIOT_MAX_TB_BITS, or AIOT_ESPACE. */
 int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t *chips, int max_chips);
 int aiot_r2d_n_symbols(int n_chips, int m_chip_symb);
 /* Samples of n_sym symbols starting with symbol l = 0 (long CP at l mod 7 == 0). */
@@ -252,6 +277,10 @@ aiot_d2r_rx_t *aiot_d2r_rx_new(double noise_w, int enable_sic);
 void aiot_d2r_rx_free(aiot_d2r_rx_t *rx);
 /* 0 when the receiver can open window e (its length, and each R_SFS's parameters), else AIOT_EINVAL. */
 int aiot_d2r_expect_check(const aiot_d2r_expect_t *e);
+/* The first sample the receiver searches for window e, and the sample after the last one it may
+ * need: the window decodes once the receiver has every sample before aiot_d2r_expect_end(). */
+int64_t aiot_d2r_expect_first(const aiot_d2r_expect_t *e);
+int64_t aiot_d2r_expect_end(const aiot_d2r_expect_t *e);
 int aiot_d2r_rx_expect(aiot_d2r_rx_t *rx, const aiot_d2r_expect_t *e);
 /* Feed the next n samples (signal plus noise). Decodes every expected D2R whose window has fully
  * arrived, in the order they were expected. Returns how many outcomes it

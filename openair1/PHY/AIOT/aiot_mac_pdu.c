@@ -10,9 +10,11 @@
 
 #include "aiot_mac_pdu.h"
 
-#define MAX_TBS AIOT_MAC_MAX_TBS
 #define RIDR_ENTRY_MIN_BITS 17 /* Echoed Random ID (16) + AIPI (1) */
 #define PAGING_ID_LEN_BITS 10 /* Paging ID Length field of the Paging message (V19.4.0) */
+#define R2D_TYPE_BITS 3 /* R2D Message Type, Table 6.1-1 */
+#define D2R_TYPE_BITS 2 /* D2R Message Type of the upper layer data PDU, Figure 6.2.2.2-1 */
+#define D2R_TYPE_UPPER_LAYER_DATA 0
 #define SEC_BITS AIOT_MAC_SECURITY_PARAM_BITS
 #define SCRATCH_BITS 2048 /* above any PDU body: the largest valid one is 8 * 125 bits plus checks */
 
@@ -118,22 +120,7 @@ static int flag_ok(int v)
  * D2R Scheduling Info (6.2.1.6, Table 6.2.1.6-1)
  * ------------------------------------------------------------------------------------------- */
 
-static const struct {
-  int num, den;
-  int max_r_sfs; /* largest R_SFS allowed with this bit duration */
-  int scale; /* S, the Interval Bits scale factor */
-} bit_dur[8] = {
-    {2, 1, 128, 1},
-    {1, 1, 64, 2},
-    {1, 2, 32, 4},
-    {1, 4, 16, 8},
-    {1, 8, 8, 16},
-    {1, 16, 4, 32},
-    {1, 32, 2, 64},
-    {1, 96, 1, 192},
-};
-static const int r_sfs_values[8] = {1, 2, 4, 8, 16, 32, 64, 128};
-static const int i_bit_base[4] = {48, 96, 168, 240};
+static const int r_sfs_values[AIOT_MAX_SHIFTS] = {1, 2, 4, 8, 16, 32, 64, 128};
 /* TRI 1, BitDur 3, FreqBroadcast 8 / FreqUnicast 3, Block 1, Coding 1, Interval 2, Seq 1, AddMid 1, TBS 7 */
 static const int sched_width[4] = {18, 24, 24, 19};
 
@@ -142,37 +129,42 @@ int aiot_mac_sched_width(int variant)
   return (variant >= 0 && variant < 4) ? sched_width[variant] : AIOT_EINVAL;
 }
 
-/* Index of the bit duration num/den (any equal fraction), or -1. */
-static int bit_dur_index(int num, int den)
-{
-  if (num <= 0 || den <= 0)
-    return -1;
-  for (int i = 0; i < 8; i++)
-    if ((int64_t)num * bit_dur[i].den == (int64_t)bit_dur[i].num * den)
-      return i;
-  return -1;
-}
-
 static int r_sfs_index(int r)
 {
-  for (int i = 0; i < 8; i++)
+  for (int i = 0; i < AIOT_MAX_SHIFTS; i++)
     if (r_sfs_values[i] == r)
       return i;
   return -1;
 }
 
 /* The I_bit of the scheduling info; 0 stands for codepoint 0. */
-static int resolved_i_bit(const aiot_sched_info_t *s, int row)
+static int resolved_i_bit(const aiot_sched_info_t *s)
 {
-  return s->i_bit == 0 ? bit_dur[row].scale * i_bit_base[0] : s->i_bit;
+  int values[AIOT_N_I_BIT];
+  if (aiot_i_bit_values(s->t_bit_num, s->t_bit_den, values) < 0)
+    return AIOT_EINVAL;
+  return s->i_bit == 0 ? values[0] : s->i_bit;
+}
+
+/* The Interval Bits codepoint of the scheduling info's I_bit, or AIOT_EINVAL. */
+static int i_bit_codepoint(const aiot_sched_info_t *s)
+{
+  int values[AIOT_N_I_BIT];
+  if (aiot_i_bit_values(s->t_bit_num, s->t_bit_den, values) < 0)
+    return AIOT_EINVAL;
+  const int ib = s->i_bit == 0 ? values[0] : s->i_bit;
+  for (int i = 0; i < AIOT_N_I_BIT; i++)
+    if (ib == values[i])
+      return i;
+  return AIOT_EINVAL;
 }
 
 int aiot_mac_sched_validate(const aiot_sched_info_t *s)
 {
   if (!s || s->variant < 0 || s->variant > 3)
     return AIOT_EINVAL;
-  int row = bit_dur_index(s->t_bit_num, s->t_bit_den);
-  if (row < 0)
+  const aiot_bit_duration_t *bd = aiot_bit_duration(aiot_bit_duration_code(s->t_bit_num, s->t_bit_den));
+  if (!bd)
     return AIOT_EINVAL;
   if (s->variant == AIOT_SCHED_PAGING_CBRA) {
     if (s->x != 1 && s->x != 2)
@@ -182,10 +174,10 @@ int aiot_mac_sched_validate(const aiot_sched_info_t *s)
   } else {
     if (s->x != 0)
       return AIOT_EINVAL;
-    if (s->d2r_tbs < 1 || s->d2r_tbs > MAX_TBS)
+    if (s->d2r_tbs < 1 || s->d2r_tbs > AIOT_MAC_MAX_TBS)
       return AIOT_EINVAL;
   }
-  if (s->n_sfs < 1 || s->n_sfs > 8)
+  if (s->n_sfs < 1 || s->n_sfs > AIOT_MAX_SHIFTS)
     return AIOT_EINVAL;
   for (int i = 0; i < s->n_sfs; i++) {
     int r = s->r_sfs[i];
@@ -194,17 +186,14 @@ int aiot_mac_sched_validate(const aiot_sched_info_t *s)
     if (r_sfs_index(r) < 0)
       return AIOT_EINVAL;
     /* Table 6.2.1.6-1 (CR 0009): the Unicast value is limited by the Bit Duration as the Broadcast ones */
-    if (r > bit_dur[row].max_r_sfs)
+    if (r > bd->max_r_sfs)
       return AIOT_EINVAL;
   }
   if ((s->variant == AIOT_SCHED_PAGING_CFA || s->variant == AIOT_SCHED_R2D_DATA) && s->n_sfs != 1)
     return AIOT_EINVAL;
   if (s->r_block != 1 && s->r_block != 2)
     return AIOT_EINVAL;
-  int ib = resolved_i_bit(s, row), ok = 0;
-  for (int i = 0; i < 4; i++)
-    ok |= ib == bit_dur[row].scale * i_bit_base[i];
-  if (!ok)
+  if (i_bit_codepoint(s) < 0)
     return AIOT_EINVAL;
   if (s->l_amble != 7 && s->l_amble != 31)
     return AIOT_EINVAL;
@@ -215,28 +204,21 @@ int aiot_mac_sched_validate(const aiot_sched_info_t *s)
 
 int aiot_mac_sched_scale(const aiot_sched_info_t *s)
 {
-  int row = s ? bit_dur_index(s->t_bit_num, s->t_bit_den) : -1;
-  return row < 0 ? AIOT_EINVAL : bit_dur[row].scale;
+  const aiot_bit_duration_t *bd = s ? aiot_bit_duration(aiot_bit_duration_code(s->t_bit_num, s->t_bit_den)) : NULL;
+  return bd ? bd->scale : AIOT_EINVAL;
 }
 
 int aiot_mac_sched_i_bit_codepoint(const aiot_sched_info_t *s)
 {
-  int row = s ? bit_dur_index(s->t_bit_num, s->t_bit_den) : -1;
-  if (row < 0)
-    return AIOT_EINVAL;
-  for (int i = 0; i < 4; i++)
-    if (resolved_i_bit(s, row) == bit_dur[row].scale * i_bit_base[i])
-      return i;
-  return AIOT_EINVAL;
+  return s ? i_bit_codepoint(s) : AIOT_EINVAL;
 }
 
 /* Child fields in the row order of Table 6.2.1.6-1. */
 static void sched_put(wr_t *w, const aiot_sched_info_t *s)
 {
-  int row = bit_dur_index(s->t_bit_num, s->t_bit_den);
   if (s->variant == AIOT_SCHED_PAGING_CBRA)
     put(w, s->x - 1, 1); /* Time Resource Indication */
-  put(w, row, 3); /* Bit Duration */
+  put(w, aiot_bit_duration_code(s->t_bit_num, s->t_bit_den), 3); /* Bit Duration */
   if (s->variant == AIOT_SCHED_R2D_DATA) {
     put(w, r_sfs_index(s->r_sfs[0]), 3); /* Frequency Resource Indication (Unicast) */
   } else {
@@ -274,26 +256,28 @@ int aiot_mac_sched_parse(const uint8_t *bits, int n, aiot_sched_variant_t varian
   s->variant = variant;
   if (variant == AIOT_SCHED_PAGING_CBRA)
     s->x = rd_take(&r, 1) + 1;
-  int row = rd_take(&r, 3);
-  s->t_bit_num = bit_dur[row].num;
-  s->t_bit_den = bit_dur[row].den;
+  const aiot_bit_duration_t *bd = aiot_bit_duration(rd_take(&r, 3));
+  s->t_bit_num = bd->num;
+  s->t_bit_den = bd->den;
   if (variant == AIOT_SCHED_R2D_DATA) {
     s->n_sfs = 1;
     s->r_sfs[0] = r_sfs_values[rd_take(&r, 3)];
   } else {
     int map = rd_take(&r, 8);
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < AIOT_MAX_SHIFTS; i++)
       if (map & (0x80 >> i))
         s->r_sfs[s->n_sfs++] = r_sfs_values[i];
   }
   s->r_block = rd_take(&r, 1) + 1;
   s->r_code = rd_take(&r, 1) == 0;
-  s->i_bit = bit_dur[row].scale * i_bit_base[rd_take(&r, 2)];
+  int i_bit[AIOT_N_I_BIT];
+  aiot_i_bit_values(bd->num, bd->den, i_bit);
+  s->i_bit = i_bit[rd_take(&r, 2)];
   s->l_amble = rd_take(&r, 1) ? 31 : 7;
   s->i_add = rd_take(&r, 1);
   if (variant != AIOT_SCHED_PAGING_CBRA) {
     s->d2r_tbs = rd_take(&r, 7) + 1;
-    if (s->d2r_tbs > MAX_TBS) /* codepoints 125..127 are not used in this release */
+    if (s->d2r_tbs > AIOT_MAC_MAX_TBS) /* codepoints 125..127 are not used in this release */
       return AIOT_EINVAL;
   }
   return aiot_mac_sched_validate(s) < 0 ? AIOT_EINVAL : 0;
@@ -309,18 +293,18 @@ int aiot_mac_to_d2r_params(const aiot_sched_info_t *s, int r_sfs, aiot_mod_t mod
   if (!found)
     return AIOT_EINVAL;
   /* D2RParams.__post_init__: the same Bit Duration limit as in aiot_mac_sched_validate */
-  int row = bit_dur_index(s->t_bit_num, s->t_bit_den);
-  if (r_sfs > bit_dur[row].max_r_sfs)
+  const aiot_bit_duration_t *bd = aiot_bit_duration(aiot_bit_duration_code(s->t_bit_num, s->t_bit_den));
+  if (r_sfs > bd->max_r_sfs)
     return AIOT_EINVAL;
   if (modulation != AIOT_OOK && modulation != AIOT_BPSK)
     return AIOT_EINVAL;
-  out->t_bit_num = bit_dur[row].num;
-  out->t_bit_den = bit_dur[row].den;
+  out->t_bit_num = bd->num;
+  out->t_bit_den = bd->den;
   out->r_sfs = r_sfs;
   out->r_block = s->r_block;
   out->r_code = s->r_code;
   out->l_amble = s->l_amble;
-  out->i_bit = resolved_i_bit(s, row);
+  out->i_bit = resolved_i_bit(s);
   out->i_add = s->i_add;
   out->modulation = modulation;
   return 0;
@@ -347,7 +331,7 @@ int aiot_mac_k_value(int k_bit)
 
 int aiot_mac_freq_index_to_r_sfs(int freq_index)
 {
-  return (freq_index >= 0 && freq_index < 8) ? r_sfs_values[freq_index] : AIOT_EINVAL;
+  return (freq_index >= 0 && freq_index < AIOT_MAX_SHIFTS) ? r_sfs_values[freq_index] : AIOT_EINVAL;
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -366,11 +350,13 @@ static int paging_id_ok(const aiot_mac_r2d_msg_t *m)
   return bits_clean(m->paging_id, m->paging_id_len);
 }
 
-/* Validates the content of msg and writes its body with the TBS field set to tbs, without Fill
- * Bits (_check + _body). Returns the bit count or AIOT_EINVAL; out holds SCRATCH_BITS. */
+/* Validates the content of msg and writes its body with the TBS field set to tbs (0 while the
+ * message is only sized), without Fill Bits (_check + _body). Returns the bit count or AIOT_EINVAL;
+ * out holds SCRATCH_BITS. */
 static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
 {
   wr_t w = {out, 0, SCRATCH_BITS, 0};
+  const int tbs_cp = tbs > 0 ? tbs - 1 : 0; /* R2D TBS: first codepoint = 1 byte (6.1.1) */
   switch (m->kind) {
     case AIOT_R2D_PAGING_CBRA: /* Figure 6.2.1.1-1 */
       if (m->sched.variant != AIOT_SCHED_PAGING_CBRA || !flag_ok(m->k_bit))
@@ -379,8 +365,8 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         return AIOT_EINVAL;
       if (!security_ok(m))
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
-      put(&w, tbs, 7);
+      put(&w, AIOT_MAC_R2D_TYPE_PAGING, R2D_TYPE_BITS);
+      put(&w, tbs_cp, 7);
       put(&w, m->has_security_param, 1); /* SPPI */
       if (m->has_security_param)
         put_bits(&w, m->security_param, SEC_BITS);
@@ -404,8 +390,8 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         return AIOT_EINVAL;
       if (!security_ok(m))
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
-      put(&w, tbs, 7);
+      put(&w, AIOT_MAC_R2D_TYPE_PAGING, R2D_TYPE_BITS);
+      put(&w, tbs_cp, 7);
       put(&w, m->has_security_param, 1); /* SPPI */
       if (m->has_security_param)
         put_bits(&w, m->security_param, SEC_BITS);
@@ -433,8 +419,8 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         if ((e->freq_index != -1) != fipi) /* FIPI applies to all entries */
           return AIOT_EINVAL;
       }
-      put(&w, AIOT_MAC_R2D_TYPE_RANDOM_ID_RESPONSE, 3);
-      put(&w, tbs, 7);
+      put(&w, AIOT_MAC_R2D_TYPE_RANDOM_ID_RESPONSE, R2D_TYPE_BITS);
+      put(&w, tbs_cp, 7);
       if (aiot_mac_sched_validate(&m->sched) < 0)
         return AIOT_EINVAL;
       sched_put(&w, &m->sched);
@@ -456,11 +442,11 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
     case AIOT_R2D_UPPER_LAYER_DATA: /* Figures 6.2.1.4-1 and -2 */
       if (m->sched.variant != AIOT_SCHED_R2D_DATA)
         return AIOT_EINVAL;
-      if (m->has_sdu ? (m->sdu_len < 0 || m->sdu_len > MAX_TBS)
+      if (m->has_sdu ? (m->sdu_len < 0 || m->sdu_len > AIOT_MAC_MAX_TBS)
                      : (m->received_data_size < 0 || m->received_data_size > AIOT_MAC_MAX_RECEIVED_DATA_SIZE))
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, 3);
-      put(&w, tbs, 7);
+      put(&w, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, R2D_TYPE_BITS);
+      put(&w, tbs_cp, 7);
       put(&w, m->as_id, 16);
       if (aiot_mac_sched_validate(&m->sched) < 0)
         return AIOT_EINVAL;
@@ -478,8 +464,8 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
     case AIOT_R2D_NACK_FEEDBACK: /* Figure 6.2.1.5-1 */
       if (m->n_as_ids < 1 || m->n_as_ids > AIOT_MAC_MAX_NACK_IDS)
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, 3);
-      put(&w, tbs, 7);
+      put(&w, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, R2D_TYPE_BITS);
+      put(&w, tbs_cp, 7);
       put(&w, 0, 6); /* R */
       for (int i = 0; i < m->n_as_ids; i++)
         put(&w, m->as_ids[i], 16);
@@ -498,7 +484,7 @@ static int r2d_natural(const aiot_mac_r2d_msg_t *m)
   if (nb < 0)
     return AIOT_EINVAL;
   int nat = (nb + 7) / 8;
-  return nat > MAX_TBS ? AIOT_EINVAL : nat;
+  return nat > AIOT_MAC_MAX_TBS ? AIOT_EINVAL : nat;
 }
 
 int aiot_mac_r2d_natural_bytes(const aiot_mac_r2d_msg_t *m)
@@ -515,7 +501,7 @@ int aiot_mac_r2d_body_bits(const aiot_mac_r2d_msg_t *m)
   if (!m)
     return AIOT_EINVAL;
   if (m->kind == AIOT_R2D_ACCESS_TRIGGER)
-    return 3;
+    return R2D_TYPE_BITS;
   uint8_t scratch[SCRATCH_BITS];
   return r2d_body(m, 0, scratch);
 }
@@ -524,19 +510,16 @@ int aiot_mac_pack_r2d(const aiot_mac_r2d_msg_t *m, uint8_t *bits, int cap)
 {
   if (!m || (cap > 0 && !bits))
     return AIOT_EINVAL;
-  if (m->kind == AIOT_R2D_ACCESS_TRIGGER) { /* only the 3-bit type (6.1.1) */
-    if (cap < 3)
-      return AIOT_ESPACE;
-    bits[0] = 0;
-    bits[1] = 1;
-    bits[2] = 0;
-    return 3;
+  if (m->kind == AIOT_R2D_ACCESS_TRIGGER) { /* only the type (6.1.1) */
+    wr_t w = {bits, 0, cap, 0};
+    put(&w, AIOT_MAC_R2D_TYPE_ACCESS_TRIGGER, R2D_TYPE_BITS);
+    return w.err ? w.err : w.n;
   }
   int nat = r2d_natural(m);
   if (nat < 0)
     return AIOT_EINVAL;
   int tbs = m->r2d_tbs == 0 ? nat : m->r2d_tbs;
-  if (tbs < 1 || tbs > MAX_TBS || tbs < nat)
+  if (tbs < 1 || tbs > AIOT_MAC_MAX_TBS || tbs < nat)
     return AIOT_EINVAL;
   /* the paging messages may carry extra Fill Bits ("future extensions"), packed as zeros and ignored on
    * parse (6.2.1.1, CR 0016), the others may not */
@@ -559,22 +542,22 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
   if (!m)
     return AIOT_EINVAL;
   memset(m, 0, sizeof(*m));
-  if (!bits_clean(bits, n) || n < 3)
+  if (!bits_clean(bits, n) || n < R2D_TYPE_BITS)
     return AIOT_EINVAL;
-  int mtype = bits_to_int(bits, 3);
+  int mtype = bits_to_int(bits, R2D_TYPE_BITS);
   if (!aiot_mac_r2d_type_valid(mtype)) /* 000, 110, 111 are reserved */
     return AIOT_EINVAL;
   if (mtype == AIOT_MAC_R2D_TYPE_ACCESS_TRIGGER) {
-    if (n != 3)
+    if (n != R2D_TYPE_BITS)
       return AIOT_EINVAL;
     m->kind = AIOT_R2D_ACCESS_TRIGGER;
     return 0;
   }
   if (n % 8)
     return AIOT_EINVAL;
-  rd_t r = {bits, n, 3};
-  int tbs = rd_take(&r, 7);
-  if (tbs < 1 || tbs > MAX_TBS || n != 8 * tbs)
+  rd_t r = {bits, n, R2D_TYPE_BITS};
+  int tbs = rd_take(&r, 7) + 1; /* R2D TBS: first codepoint = 1 byte (6.1.1) */
+  if (tbs < 1 || tbs > AIOT_MAC_MAX_TBS || n != 8 * tbs) /* codepoints 125..127 are not used in this release */
     return AIOT_EINVAL;
   m->r2d_tbs = tbs;
 
@@ -709,13 +692,14 @@ int aiot_mac_pack_d2r(const aiot_mac_d2r_msg_t *m, uint8_t *bits, int cap)
   }
   if (m->kind != AIOT_D2R_UPPER_LAYER_DATA) /* Figure 6.2.2.2-1 */
     return AIOT_EINVAL;
-  if (!flag_ok(m->mdi) || m->sdu_len < 0 || m->sdu_len > MAX_TBS || m->padding_bytes < 0 || m->padding_bytes > MAX_TBS)
+  if (!flag_ok(m->mdi) || m->sdu_len < 0 || m->sdu_len > AIOT_MAC_MAX_TBS || m->padding_bytes < 0
+      || m->padding_bytes > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
-  if (2 + m->sdu_len + m->padding_bytes > MAX_TBS)
+  if (2 + m->sdu_len + m->padding_bytes > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
   if (cap < 8 * (2 + m->sdu_len + m->padding_bytes))
     return AIOT_ESPACE;
-  put(&w, 0, 2); /* type 00 */
+  put(&w, D2R_TYPE_UPPER_LAYER_DATA, D2R_TYPE_BITS);
   put(&w, 0, 6); /* R */
   put(&w, m->mdi, 1);
   put(&w, m->sdu_len, 7);
@@ -741,12 +725,12 @@ int aiot_mac_parse_d2r(const uint8_t *bits, int n, aiot_d2r_kind_t kind, int d2r
   }
   if (kind != AIOT_D2R_UPPER_LAYER_DATA)
     return AIOT_EINVAL;
-  if (n % 8 || n < 16 || n > 8 * MAX_TBS)
+  if (n % 8 || n < 16 || n > 8 * AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
   if (d2r_tbs != 0 && n != 8 * d2r_tbs)
     return AIOT_EINVAL;
   rd_t r = {bits, n, 0};
-  if (rd_take(&r, 2) != 0) /* 01, 10, 11 are reserved */
+  if (rd_take(&r, D2R_TYPE_BITS) != D2R_TYPE_UPPER_LAYER_DATA) /* 01, 10, 11 are reserved */
     return AIOT_EINVAL;
   rd_take(&r, 6);
   m->kind = kind;
@@ -763,7 +747,7 @@ int aiot_mac_parse_d2r(const uint8_t *bits, int n, aiot_d2r_kind_t kind, int d2r
 
 int aiot_mac_d2r_for_tbs(const uint8_t *sdu, int sdu_len, int tbs, int mdi, aiot_mac_d2r_msg_t *m)
 {
-  if (!m || sdu_len < 0 || (sdu_len > 0 && !sdu) || tbs < 1 || tbs > MAX_TBS)
+  if (!m || sdu_len < 0 || (sdu_len > 0 && !sdu) || tbs < 1 || tbs > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
   int pad = tbs - 2 - sdu_len;
   if (pad < 0 || !flag_ok(mdi))

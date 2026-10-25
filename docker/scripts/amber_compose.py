@@ -12,6 +12,11 @@ writes into DIR (here the current folder):
   ci-scripts/yaml_files/5g_rfsimulator_aiot (see the README there);
 - without one: one amber-reader and one amber-tag per node of the scenario, over plain rfsim.
 
+A 5G room whose scenario places its nodes on several machines ([network.hosts]) gets one
+docker-compose.<machine>.yaml per machine instead of docker-compose.yaml: the hub's machine has the
+room's network and publishes the ports of the nodes that run elsewhere, which connect to the hub's
+address (see "On several machines" in that README).
+
 The scenario is either a file inside DIR, which the containers see under /room, or a file in the
 image, such as /opt/amber/tests/scenarios/registration.toml. Every program writes its CSV logs to
 ./out, or to the amber.out volume in a 5G room.
@@ -40,6 +45,7 @@ import shutil
 import sys
 
 from amber.hosts import load_scenario
+from amber.coexist import room_powers
 from amber.iq import ADC_NOISE_COUNTS, TX_COUNTS, dbm_to_w, thermal_noise_w, up_scale
 from amber.sink import PORT as SINK_PORT
 
@@ -86,7 +92,11 @@ HUB_IDLE_TIMEOUT_S = 60.0
 # The look-ahead of each node, in samples: the gNB sl_ahead (6 slots) ahead, the UE its rx-to-tx distance,
 # and Amber's Reader and CW node one block (they write block n, then read it).
 GNB_LOOKAHEAD, UE_LOOKAHEAD, AMBER_LOOKAHEAD = 6 * SAMPLES_PER_MS, 17024, SAMPLES_PER_MS
-HUB_ADDR = "192.168.71.141"
+# The room's network, 192.168.71.128/26 as in OAI's other rfsim rooms (/25 when the Tags need more
+# addresses), and the fixed addresses in it; docker gives the Tags theirs.
+ROOM_NET = "192.168.71.128"
+GNB_ADDR, HUB_ADDR, UE_ADDR = "192.168.71.140", "192.168.71.141", "192.168.71.150"
+ROOM_FIXED_ADDRS = 2 + 5  # network and broadcast, then the gateway, the hub, the gNB, the UE and the Reader
 GNB_PORT, UE_PORT, CW_PORT, READER_PORT, FIRST_TAG_PORT = 4043, 4044, 4049, 4050, 4051
 DL_SHIFT_HZ = 1980000.0  # A-IoT at DL PRB 1, the centre of the free PRBs 0-2
 UL_SHIFT_HZ = 1080000.0  # A-IoT at UL PRB 18, the centre of the free PRBs 15-21
@@ -130,6 +140,7 @@ def to_tag_db(amp, n_rb):
 # Topology 1: the gNB is the Reader. Its R2D and carrier are in DL PRBs 0 to 2 and its D2R receiver in
 # UL PRBs 15 to 21 (the PRBs the room keeps free).
 D2R_PRB_START = 15
+GNB_R2D_PRBS = range(0, 3)
 
 
 def gnb_reader(phy):
@@ -137,7 +148,7 @@ def gnb_reader(phy):
     PRBs 0 to 2 as the PRB grid allows, where the Tags' DL lands (their DC: the carrier), and the gain
     to each Tag."""
     n_rb = phy.rb
-    prb_start = (3 - n_rb) // 2
+    prb_start = GNB_R2D_PRBS[0] + (len(GNB_R2D_PRBS) - n_rb) // 2
     return prb_start, n_rb, -prbs_hz(prb_start, n_rb), to_tag_db(TX_AMP, n_rb)
 
 
@@ -381,7 +392,49 @@ def peer_options(scenario):
         [f"--aiot.serve_port {PEER_PORT}"]
 
 
-def hub_conf(scenario_path, node_ids):
+# The rms levels the nodes of the room send, measured in it (README.md): the gNB's DL at full load, the
+# UE's UL, and the Reader's carrier and R2D. The gains from positions (amber.coexist) bring each sender to
+# each receiver at the power the geometry gives, in the receiver's own scale: the 5G receivers' is their
+# wanted signal (the 5G link is 0 dB), a Tag's is Amber's carrier at TX_COUNTS, and the Reader's has its
+# thermal noise at ADC_NOISE_COUNTS on I and on Q.
+GNB_DL_COUNTS, UE_UL_COUNTS, READER_COUNTS = 166.0, 118.0, 7466.0
+# The most the links may bring to one receiver, summed as rms levels: -6 dBFS, the headroom of 16-bit samples.
+RX_LIMIT_COUNTS = 16384.0
+
+
+def db(x):
+    return 20 * math.log10(x)
+
+
+def geometry_gains(scenario, powers):
+    """{(tx, rx): gain dB} of the links between the 5G cell and the A-IoT link, from amber.coexist's
+    powers: each sender at each receiver as strong, against what that receiver's scale stands for, as
+    the geometry makes it. Refuses gains that would bring a receiver over RX_LIMIT_COUNTS."""
+    noise_dbm = 10 * math.log10(thermal_noise_w(scenario.reader_noise_figure_db)) + 30
+    reader_scale_db = 10 * math.log10(2) - noise_dbm  # Reader counts^2 per mW, as amber.iq.up_scale
+    gains = {("reader", "ue"): db(GNB_DL_COUNTS / READER_COUNTS) + powers.reader_at_ue - powers.gnb_at_ue,
+             ("reader", "gnb"): db(UE_UL_COUNTS / READER_COUNTS) + powers.reader_at_gnb - powers.ue_at_gnb,
+             ("ue", "reader"): powers.ue_at_reader + reader_scale_db - db(UE_UL_COUNTS)}
+    for n, t in powers.tags.items():
+        gains[("gnb", f"tag{n}")] = db(TX_COUNTS / GNB_DL_COUNTS) + t.gnb - t.carrier
+        gains[(f"tag{n}", "gnb")] = db(UE_UL_COUNTS) + t.at_gnb - powers.ue_at_gnb - (t.at_reader + reader_scale_db)
+    gains = {k: round(v, 2) for k, v in gains.items()}
+    sent = {"gnb": GNB_DL_COUNTS, "ue": UE_UL_COUNTS, "reader": READER_COUNTS}
+    at = {"ue": GNB_DL_COUNTS, "gnb": UE_UL_COUNTS}
+    at.update({f"tag{n}": READER_COUNTS for n in powers.tags})
+    for (tx, rx), g in gains.items():
+        if tx in sent:
+            at[rx] = at.get(rx, 0.0) + sent[tx] * 10 ** (g / 20)
+    for rx, level in at.items():
+        if level > RX_LIMIT_COUNTS:
+            raise ValueError(f"the links bring {level:.0f} counts rms to {rx}, over {RX_LIMIT_COUNTS:.0f}: "
+                             "move the gNB or the UE further from the A-IoT nodes")
+    return gains
+
+
+def hub_conf(scenario_path, node_ids, gains=None):
+    """The room with a standalone Reader. Its links between the 5G cell and the A-IoT link have the
+    gains of geometry_gains when the scenario places the gNB and the UE, else the room's fixed ones."""
     tags = [f"tag{n}" for n in node_ids]
     width = max(len(t) for t in ["reader"] + tags) + 3
 
@@ -396,29 +449,41 @@ def hub_conf(scenario_path, node_ids):
     links = ["    # the 5G cell", hub_link("gnb", "ue"), hub_link("ue", "gnb"), "",
              "    # A-IoT: 0 dB, Amber applies its own path loss"]
     links += [hub_link("reader", t) for t in tags] + [hub_link(t, "reader") for t in tags]
-    links += ["", "    # Reader carrier and R2D at the UE, in DL PRBs 0-2 (PRB 1's centre), 10 dB above the 5G DL",
-              hub_link("reader", "ue", READER_TO_UE_DB, -DL_SHIFT_HZ),
-              "    # 5G DL at each Tag, 40 dB below the Reader's carrier there"]
-    links += [hub_link("gnb", t, GNB_TO_TAG_DB, DL_SHIFT_HZ) for t in tags]
-    links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre), 20 dB below the UE's UL"]
-    links += [hub_link(t, "gnb", TAG_TO_GNB_DB, UL_SHIFT_HZ) for t in tags]
-    links += ["    # the Reader's carrier in the UL band, at the gNB, 10 dB above the UE's UL",
-              hub_link("reader", "gnb", READER_TO_GNB_DB, UL_SHIFT_HZ),
-              "    # the UE's UL at the Reader, as strong as a Tag's D2R",
-              hub_link("ue", "reader", UE_TO_READER_DB, -UL_SHIFT_HZ)]
+    if gains is None:
+        links += ["", "    # Reader carrier and R2D at the UE, in DL PRBs 0-2 (PRB 1's centre), 10 dB above the 5G DL",
+                  hub_link("reader", "ue", READER_TO_UE_DB, -DL_SHIFT_HZ),
+                  "    # 5G DL at each Tag, 40 dB below the Reader's carrier there"]
+        links += [hub_link("gnb", t, GNB_TO_TAG_DB, DL_SHIFT_HZ) for t in tags]
+        links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre), 20 dB below the UE's UL"]
+        links += [hub_link(t, "gnb", TAG_TO_GNB_DB, UL_SHIFT_HZ) for t in tags]
+        links += ["    # the Reader's carrier in the UL band, at the gNB, 10 dB above the UE's UL",
+                  hub_link("reader", "gnb", READER_TO_GNB_DB, UL_SHIFT_HZ),
+                  "    # the UE's UL at the Reader, as strong as a Tag's D2R",
+                  hub_link("ue", "reader", UE_TO_READER_DB, -UL_SHIFT_HZ)]
+    else:
+        links += ["", "    # Between the 5G cell and the A-IoT link, gains from where [network] places the gNB and the UE",
+                  "    # (amber.coexist: TR 38.769 Table 6.6.2.1-1). The Reader in DL PRBs 0-2 (PRB 1's centre) at the UE",
+                  hub_link("reader", "ue", gains[("reader", "ue")], -DL_SHIFT_HZ),
+                  "    # the 5G DL at each Tag"]
+        links += [hub_link("gnb", t, gains[("gnb", t)], DL_SHIFT_HZ) for t in tags]
+        links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre)"]
+        links += [hub_link(t, "gnb", gains[(t, "gnb")], UL_SHIFT_HZ) for t in tags]
+        links += ["    # the Reader's carrier in the UL band, at the gNB",
+                  hub_link("reader", "gnb", gains[("reader", "gnb")], UL_SHIFT_HZ),
+                  "    # the UE's UL at the Reader",
+                  hub_link("ue", "reader", gains[("ue", "reader")], -UL_SHIFT_HZ)]
     about = ["# rfsim_hub room: the 25-PRB n28 cell of gnb.conf (gNB) and nr-ue.conf (UE) and an",
              f"# Ambient IoT Reader with {len(tags)} Tags, all at 5.76 Msps. The gNB leaves DL PRBs 0-2 and UL PRBs 15-21",
              "# free (dl_prbblacklist, ul_prbblacklist), and the links put the A-IoT carrier there."]
     return hub_file(scenario_path, about, nodes, links)
 
 
-# 192.168.71.128/26 as in OAI's other rfsim rooms, or /25 when the Tags need more addresses. Besides the
-# Tags it holds the gateway, the hub, the gNB, the UE and the Reader.
-MAX_ROOM_TAGS = 128 - 2 - 5
+# The Tags a /26 or, at most, a /25 room network has addresses for.
+MAX_ROOM_TAGS = 128 - ROOM_FIXED_ADDRS
 
 
 def subnet(n_tags):
-    return "192.168.71.128/26" if n_tags <= 64 - 2 - 5 else "192.168.71.128/25"
+    return f"{ROOM_NET}/26" if n_tags <= 64 - ROOM_FIXED_ADDRS else f"{ROOM_NET}/25"
 
 
 def prb_blacklists(reader, split=None):
@@ -428,35 +493,89 @@ def prb_blacklists(reader, split=None):
     UE's D2R, the CW node's carrier."""
     if reader == "ue" or split == "r2d":
         return [], list(T4_UL_PRBS)
-    return [0, 1, 2], list(range(D2R_PRB_START, D2R_PRB_START + D2R_N_RB))
+    return list(GNB_R2D_PRBS), list(range(D2R_PRB_START, D2R_PRB_START + D2R_N_RB))
+
+
+class Machines:
+    """Where each node of a 5G room runs: all on one machine, or on the machines [network.hosts]
+    names, each with a compose file of its own. The nodes are those of [network.hosts]: "hub", "gnb",
+    "ue", "cw", "reader" and "tags"; amber.sink runs with the gNB, in its network."""
+
+    def __init__(self, network=None):
+        self.network = network
+        self.several = bool(network and network.hosts)
+
+    def host(self, node):
+        """The machine node runs on: its address, or None on one machine."""
+        return self.network.host(node) if self.several else None
+
+    def with_hub(self, node):
+        return self.host(node) == self.host("hub")
+
+    def hub_addr(self, node):
+        """The address node connects to the hub at: the hub's in the room's network on its machine,
+        else its machine's."""
+        return HUB_ADDR if self.with_hub(node) else self.host("hub")
+
+
+
+def host_label(host):
+    """A machine's address as a name a file, a docker network or a compose project can have."""
+    return "".join(c if c.isalnum() else "-" for c in host)
+
+
+def compose_name(host=None):
+    """The compose file of the room, or of the part of it on machine host."""
+    return "docker-compose.yaml" if host is None else f"docker-compose.{host_label(host)}.yaml"
+
+
+# Where the UE of a machine without the gNB finds the gNB's radio configuration, in its folder, and
+# where the gNB writes it (--do-ra: its working directory).
+RRC_DIR = "./rrc"
+GNB_RRC_FILES = ("/opt/oai-gnb/reconfig.raw", "/opt/oai-gnb/rbconfig.raw")
 
 
 def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw_node=False, relay=False, split=None,
-                 peer_opts=(), cell_files=("./gnb.conf", "./nr-ue.conf")):
+                 peer_opts=(), cell_files=("./gnb.conf", "./nr-ue.conf"), machines=Machines()):
     """The 5G room; with reader "gnb" (topologies 1 and 3) or "ue" (topologies 2 and 4), that node is
     the Reader, with reader_opts, and there is no Reader of Amber's; with cw_node, amber-reader is the
     CW node; with relay (topology 2), amber.sink takes the UE's Tag data in the gNB's network; with
     split (topology 3), the UE sends the gNB's R2D or receives its D2R, with peer_opts. cell_files are
-    the gNB's and the UE's configuration files, from the room's folder."""
+    the gNB's and the UE's configuration files, from the room's folder.
+
+    {file name: text}: docker-compose.yaml, or with machines of [network.hosts], one
+    docker-compose.<machine>.yaml per machine, the hub's first."""
     def cmd(words):  # a command as one YAML flow list
         return json.dumps(words)
 
     def prbs(name, prb_list):
         return [f"--gNBs.[0].{name} {','.join(str(p) for p in prb_list)}"] if prb_list else []
 
+    def rfsim(node, port):
+        return ["--rfsimulator.[0].serveraddr", machines.hub_addr(node), "--rfsimulator.[0].serverport", str(port)]
+
+    def fixed(node, addr):  # the node's address in the room's network, on the hub's machine
+        if not machines.with_hub(node):
+            return ["        networks: [public_net]"]
+        return ["        networks:", "            public_net:", f"                ipv4_address: {addr}"]
+
+    def after(node, other, service):  # wait for another service, when it runs on the same machine
+        return [f"        depends_on: [{service}]"] if machines.host(node) == machines.host(other) else []
+
     amber_volumes = ["amber.out:/out"]
     if scenario_path.startswith(ROOM + "/"):
         amber_volumes.append(f".:{ROOM}:ro")
     amber = ["--amber.block_bytes", str(AMBER_BLOCK_BYTES), "--amber.output_dir", "/out", "--amber.scenario", scenario_path]
-    rfsim = lambda port: ["--rfsimulator.[0].serveraddr", HUB_ADDR, "--rfsimulator.[0].serverport", str(port)]
     dl_free, ul_free = prb_blacklists(reader, split)
-    gnb_opts = " ".join(["-E --do-ra --rfsim --noS1"] + rfsim(GNB_PORT) +
+    gnb_opts = " ".join(["-E --do-ra --rfsim --noS1"] + rfsim("gnb", GNB_PORT) +
                         prbs("dl_prbblacklist", dl_free) + prbs("ul_prbblacklist", ul_free) +
                         [f"--L1s.[0].prach_dtx_threshold {PRACH_THRESHOLD}"] +
                         ([f"--MACRLCs.[0].ulsch_max_frame_inactivity {T3_UL_INACTIVITY_FRAMES}"] if split else []) +
                         (list(reader_opts) if reader == "gnb" else []) + LOG)
     ue_opts = " ".join(["-E --do-ra --rfsim --noS1 --reconfig-file etc/rrc/reconfig.raw --rbconfig-file etc/rrc/rbconfig.raw"]
-                       + rfsim(UE_PORT) + (list(reader_opts) if reader == "ue" else list(peer_opts)) + LOG)
+                       + rfsim("ue", UE_PORT) + (list(reader_opts) if reader == "ue" else list(peer_opts)) + LOG)
+    ue_rrc = "rrc.config:/opt/oai-nr-ue/etc/rrc/" if machines.host("gnb") == machines.host("ue") else \
+        f"{RRC_DIR}:/opt/oai-nr-ue/etc/rrc/:ro  # reconfig.raw and rbconfig.raw, from the gNB's machine"
     whose = {"gnb": "whose gNB is the Ambient IoT Reader of {} Tags (topology 1),",
              "ue": ("whose UE is the Ambient IoT Reader of {} Tags and sends their data to the gNB (topology 2),"
                     if relay else "whose UE is the Ambient IoT Reader of {} Tags (topology 4),"),
@@ -464,22 +583,17 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
     if split:
         whose = ("whose gNB is the Ambient IoT Reader of {} Tags and whose UE " +
                  ("sends its R2D" if split == "r2d" else "receives its D2R") + " (topology 3),")
-    lines = [
+    head = [
         "# SPDX-License-Identifier: MIT",
         f"# Written by amber-compose from {json.dumps(scenario_path)}",
         "#",
         "# A 5G cell (gNB and UE, --do-ra --noS1) " + whose.format(len(node_ids)),
         ("# with a CW node in the UL band, through rfsim_hub. See README.md in this folder." if cw_node else
          "# through rfsim_hub. See README.md in this folder."),
-        "",
-        "x-amber: &amber",
-        f"    image: ${{AMBER_IMG:-{image}}}",
-        "    init: true",
-        "    depends_on: [rfsim-hub]",
-        f"    volumes: {json.dumps(amber_volumes)}",
-        "    networks: [public_net]",
-        "",
-        "services:",
+    ]
+
+    # (node, lines) of each service, in the order of the compose file
+    services = [("hub", [
         "    rfsim-hub:",
         f"        image: ${{AMBER_IMG:-{image}}}",
         "        container_name: rfsim5g-aiot-hub",
@@ -489,7 +603,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        networks:",
         "            public_net:",
         f"                ipv4_address: {HUB_ADDR}",
-        "",
+    ]), ("gnb", [
         "    oai-gnb:",
         "        image: ${REGISTRY-oaisoftwarealliance/}${GNB_IMG:-oai-gnb}:${TAG:-develop}",
         "        container_name: rfsim5g-oai-gnb",
@@ -498,10 +612,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        environment:",
         f"            USE_ADDITIONAL_OPTIONS: {gnb_opts}",
         "            ASAN_OPTIONS: detect_leaks=0",
-        "        depends_on: [rfsim-hub]",
-        "        networks:",
-        "            public_net:",
-        "                ipv4_address: 192.168.71.140",
+    ] + after("gnb", "hub", "rfsim-hub") + fixed("gnb", GNB_ADDR) + [
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
         f"            - {cell_files[0]}:/opt/oai-gnb/etc/gnb.conf",
@@ -512,7 +623,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "            interval: 10s",
         "            timeout: 5s",
         "            retries: 5",
-        "",
+    ]), ("ue", [
         "    oai-nr-ue:",
         "        image: ${REGISTRY-oaisoftwarealliance/}${NRUE_IMG:-oai-nr-ue}:${TAG:-develop}",
         "        container_name: rfsim5g-oai-nr-ue",
@@ -524,54 +635,103 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
         f"            - {cell_files[1]}:/opt/oai-nr-ue/etc/nr-ue.conf",
-        "            - rrc.config:/opt/oai-nr-ue/etc/rrc/",
-    ] + (["            - amber.out:/out  # the Reader's records"] if reader == "ue" else []) + [
-        "        depends_on: [oai-gnb]",
-        "        networks:",
-        "            public_net:",
-        "                ipv4_address: 192.168.71.150",
+        f"            - {ue_rrc}",
+    ] + (["            - amber.out:/out  # the Reader's records"] if reader == "ue" else []) +
+        after("ue", "gnb", "oai-gnb") + fixed("ue", UE_ADDR) + [
         "        healthcheck:",
         "            test: /bin/bash -c \"pgrep nr-uesoftmodem\"",
         "            interval: 10s",
         "            timeout: 5s",
         "            retries: 5",
-    ]
+    ])]
     if reader is None:
-        lines += ["",
-                  "    amber-reader:",
-                  "        <<: *amber",
-                  "        container_name: rfsim5g-aiot-reader",
-                  f"        command: {cmd(['amber-reader'] + rfsim(READER_PORT) + amber + LOG)}"]
+        services.append(("reader", [
+            "    amber-reader:",
+            "        <<: *amber",
+            "        container_name: rfsim5g-aiot-reader",
+            f"        command: {cmd(['amber-reader'] + rfsim('reader', READER_PORT) + amber + LOG)}"]))
     if relay:
-        lines += ["",
-                  "    amber-sink:",
-                  f"        image: ${{AMBER_IMG:-{image}}}",
-                  "        container_name: rfsim5g-aiot-sink",
-                  "        init: true",
-                  "        network_mode: \"service:oai-gnb\"  # the gNB's end of the UE's user plane",
-                  "        depends_on: [oai-gnb]",
-                  f"        command: {cmd(['python3', '-m', 'amber.sink', '--port', str(SINK_PORT), '--output_dir', '/out'])}",
-                  "        volumes: [\"amber.out:/out\"]"]
+        services.append(("gnb", [
+            "    amber-sink:",
+            f"        image: ${{AMBER_IMG:-{image}}}",
+            "        container_name: rfsim5g-aiot-sink",
+            "        init: true",
+            "        network_mode: \"service:oai-gnb\"  # the gNB's end of the UE's user plane",
+            "        depends_on: [oai-gnb]",
+            f"        command: {cmd(['python3', '-m', 'amber.sink', '--port', str(SINK_PORT), '--output_dir', '/out'])}",
+            "        volumes: [\"amber.out:/out\"]"]))
     if cw_node:
-        lines += ["",
-                  "    amber-cw:",
-                  "        <<: *amber",
-                  "        container_name: rfsim5g-aiot-cw",
-                  f"        command: {cmd(['amber-reader', '--amber.role', 'carrier'] + rfsim(CW_PORT) + amber + LOG)}"]
+        services.append(("cw", [
+            "    amber-cw:",
+            "        <<: *amber",
+            "        container_name: rfsim5g-aiot-cw",
+            f"        command: {cmd(['amber-reader', '--amber.role', 'carrier'] + rfsim('cw', CW_PORT) + amber + LOG)}"]))
     for i, n in enumerate(node_ids):
-        lines += ["", f"    amber-tag{n}:", "        <<: *amber", f"        container_name: rfsim5g-aiot-tag{n}",
-                  f"        command: {cmd(['amber-tag', '--amber.node_id', str(n)] + rfsim(FIRST_TAG_PORT + i) + amber + LOG)}"]
-    lines += ["", "volumes:", "    rrc.config:", "    amber.out:", "",
-              "networks:",
-              "    public_net:",
-              "        driver: bridge",
-              "        name: rfsim5g-oai-public-net",
-              "        ipam:",
-              "            config:",
-              f"                - subnet: {subnet(len(node_ids))}",
-              "        driver_opts:",
-              "            com.docker.network.bridge.name: \"rfsim5g-public\""]
-    return "\n".join(lines) + "\n"
+        services.append(("tags", [
+            f"    amber-tag{n}:", "        <<: *amber", f"        container_name: rfsim5g-aiot-tag{n}",
+            f"        command: {cmd(['amber-tag', '--amber.node_id', str(n)] + rfsim('tags', FIRST_TAG_PORT + i) + amber + LOG)}"]))
+    ports = {"gnb": [GNB_PORT], "ue": [UE_PORT], "reader": [READER_PORT], "cw": [CW_PORT],
+             "tags": [FIRST_TAG_PORT + i for i in range(len(node_ids))]}
+
+    def anchor(hub_here):
+        return ["x-amber: &amber",
+                f"    image: ${{AMBER_IMG:-{image}}}",
+                "    init: true"] + (["    depends_on: [rfsim-hub]"] if hub_here else []) + [
+                f"    volumes: {json.dumps(amber_volumes)}",
+                "    networks: [public_net]",
+                ""]
+
+    def room_net(n_tags):  # the room's network, with the hub's fixed address
+        return ["    public_net:",
+                "        driver: bridge",
+                "        name: rfsim5g-oai-public-net",
+                "        ipam:",
+                "            config:",
+                f"                - subnet: {subnet(n_tags)}",
+                "        driver_opts:",
+                "            com.docker.network.bridge.name: \"rfsim5g-public\""]
+
+    def text(about, mine, anchored, hub_here, volumes, network):
+        lines = head + about + [""] + (anchor(hub_here) if anchored else []) + ["services:"]
+        for i, (_, svc) in enumerate(mine):
+            lines += ([""] if i else []) + svc
+        if volumes:
+            lines += ["", "volumes:"] + [f"    {v}:" for v in volumes]
+        lines += ["", "networks:"] + network
+        return "\n".join(lines) + "\n"
+
+    amber_nodes = ("reader", "cw", "tags")
+    if not machines.several:
+        return {compose_name(): text([], services, True, True, ["rrc.config", "amber.out"], room_net(len(node_ids)))}
+
+    hosts = []
+    for node, _ in services:
+        if machines.host(node) not in hosts:
+            hosts.append(machines.host(node))
+    hub_host = machines.host("hub")
+    remote = [n for n in ports if any(node == n for node, _ in services) and not machines.with_hub(n)]
+    files = {}
+    for host in hosts:
+        mine = [(node, list(svc)) for node, svc in services if machines.host(node) == host]
+        nodes = {node for node, _ in mine}
+        if host == hub_host and remote:
+            published = [p for n in remote for p in ports[n]]
+            mine[0][1].insert(len(mine[0][1]) - 3, f"        ports: {json.dumps([f'{p}:{p}' for p in published])}"
+                              "  # for the nodes of the other machines")
+        about = ["#", f"# The part of the room that runs on {host}" +
+                 (", with the hub." if host == hub_host else f"; the hub runs on {hub_host}, ports open to this machine.")]
+        if "ue" in nodes and machines.host("gnb") != host:
+            about += [f"# Start the gNB's machine first, then copy its {' and '.join(GNB_RRC_FILES)} (docker cp",
+                      f"# rfsim5g-oai-gnb:FILE) into {RRC_DIR} next to this file, then start this one."]
+        anchored = bool(nodes & set(amber_nodes))
+        records = anchored or any("amber.out:/out" in line for _, svc in mine for line in svc)
+        volumes = (["rrc.config"] if "gnb" in nodes else []) + (["amber.out"] if records else [])
+        if host == hub_host:
+            network = room_net(len(node_ids))
+        else:
+            network = ["    public_net:", "        driver: bridge", f"        name: rfsim5g-aiot-{host_label(host)}"]
+        files[compose_name(host)] = text(about, mine, anchored, host == hub_host, volumes, network)
+    return files
 
 
 def cell_file(name):
@@ -598,6 +758,9 @@ def not_built(network, phy=None):
     """Why this script cannot build the network yet, or None."""
     if network.topology is None:
         return None
+    if getattr(network, "gnb", None) is not None:
+        return ("[network.gnb] and [network.ue]: gains from positions are built only for the room with a standalone "
+                "Reader yet")
     if network.topology == 1 and network.cw not in T1_CARRIERS:
         return (f'topology 1 with cw = {network.cw!r}: only the gNB\'s own DL carrier (cw = "gnb-dl") and a CW node '
                 'in the UL band (cw = "cw-node-ul") are built yet')
@@ -663,15 +826,21 @@ def main():
         else:
             cell_files = ("./gnb.conf", "./nr-ue.conf")
             copies = {"gnb.conf": cell_file(gnb_conf), "nr-ue.conf": cell_file(ue_conf)}
+        machines = Machines(network)
         if reader:
-            files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image, reader,
-                                                         reader_options(scenario, node_ids, reader),
-                                                         network.cw == "cw-node-ul", network.relay, split,
-                                                         peer_options(scenario) if split else (), cell_files),
-                     "rfsim_hub.conf": hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)}
+            files = room_compose(scenario_path, node_ids, args.image, reader, reader_options(scenario, node_ids, reader),
+                                 network.cw == "cw-node-ul", network.relay, split,
+                                 peer_options(scenario) if split else (), cell_files, machines)
+            files["rfsim_hub.conf"] = hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)
         else:
-            files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image, cell_files=cell_files),
-                     "rfsim_hub.conf": hub_conf(scenario_path, node_ids)}
+            files = room_compose(scenario_path, node_ids, args.image, cell_files=cell_files, machines=machines)
+            with contextlib.redirect_stdout(sys.stderr):
+                powers = room_powers(scenario)
+            try:
+                gains = geometry_gains(scenario, powers) if powers else None
+            except ValueError as e:
+                parser.error(f"{args.scenario}: [network]: {e}")
+            files["rfsim_hub.conf"] = hub_conf(scenario_path, node_ids, gains)
     for name, text in files.items():
         with open(os.path.join(room, name), "w") as f:
             f.write(text)

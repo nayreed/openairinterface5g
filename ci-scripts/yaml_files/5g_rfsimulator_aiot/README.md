@@ -58,6 +58,35 @@ interference-to-signal ratio (I/S) chosen at each receiver:
 | reader → gnb | the Reader's carrier in UL PRB 18 | +10 dB over the UE's UL | 20 log10(118 √10 / 7466) = −26 dB |
 | ue → reader | the UE's UL | 0 dB, as strong as a Tag's D2R | 20 log10(568 / 118) = +14 dB |
 
+**Gains from positions.** The gains above are chosen levels. Place the gNB and the UE in the
+scenario instead, in the plane of the Tags and the base station, and `amber-compose` computes every
+link between the two systems from the geometry:
+
+```toml
+[network.gnb]
+x = 300.0             # m; required, as is y
+y = 0.0
+# height = 25.0, power_dbm = 46.0, antenna_gain_dbi = 15.0: TR 38.769 Table 6.6.2.2-1
+[network.ue]
+x = 50.0
+y = 80.0
+# height = 1.5, power_dbm = 23.0, antenna_gain_dbi = 0.0, indoor = false
+```
+
+Amber's `amber.coexist` gives each pair the TR 38.901 model of TR 38.769 Table 6.6.2.1-1 (gNB and
+UE: UMa; outdoor UE and Reader or Tag: UMi with the high O2I loss; indoor UE and Tag: InH-Office;
+indoor UE and Reader: InF-DH; the gNB and the A-IoT nodes, which the table leaves out: UMa with the
+O2I loss), with a minimum coupling loss of 70 dB to the gNB and the scenario's `[radio] los`. It
+leaves out the shadow fading and the 0.5 dB per indoor metre. The Reader and its Tags keep Amber's
+own model. Each received power then becomes a gain in the receiver's own scale: the levels in the
+first table stand for the gNB's, the UE's and the Reader's powers, the 5G receivers take their wanted
+signal (the 5G link stays at 0 dB, the RFsimulator adds no noise), a Tag takes Amber's carrier at
+8192 counts, and the Reader its thermal noise at one count. With the gNB at (300, 0) and the UE at
+(50, 80) in this room, for example, the Reader reaches the UE 10 dB under the 5G DL, and the 5G DL
+reaches each Tag 43 to 47 dB under the Reader's carrier. `amber-compose` refuses positions whose
+gains would bring a receiver over −6 dBFS. Only this room, with a standalone Reader, takes positions
+yet.
+
 **PRACH detection.** The RFsimulator adds no noise, so the gNB's PRACH detector measures almost no
 noise floor, and the A-IoT signals in the UL band reach 18 to 23 dB in it. With OAI's default
 threshold of 15 dB they fake preambles; a fake one on the UE's dedicated preamble ends the UE's
@@ -83,9 +112,9 @@ docker build --tag oai-amber:latest --file docker/Dockerfile.amber.ubuntu .
 The last image holds `rfsim_hub`, `amber-reader`, `amber-tag` and Amber.
 
 Or use the three images published from `aiot-rfsim`. The `oai-gnb and oai-nr-ue images` workflow
-(`.github/workflows/oai-5g-images.yml`) builds the gNB and the UE when their code changes, and the
-`oai-amber image` workflow (`.github/workflows/amber-image.yml`) builds oai-amber and runs each room
-with the three. `:latest` moves to an image only after every room has passed with it:
+(`.github/workflows/oai-5g-images.yml`), started by hand, builds the gNB and the UE and then starts
+the `oai-amber image` workflow (`.github/workflows/amber-image.yml`), which builds oai-amber and runs
+each room with the three. `:latest` moves to an image only after every room has passed with it:
 
 ```bash
 export REGISTRY=ghcr.io/nayreed/ TAG=latest AMBER_IMG=ghcr.io/nayreed/oai-amber:latest
@@ -171,6 +200,46 @@ the gNB runs the Reader's MAC and the UE does the other half of its radio work (
 [5g_rfsimulator_aiot_t3a](../5g_rfsimulator_aiot_t3a/README.md), and with `r2d = "ue"` and
 `d2r = "gnb"` it sends the R2D, [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md). The
 other carriers are not built yet, and `amber-compose` refuses those scenarios with that reason.
+
+### On several machines
+
+Every machine pulls the same three images and runs only its own part of the room. Add a
+`[network.hosts]` table to the scenario that says where each node runs, by the machine's address
+or host name:
+
+```toml
+[network.hosts]
+hub = "192.0.2.3"     # required: the address the other machines reach the hub at
+gnb = "192.0.2.1"     # the gNB, and amber.sink in topology 2
+ue = "192.0.2.2"
+tags = "192.0.2.2"    # every Tag
+cw = "192.0.2.2"      # the CW node, when the scenario has one
+# reader = ...        # the standalone Reader, when the scenario has one
+```
+
+A node it does not name runs with the hub. `amber-compose` then writes one
+`docker-compose.<machine>.yaml` per machine instead of `docker-compose.yaml`, and the same
+`rfsim_hub.conf`. The hub's machine keeps the room's network and publishes the ports of the nodes
+that run elsewhere, which connect to the hub's address. Only the hub's address is dialled: the
+others only name the machine. Copy the folder to every machine, then:
+
+1. On the hub's machine: `docker compose -f docker-compose.192-0-2-3.yaml up -d`. Open the
+   published ports (4043 and up, listed in that file) to the other machines.
+2. On the gNB's machine: start its file. With `--do-ra` the gNB writes the UE's radio
+   configuration at start-up; copy it to the UE's machine, into `rrc/` next to its file:
+   `docker cp rfsim5g-oai-gnb:/opt/oai-gnb/reconfig.raw rrc/` and the same for `rbconfig.raw`.
+3. On the UE's machine: start its file last.
+
+The hub waits for every node before it starts the room, so the order only matters for the radio
+configuration. Each machine has its own `amber.out` volume: the Reader's records are on the
+Reader's machine (the gNB's or the UE's) and the Tags' on theirs. `aiot_check_room.sh` runs such a
+folder on one host, one compose project per machine, and CI runs topologies 1 and 2 that way, with
+the hub on the gNB's machine and on a third one.
+
+In simulated time no machine gains anything from where the hub runs: it waits for every node
+before it moves the air on. Where it runs changes only wall-clock time, so a node far from the hub
+gets less time for its real-time deadlines, such as the gNB's R2D. A hub on a third machine
+makes both sides cross the network.
 
 ## Timing
 

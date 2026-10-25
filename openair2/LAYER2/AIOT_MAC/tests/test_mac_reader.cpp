@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <random>
 #include <set>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "aiot_mac.h"
+#include "aiot_protocols.h"
 
 namespace {
 
@@ -84,6 +86,7 @@ struct Air {
   int unmatched = 0; /* D2Rs no window of the Reader caught */
   int late_r2d = 0; /* R2Ds that started before a D2R had ended */
   int lose_ridr = 0; /* the next Random ID Responses whose answers the air loses */
+  int lose_nack = 0; /* the next NACK Feedbacks no device gets */
 
   Air(const char *protocol, std::vector<aiot_param_t> params, int n_nodes, const aiot_link_config_t &cfg = default_link())
   {
@@ -130,7 +133,10 @@ struct Air {
     aiot_mac_r2d_msg_t msg;
     EXPECT_EQ(aiot_mac_parse_r2d(r2d.bits, r2d.n_bits, &msg), 0);
     std::vector<Sent> sent;
+    const bool unheard = msg.kind == AIOT_R2D_NACK_FEEDBACK && lose_nack > 0 && lose_nack--;
     for (auto &n : nodes) {
+      if (unheard)
+        break;
       Sent s;
       if (aiot_device_on_r2d(n->mac, &msg, &s.s) == 1) {
         s.at = end + aiot_device_send_offset(&s.s, 6);
@@ -344,8 +350,8 @@ TEST(Reader, RegistrationNacksATagWhoseFirstDataWasLost)
     nacked.insert(nack.as_ids[i]);
   }
 
-  /* every node joined again and sent data; no poll goes to an AS ID that was NACKed, and every
-   * poll is answered */
+  /* every node joined again and sent data, and holds an AS ID that was not NACKed. A NACKed AS ID
+   * is polled a few times, unanswered, then no more; every other poll is answered. */
   const std::vector<int> from = air.data_from();
   for (auto &n : air.nodes) {
     EXPECT_NE(std::find(from.begin(), from.end(), n->id), from.end()) << "no data from node " << n->id;
@@ -355,13 +361,62 @@ TEST(Reader, RegistrationNacksATagWhoseFirstDataWasLost)
     EXPECT_EQ(nacked.count(st.as_id), 0u);
   }
   int polls = 0;
+  std::map<int, int> nacked_polls;
   for (auto &h : air.heard)
     if (h->sent.kind == AIOT_R2D_UPPER_LAYER_DATA) {
       polls++;
-      EXPECT_EQ(nacked.count(h->sent.as_id), 0u);
-      EXPECT_EQ(h->n_answers, 1);
+      if (nacked.count(h->sent.as_id)) {
+        nacked_polls[h->sent.as_id]++;
+        EXPECT_EQ(h->n_answers, 0);
+      } else {
+        EXPECT_EQ(h->n_answers, 1);
+      }
     }
   EXPECT_GT(polls, 6);
+  for (int as_id : nacked)
+    EXPECT_EQ(nacked_polls[as_id], AIOT_REGISTRATION_UNCONFIRMED_POLLS) << "AS ID " << as_id;
+}
+
+// The NACK Feedback is lost too: the Tag keeps the AS ID whose data the Reader did not hear, and
+// ignores every later paging of the run's one Transaction ID (38.391 5.2), so only a poll of that
+// AS ID reaches it. The Reader polls it: the Tag answers and is registered with it.
+TEST(Reader, RegistrationPollsATagThatMissedItsNack)
+{
+  Air air("registration", {{"occasions_exp", 3}}, 6);
+  air.lose_ridr = 1;
+  air.lose_nack = 1;
+  air.run(120);
+  EXPECT_EQ(air.lose_ridr, 0);
+  EXPECT_EQ(air.lose_nack, 0);
+  EXPECT_EQ(air.unmatched, 0);
+
+  size_t first = 0;
+  while (first < air.heard.size() && air.heard[first]->sent.kind != AIOT_R2D_RANDOM_ID_RESPONSE)
+    first++;
+  ASSERT_LT(first + 1, air.heard.size());
+  const aiot_mac_r2d_msg_t &ridr = air.heard[first]->sent;
+  ASSERT_EQ(air.heard[first + 1]->sent.kind, AIOT_R2D_NACK_FEEDBACK);
+  std::set<int> given;
+  for (int i = 0; i < ridr.n_entries; i++)
+    given.insert(ridr.entries[i].assigned_as_id);
+  ASSERT_FALSE(given.empty());
+
+  const std::vector<int> from = air.data_from();
+  for (auto &n : air.nodes) {
+    EXPECT_NE(std::find(from.begin(), from.end(), n->id), from.end()) << "no data from node " << n->id;
+    aiot_device_state_t st;
+    aiot_device_state(n->mac, &st);
+    EXPECT_GE(st.as_id, 1);
+  }
+  /* the AS IDs of that Random ID Response are kept by their Tags and polled on, every poll answered */
+  std::map<int, int> polls;
+  for (auto &h : air.heard)
+    if (h->sent.kind == AIOT_R2D_UPPER_LAYER_DATA) {
+      polls[h->sent.as_id]++;
+      EXPECT_EQ(h->n_answers, 1) << "poll of AS ID " << h->sent.as_id;
+    }
+  for (int as_id : given)
+    EXPECT_GT(polls[as_id], AIOT_REGISTRATION_UNCONFIRMED_POLLS) << "AS ID " << as_id;
 }
 
 // Every Tag's data is heard: no NACK Feedback is sent.
@@ -583,4 +638,167 @@ TEST(Reader, PushedPagingKeepsItsSecurityParameter)
   EXPECT_EQ(security_of(parsed), security_of(cfa));
   ASSERT_TRUE(air.step());
   EXPECT_EQ(security_of(air.heard.back()->sent), security_of(cfa));
+}
+
+// Each window gives one outcome. With two windows open (X = 2), a second outcome for the first
+// must not stand in for the second: the R2D would close with a window still unheard.
+TEST(Reader, RejectsASecondOutcomeForTheSameWindow)
+{
+  aiot_link_config_t c = default_link();
+  c.t_bit_den = 2;
+  c.n_r_sfs = 2;
+  c.x = 2;
+  Air air("broadcast", {{"occasions_exp", 3}}, 1, c);
+  aiot_reader_r2d_t r2d;
+  ASSERT_EQ(aiot_reader_next_r2d(air.reader, 0, &r2d), 1);
+  aiot_d2r_expect_t exp[16];
+  ASSERT_EQ(aiot_reader_r2d_sent(air.reader, 0, 1000, 1000, exp, 16), 2);
+  auto o = std::make_unique<aiot_d2r_outcome_t>();
+  o->expect = exp[0];
+  EXPECT_EQ(aiot_reader_d2r_outcome(air.reader, o.get(), 2000), 0);
+  EXPECT_LT(aiot_reader_d2r_outcome(air.reader, o.get(), 2000), 0) << "window 0 is already in";
+  EXPECT_EQ(aiot_reader_next_r2d(air.reader, 2000, &r2d), 0) << "window 1 is still open";
+  o->expect = exp[1];
+  EXPECT_EQ(aiot_reader_d2r_outcome(air.reader, o.get(), 3000), 0);
+  EXPECT_EQ(aiot_reader_next_r2d(air.reader, 3000, &r2d), 1);
+}
+
+// A frame that passed the CRC but is not a valid D2R PDU of the window (a SIC ghost, a reserved
+// D2R Message Type, an SDU Length beyond the TBS) is a collision, not an answer.
+TEST(Reader, InvalidPduInAWindowIsACollision)
+{
+  Air air("unicast", {}, 1);
+  aiot_reader_r2d_t r2d;
+  ASSERT_EQ(aiot_reader_next_r2d(air.reader, 0, &r2d), 1);
+  aiot_d2r_expect_t exp[16];
+  ASSERT_EQ(aiot_reader_r2d_sent(air.reader, 0, 1000, 1000, exp, 16), 1);
+  const int n = exp[0].a_bits;
+  ASSERT_EQ(n % 8, 0);
+  auto o = std::make_unique<aiot_d2r_outcome_t>();
+  o->expect = exp[0];
+  aiot_d2r_result_t *reserved = &o->decoded[o->n_decoded++];
+  reserved->n_bits = n;
+  reserved->bits[1] = 1; /* D2R Message Type 01 */
+  aiot_d2r_result_t *too_long = &o->decoded[o->n_decoded++];
+  too_long->n_bits = n;
+  for (int i = 9; i < 16; i++)
+    too_long->bits[i] = 1; /* SDU Length 127 */
+  aiot_d2r_result_t *good = &o->decoded[o->n_decoded++];
+  good->n_bits = n; /* type 00, MDI 0, SDU Length 0, padding */
+  ASSERT_EQ(aiot_reader_d2r_outcome(air.reader, o.get(), 2000), 0);
+  aiot_reader_heard_t h;
+  ASSERT_EQ(aiot_reader_pop_heard(air.reader, &h), 1);
+  EXPECT_EQ(h.collided, 2);
+  ASSERT_EQ(h.n_answers, 1);
+  EXPECT_EQ(h.answers[0].kind, AIOT_ANSWER_DATA);
+  EXPECT_EQ(h.answers[0].message.sdu_len, 0);
+}
+
+namespace {
+
+/* Runs registration until every node has sent data after joining, or max_r2d R2Ds. */
+void register_all(Air &air, int max_r2d)
+{
+  for (int i = 0; i < max_r2d && air.step();) {
+    i++;
+    const auto from = air.data_from();
+    if (std::set<int>(from.begin(), from.end()).size() == air.nodes.size())
+      break;
+  }
+}
+
+/* Checks what registration owes every node: one AS ID of its own, data heard from it, and polls
+ * only to AS IDs that are held, each answered by the node holding it. */
+void expect_registered(const Air &air)
+{
+  EXPECT_EQ(air.unmatched, 0);
+  EXPECT_EQ(air.late_r2d, 0);
+  std::map<int, int> holder; /* AS ID -> node id */
+  for (auto &n : air.nodes) {
+    aiot_device_state_t st;
+    aiot_device_state(n->mac, &st);
+    ASSERT_GE(st.as_id, 1) << "node " << n->id << " has no AS ID";
+    EXPECT_TRUE(holder.emplace(st.as_id, n->id).second) << "AS ID " << st.as_id << " given twice";
+  }
+  const auto from = air.data_from();
+  EXPECT_EQ(std::set<int>(from.begin(), from.end()).size(), air.nodes.size());
+  for (auto &h : air.heard) {
+    if (h->sent.kind != AIOT_R2D_UPPER_LAYER_DATA)
+      continue;
+    ASSERT_EQ(h->n_answers, 1) << "poll of AS ID " << h->sent.as_id;
+    const auto &sdu = h->answers[0].message.sdu;
+    EXPECT_EQ(holder.at(h->sent.as_id), sdu[0] << 8 | sdu[1]);
+  }
+}
+
+} // namespace
+
+// More Tags than occasions: Msg1s collide, Tags that lose retry at the next paging of the same
+// Transaction ID (5.5.3), and every Tag still ends with an AS ID of its own.
+TEST(Reader, RegistrationOfManyContendingTags)
+{
+  Air air("registration", {{"occasions_exp", 4}}, 40);
+  register_all(air, 4000);
+  expect_registered(air);
+  int collided = 0;
+  for (auto &h : air.heard)
+    collided += h->collided;
+  EXPECT_GT(collided, 0) << "40 Tags on 16 occasions must collide";
+}
+
+// Two time slots on four R_SFS: up to 8 single Msg1s per R2D, but one Random ID Response answers at
+// most 4 (aiot_link_max_entries at T_bit = tau/8). The Msg1s left out time out (K = 1) and join later.
+TEST(Reader, RegistrationWhenARandomIdResponseCannotAnswerEveryMsg1)
+{
+  aiot_link_config_t c = default_link();
+  c.x = 2;
+  ASSERT_EQ(aiot_link_max_entries(&c), 4);
+  Air air("registration", {{"occasions_exp", 3}}, 16, c);
+  register_all(air, 4000);
+  expect_registered(air);
+  bool full = false;
+  for (auto &h : air.heard)
+    full |= h->sent.kind == AIOT_R2D_RANDOM_ID_RESPONSE && h->sent.n_entries == 4;
+  EXPECT_TRUE(full);
+}
+
+// An operator may list the R_SFS values in any order. A paging's bitmap and its Scheduling Info
+// list them ascending, so registration still gives every Tag an AS ID, and Gen2 Q, which pages on
+// one R_SFS, takes the smallest rather than the first listed.
+TEST(Reader, RSfsListedOutOfOrder)
+{
+  aiot_link_config_t c = default_link();
+  const int r_sfs[4] = {8, 2, 4, 1};
+  std::copy(r_sfs, r_sfs + 4, c.r_sfs);
+  Air reg("registration", {{"occasions_exp", 3}}, 12, c);
+  register_all(reg, 4000);
+  expect_registered(reg);
+
+  Air q("gen2_q", {}, 8, c);
+  q.run(20);
+  EXPECT_EQ(q.unmatched, 0);
+  int pagings = 0;
+  for (auto &h : q.heard) {
+    if (h->sent.kind != AIOT_R2D_PAGING_CBRA)
+      continue;
+    pagings++;
+    ASSERT_EQ(h->sent.sched.n_sfs, 1);
+    EXPECT_EQ(h->sent.sched.r_sfs[0], 1);
+  }
+  EXPECT_GT(pagings, 0);
+}
+
+// A protocol with nothing to do ends: the Reader is done, sends nothing and takes no message.
+TEST(Reader, UnicastWithoutNodesEnds)
+{
+  Air air("unicast", {}, 0);
+  EXPECT_EQ(aiot_reader_done(air.reader), 1);
+  EXPECT_EQ(aiot_reader_idle(air.reader), 0);
+  aiot_reader_r2d_t r2d;
+  EXPECT_EQ(aiot_reader_next_r2d(air.reader, 0, &r2d), 0);
+  aiot_d2r_expect_t exp[16];
+  EXPECT_LT(aiot_reader_r2d_sent(air.reader, 0, 1000, 1000, exp, 16), 0);
+  aiot_mac_r2d_msg_t trigger = {};
+  trigger.kind = AIOT_R2D_ACCESS_TRIGGER;
+  EXPECT_LT(aiot_reader_push(air.reader, &trigger, 1), 0);
 }

@@ -23,6 +23,7 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
 #include "common/utils/utils.h"
+#include "common/utils/threadPool/pthread_utils.h"
 
 #define SLOT_SAMPLES AIOT_SAMPLES_PER_MS /* one 15 kHz slot */
 #define LEAD_MARGIN_SLOTS 2 /* a remote R2D's lead over the delay of the one that came too late */
@@ -172,20 +173,14 @@ int nr_aiot_reader_parse_r_sfs(nr_aiot_reader_config_t *cfg, const char *s)
       break;
     char *end;
     long v = strtol(p, &end, 10);
-    if (end == p || n == 8 || v < 1)
+    if (end == p || n == AIOT_MAX_SHIFTS || v < 1)
       return -1;
     cfg->link.r_sfs[n++] = (int)v;
     p = end;
   }
   if (!n)
     return -1;
-  /* ascending, as the link wants them */
-  for (int i = 1; i < n; i++)
-    for (int j = i; j > 0 && cfg->link.r_sfs[j] < cfg->link.r_sfs[j - 1]; j--) {
-      int t = cfg->link.r_sfs[j];
-      cfg->link.r_sfs[j] = cfg->link.r_sfs[j - 1];
-      cfg->link.r_sfs[j - 1] = t;
-    }
+  aiot_link_sort_r_sfs(cfg->link.r_sfs, n);
   cfg->link.n_r_sfs = n;
   return 0;
 }
@@ -264,7 +259,7 @@ static const char *describe(const aiot_mac_r2d_msg_t *m, char *detail, size_t le
                        "tid=%d n=%d k=%d x=%d r_sfs=[",
                        m->transaction_id,
                        aiot_mac_num_access_occasions(m->num_access_occasions_code),
-                       m->k_bit ? 4 : 1,
+                       aiot_mac_k_value(m->k_bit),
                        m->sched.x);
       for (int i = 0; i < m->sched.n_sfs && o < (int)len; i++)
         o += snprintf(detail + o, len - o, i ? ", %d" : "%d", m->sched.r_sfs[i]);
@@ -512,7 +507,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
   r->stats.r2d_ahead_min = INT64_MAX;
   r->stats.window_ahead_min = INT64_MAX;
   r->lead = cfg->lead_slots > 0 ? cfg->lead_slots : NR_AIOT_READER_LEAD_SLOTS;
-  pthread_mutex_init(&r->lock, NULL);
+  mutexinit(r->lock);
   r->outcomes = malloc_or_fail(sizeof(*r->outcomes) * MAX_OUTCOMES);
   r->heard = malloc_or_fail(sizeof(*r->heard));
   r->mac =
@@ -588,9 +583,9 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r)
   if (!r)
     return;
   if (r->running) {
-    pthread_mutex_lock(&r->lock);
+    mutexlock(r->lock);
     r->stop = 1;
-    pthread_mutex_unlock(&r->lock);
+    mutexunlock(r->lock);
     pthread_join(r->thread, NULL);
   }
   if (r->mac)
@@ -611,7 +606,7 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r)
   free(r->outcomes);
   free(r->heard);
   free(r->rows);
-  pthread_mutex_destroy(&r->lock);
+  mutexdestroy(r->lock);
   free(r);
 }
 
@@ -664,12 +659,6 @@ static void set_lead(nr_aiot_reader_t *r, int64_t lead)
   r->lead = (int)cmin(lead, (int64_t)NR_AIOT_READER_MAX_LEAD_SLOTS);
 }
 
-static void stat_add(int64_t v, int64_t *sum, int64_t *min)
-{
-  *sum += v;
-  *min = cmin(*min, v);
-}
-
 static void stat_add_max(int64_t v, int64_t *sum, int64_t *max)
 {
   *sum += v;
@@ -703,7 +692,8 @@ static int send_remote_r2d(nr_aiot_reader_t *r, int frame, int slot, int symbol,
 /* The MAC's window e gets an empty outcome at once: as if nothing was heard in it. */
 static void give_up_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, int64_t now)
 {
-  aiot_d2r_outcome_t *out = &r->remote_outcome->outcome;
+  /* the outcomes popped from the local receiver are all given to the MAC before this runs */
+  aiot_d2r_outcome_t *out = &r->outcomes[0];
   out->expect = *e;
   out->n_decoded = 0;
   out->collided = 0;
@@ -734,10 +724,9 @@ static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, 
     give_up_window(r, e, now);
     return;
   }
-  const int64_t end = e->start + e->te + aiot_frame_samples(e->a_bits, &e->params);
   r->windows[i] = (remote_window_t){.used = 1,
                                     .e = *e,
-                                    .deadline = end + WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES,
+                                    .deadline = aiot_d2r_expect_end(e) + WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES,
                                     .lead = r->lead,
                                     .early = !r->d2r_up};
   r->stats.windows_remote++;
@@ -747,7 +736,13 @@ static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, 
 static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
 {
   aiot_node_r2d_done_t d;
-  if (aiot_node_msg_parse_r2d_done(r->msg, n, &d) != 0 || r->r2d_seq - d.seq > SENT_RING || d.seq >= r->r2d_seq) {
+  if (aiot_node_msg_parse_r2d_done(r->msg, n, &d) != 0) {
+    r->stats.peer_refused++;
+    return;
+  }
+  /* d.seq must be one of the last SENT_RING R2Ds sent, counted mod 2^32 as r2d_seq is */
+  const uint32_t age = r->r2d_seq - d.seq;
+  if (age == 0 || age > SENT_RING) {
     r->stats.peer_refused++;
     return;
   }
@@ -766,7 +761,7 @@ static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
       s->r2d_early_late++;
     return;
   }
-  stat_add(d.ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
+  aiot_node_stat_add(d.ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
   stat_add_max(now - r->sent_at[d.seq % SENT_RING], &s->r2d_rtt_sum, &s->r2d_rtt_max);
   if (d.result == NR_AIOT_R2D_ETOOLATE) {
     s->too_late++;
@@ -834,7 +829,7 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
     if (o->ahead < 0)
       s->windows_early_late++;
   } else {
-    stat_add(o->ahead, &s->window_ahead_sum, &s->window_ahead_min);
+    aiot_node_stat_add(o->ahead, &s->window_ahead_sum, &s->window_ahead_min);
     stat_add_max(now - (w->deadline - WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES), &s->outcome_delay_sum, &s->outcome_delay_max);
     if (o->ahead < 0) {
       /* the UE opened it after its receiver had passed its start, and decoded what was left: the lead
@@ -1009,24 +1004,37 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
     return -1;
   }
   const int64_t end = start + aiot_r2d_n_samples(n_sym);
-  int n = aiot_reader_r2d_sent(r->mac, start, end, now, r->expects, MAX_EXPECTS);
+  const int n = aiot_reader_r2d_sent(r->mac, start, end, now, r->expects, MAX_EXPECTS);
+  if (n < 0) {
+    LOG_E(NR_MAC, "A-IoT Reader: the MAC opened no window for the R2D at %d.%d.%d (%d); the Reader stops\n", frame, sl, symbol, n);
+    return -1;
+  }
   r->have_next = 0;
   r->stats.r2d_sent++;
-  for (int i = 0; i < n; i++)
-    if (r->remote_d2r)
+  for (int i = 0; i < n; i++) {
+    if (r->remote_d2r) {
       open_remote_window(r, &r->expects[i], now);
-    else if (nr_aiot_d2r_expect(r->d2r, &r->expects[i]) != 0)
-      LOG_E(NR_MAC, "A-IoT Reader: the D2R receiver refused a window at %ld\n", (long)r->expects[i].start);
+    } else if (nr_aiot_d2r_expect(r->d2r, &r->expects[i]) != 0) {
+      /* the MAC waits for an outcome of each window it opened */
+      r->stats.windows_lost++;
+      if (aiot_log_due(r->stats.windows_lost))
+        LOG_E(NR_MAC,
+              "A-IoT Reader: the D2R receiver refused the window at %ld: given up as empty (%lu so far)\n",
+              (long)r->expects[i].start,
+              (unsigned long)r->stats.windows_lost);
+      give_up_window(r, &r->expects[i], now);
+    }
+  }
   LOG_D(NR_MAC, "A-IoT Reader: R2D in %d.%d from symbol %d, %d symbols, %d windows\n", frame, sl, symbol, n_sym, n);
   return n > 0 ? 1 : 2; /* 2: nothing to wait for, the next R2D is ready */
 }
 
 int nr_aiot_reader_step(nr_aiot_reader_t *r)
 {
-  pthread_mutex_lock(&r->lock);
+  mutexlock(r->lock);
   const int64_t now = reader_now(r);
   if (now < 0) {
-    pthread_mutex_unlock(&r->lock);
+    mutexunlock(r->lock);
     return 0; /* the node has sent no slot yet */
   }
   int acted = 0, k;
@@ -1043,7 +1051,7 @@ int nr_aiot_reader_step(nr_aiot_reader_t *r)
     report_split(r, now);
   }
   collect(r);
-  for (;;) {
+  while (!r->ended) {
     if (!r->have_next) {
       if (aiot_reader_next_r2d(r->mac, now, &r->next) != 1)
         break;
@@ -1080,23 +1088,23 @@ int nr_aiot_reader_step(nr_aiot_reader_t *r)
   }
   if (acted)
     flush_files(r);
-  pthread_mutex_unlock(&r->lock);
+  mutexunlock(r->lock);
   return acted;
 }
 
 int nr_aiot_reader_done(nr_aiot_reader_t *r)
 {
-  pthread_mutex_lock(&r->lock);
+  mutexlock(r->lock);
   int d = r->ended;
-  pthread_mutex_unlock(&r->lock);
+  mutexunlock(r->lock);
   return d;
 }
 
 nr_aiot_reader_stats_t nr_aiot_reader_stats(nr_aiot_reader_t *r)
 {
-  pthread_mutex_lock(&r->lock);
+  mutexlock(r->lock);
   nr_aiot_reader_stats_t s = r->stats;
-  pthread_mutex_unlock(&r->lock);
+  mutexunlock(r->lock);
   return s;
 }
 
@@ -1105,9 +1113,9 @@ static void *reader_thread(void *arg)
   nr_aiot_reader_t *r = arg;
   int64_t seen = -1;
   for (;;) {
-    pthread_mutex_lock(&r->lock);
+    mutexlock(r->lock);
     int stop = r->stop;
-    pthread_mutex_unlock(&r->lock);
+    mutexunlock(r->lock);
     if (stop)
       break;
     nr_aiot_reader_step(r);

@@ -39,18 +39,20 @@ void aiot_unpack_bits(const uint8_t *bytes, int n, uint8_t *bits)
     bits[i] = (bytes[i >> 3] >> (7 - (i & 7))) & 1;
 }
 
+/* The longest word a CRC is computed on: the largest B, and the byte more a receiver tests */
+#define CRC_MAX_BITS (AIOT_MAX_WORD_BITS + 8)
+/* The TBCC's memory, constraint length 7 */
+#define TBCC_MEMORY 6
+
 int aiot_crc(const uint8_t *bits, int n, int L, uint8_t *parity)
 {
-  if (L != 6 && L != 16)
+  if ((L != 6 && L != AIOT_MAX_CRC_LEN) || n < 0 || n > CRC_MAX_BITS)
     return AIOT_EINVAL;
   pthread_once(&tables_once, init_tables);
-  uint8_t *bytes = malloc((size_t)n / 8 + 1);
-  if (!bytes)
-    return AIOT_ENOMEM;
+  uint8_t bytes[(CRC_MAX_BITS + 7) / 8];
   aiot_pack_bits(bits, n, bytes);
   /* OAI returns the parity in the top L bits of 32 */
-  unsigned reg = (L == 16 ? crc16(bytes, n) : crc6(bytes, n)) >> (32 - L);
-  free(bytes);
+  unsigned reg = (L == AIOT_MAX_CRC_LEN ? crc16(bytes, n) : crc6(bytes, n)) >> (32 - L);
   for (int i = 0; i < L; i++)
     parity[i] = (reg >> (L - 1 - i)) & 1;
   return L;
@@ -58,15 +60,16 @@ int aiot_crc(const uint8_t *bits, int n, int L, uint8_t *parity)
 
 int aiot_crc_length(int a_bits)
 {
-  return a_bits > 24 ? 16 : 6;
+  return a_bits > 24 ? AIOT_MAX_CRC_LEN : 6;
 }
 
 int aiot_attach_crc(const uint8_t *bits, int a_bits, uint8_t *out)
 {
   int L = aiot_crc_length(a_bits);
-  memmove(out, bits, (size_t)a_bits);
-  aiot_crc(out, a_bits, L, out + a_bits);
-  return a_bits + L;
+  if (a_bits > 0)
+    memmove(out, bits, (size_t)a_bits);
+  int rc = aiot_crc(out, a_bits, L, out + a_bits);
+  return rc < 0 ? rc : a_bits + L;
 }
 
 int aiot_check_crc(const uint8_t *word, int b_bits, int *a_bits)
@@ -76,14 +79,16 @@ int aiot_check_crc(const uint8_t *word, int b_bits, int *a_bits)
   if (b_bits <= 30)
     L = 6;
   else if (b_bits >= 41)
-    L = 16;
+    L = AIOT_MAX_CRC_LEN;
   else
     return AIOT_EINVAL;
   if (b_bits < L)
     return AIOT_EINVAL;
   int a = b_bits - L;
-  uint8_t parity[16];
-  aiot_crc(word, a, L, parity);
+  uint8_t parity[AIOT_MAX_CRC_LEN];
+  int rc = aiot_crc(word, a, L, parity);
+  if (rc < 0)
+    return rc;
   if (a_bits)
     *a_bits = a;
   for (int i = 0; i < L; i++)
@@ -96,30 +101,24 @@ int aiot_check_crc(const uint8_t *word, int b_bits, int *a_bits)
  * TBCC, rate 1/3, constraint length 7
  * ------------------------------------------------------------------------------------------- */
 
-void aiot_tbcc_encode(const uint8_t *c, int k, uint8_t *e)
+int aiot_tbcc_encode(const uint8_t *c, int k, uint8_t *e)
 {
+  if (k < 1 || k > AIOT_MAX_BLOCK_BITS)
+    return AIOT_EINVAL;
   pthread_once(&tables_once, init_tables);
   /* With K < 6 the state wraps round the block more than once; repeating the block until it is
    * at least 6 bits long gives the same start state, and its first 3K outputs are the code. */
-  int reps = k < 6 ? (6 + k - 1) / k : 1, n = k * reps;
-  uint8_t *bytes = malloc((size_t)n / 8 + 1);
-  uint8_t *coded = reps > 1 ? malloc((size_t)3 * n) : e;
-  if (!bytes || !coded) {
-    free(bytes);
-    if (coded != e)
-      free(coded);
-    return;
-  }
-  memset(bytes, 0, (size_t)n / 8 + 1);
-  for (int i = 0; i < n; i++)
-    if (c[i % k] & 1)
-      bytes[i >> 3] |= 0x80 >> (i & 7);
-  ccodelte_encode(n, 0, bytes, coded, 0);
-  if (coded != e) {
-    memcpy(e, coded, (size_t)3 * k);
-    free(coded);
-  }
-  free(bytes);
+  int reps = k < TBCC_MEMORY ? (TBCC_MEMORY + k - 1) / k : 1, n = k * reps;
+  uint8_t short_block[2 * TBCC_MEMORY];
+  if (reps > 1)
+    aiot_repeat_block(c, k, reps, short_block);
+  uint8_t bytes[(AIOT_MAX_BLOCK_BITS + 7) / 8];
+  aiot_pack_bits(reps > 1 ? short_block : c, n, bytes);
+  uint8_t short_coded[AIOT_TBCC_RATE * 2 * TBCC_MEMORY];
+  ccodelte_encode(n, 0, bytes, reps > 1 ? short_coded : e, 0);
+  if (reps > 1)
+    memcpy(e, short_coded, (size_t)AIOT_TBCC_RATE * k);
+  return AIOT_TBCC_RATE * k;
 }
 
 /* phy_viterbi_lte_sse2 keeps its trellis for at most this many steps */

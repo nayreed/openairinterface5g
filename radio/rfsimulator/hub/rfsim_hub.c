@@ -20,6 +20,10 @@
 #include "rfsim_hub.h"
 
 #define HUB_SECTION "rfsim_hub"
+/* Defaults, as radio/rfsimulator/hub/README.md gives them */
+#define HUB_DEFAULT_QUANTUM 1440
+#define HUB_DEFAULT_HISTORY (1 << 18) /* a power of two */
+#define HUB_DEFAULT_IDLE_TIMEOUT_S 60.0
 
 configmodule_interface_t *uniqCfg = NULL;
 
@@ -63,8 +67,6 @@ static void read_nodes(hub_conf_t *conf)
     n->lookahead = *p[LOOKAHEAD].iptr;
     n->lead = *p[LEAD].iptr != 0;
     n->noise_counts = *p[NOISE].dblptr;
-    AssertFatal(n->noise_counts >= 0, "node %s: noise_counts must not be negative\n", n->name);
-    AssertFatal(node_index(conf, n->name) == i, "two nodes are named %s\n", n->name);
   }
 }
 
@@ -91,8 +93,8 @@ static void read_links(hub_conf_t *conf)
     hub_link_conf_t *k = &conf->links[l];
     k->tx = node_index(conf, *p[TX].strptr);
     k->rx = node_index(conf, *p[RX].strptr);
-    AssertFatal(k->tx >= 0, "link %d: no node is named %s\n", l, *p[TX].strptr);
-    AssertFatal(k->rx >= 0, "link %d: no node is named %s\n", l, *p[RX].strptr);
+    if (k->tx < 0 || k->rx < 0)
+      LOG_E(HW, "link %d: no node is named %s\n", l, *p[k->tx < 0 ? TX : RX].strptr);
     k->gain_dB = *p[GAIN].dblptr;
     k->delay = *p[DELAY].iptr;
     k->shift_Hz = *p[SHIFT].dblptr;
@@ -121,12 +123,15 @@ int main(int argc, char **argv)
   // clang-format off
   paramdef_t desc[] = {
     DOUBLEPARAM("sample_rate",  "sample rate of every node, Hz\n",                          0, &conf.sample_rate, 0.0),
-    INTPARAM("quantum",         "samples per block the hub sends each node\n",              0, &quantum,          1440),
-    INTPARAM("history",         "samples kept per node, a power of two\n",                  0, &history,          262144),
-    DOUBLEPARAM("idle_timeout", "seconds without any sample moving before the hub stops\n", 0, &idle_timeout,     60.0),
+    INTPARAM("quantum",         "samples per block the hub sends each node\n",              0, &quantum,          HUB_DEFAULT_QUANTUM),
+    INTPARAM("history",         "samples kept per node, a power of two\n",                  0, &history,          HUB_DEFAULT_HISTORY),
+    DOUBLEPARAM("idle_timeout", "seconds without any sample moving before the hub stops\n", 0, &idle_timeout,     HUB_DEFAULT_IDLE_TIMEOUT_S),
   };
   // clang-format on
-  AssertFatal(config_get(config_get_if(), desc, sizeofArray(desc), HUB_SECTION) >= 0, "cannot read section %s\n", HUB_SECTION);
+  if (config_get(config_get_if(), desc, sizeofArray(desc), HUB_SECTION) < 0) {
+    LOG_E(HW, "rfsim_hub: cannot read section %s\n", HUB_SECTION);
+    exit(EXIT_FAILURE);
+  }
   conf.quantum = quantum;
   conf.history = history;
   read_nodes(&conf);
@@ -135,7 +140,10 @@ int main(int argc, char **argv)
 
   char why[256];
   hub_room_t *room = hub_room_create(&conf, why, sizeof(why));
-  AssertFatal(room != NULL, "the room cannot run: %s\n", why);
+  if (!room) {
+    LOG_E(HW, "rfsim_hub: the room cannot run: %s\n", why);
+    exit(EXIT_FAILURE);
+  }
   int ret = hub_serve(room, idle_timeout);
 
   hub_room_free(room);

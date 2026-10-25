@@ -109,8 +109,9 @@ picks another Amber commit; Docker caches the clone, so add `--no-cache` to pick
 docker build -f docker/Dockerfile.amber.ubuntu -t oai-amber .
 ```
 
-The GitHub workflow `.github/workflows/amber-image.yml` runs only when started by hand (Actions >
-oai-amber image > Run workflow). Its jobs check the scripts, build the image against Amber's current
+The GitHub workflow `.github/workflows/amber-image.yml` never starts on a push or a pull request: the
+`oai-gnb and oai-nr-ue images` workflow starts it after building a gNB and UE, or start it by hand
+(Actions > oai-amber image > Run workflow). Its jobs check the scripts, build the image against Amber's current
 `dev` commit (reusing cached dependency layers), run a 4-Tag and a 12-Tag TOML scenario from it on
 one runner with `docker/scripts/amber_check_image.sh`, which compares their files with `amber.run`, and, on `aiot-rfsim` only, publish `ghcr.io/nayreed/oai-amber`, tagged with the first 8
 characters of the commit and with `latest`. Runs between two hosts are the campaign's job (below).

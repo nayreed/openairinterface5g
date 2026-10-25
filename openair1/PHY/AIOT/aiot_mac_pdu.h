@@ -26,12 +26,12 @@
 extern "C" {
 #endif
 
-#define AIOT_MAC_MAX_TBS 125 /* MAX_TBS: largest R2D and D2R transport block, bytes */
+#define AIOT_MAC_MAX_TBS AIOT_MAX_TBS_BYTES /* MAX_TBS: largest R2D and D2R transport block, bytes */
 #define AIOT_MAC_MAX_ID_ENTRIES 8 /* MAX_ID_ENTRIES of a Random ID Response */
 #define AIOT_MAC_MAX_PAGING_ID_BITS 1023 /* 10-bit Paging ID Length (V19.4.0); 125 bytes hold at most 954 (CFA, SPPI 0) */
 #define AIOT_MAC_SECURITY_PARAM_BITS 128 /* Security Parameter: RAND_AIOT_n of TS 33.369 */
-#define AIOT_MAC_MAX_RECEIVED_DATA_SIZE 125 /* Received Data Size {0..125} (6.2.1.4) */
-#define AIOT_MAC_MAX_NACK_IDS 61 /* TBS = 2 + 2 n <= 125 */
+#define AIOT_MAC_MAX_RECEIVED_DATA_SIZE AIOT_MAC_MAX_TBS /* Received Data Size {0..MAX_TBS} (6.2.1.4) */
+#define AIOT_MAC_MAX_NACK_IDS ((AIOT_MAC_MAX_TBS - 2) / 2) /* 61: TBS = 2 + 2 n <= MAX_TBS */
 #define AIOT_MAC_MAX_PDU_BITS (8 * AIOT_MAC_MAX_TBS)
 
 /* ---------------------------------------------------------------------------------------------
@@ -53,7 +53,7 @@ typedef struct {
   int t_bit_num; /* Bit Duration T_bit = num/den tau, one of 2, 1, 1/2, 1/4, 1/8, 1/16, 1/32, 1/96 */
   int t_bit_den;
   int n_sfs; /* number of R_SFS values: the bitmap bits set, or 1 for the Unicast value */
-  int r_sfs[8]; /* ascending, from 1 2 4 8 16 32 64 128 */
+  int r_sfs[AIOT_MAX_SHIFTS]; /* ascending, from 1 2 4 8 16 32 64 128 */
   int x; /* Time Resource Indication 1 or 2 (CBRA paging only, else 0) */
   int r_block; /* block repetition number, 1 or 2 */
   int r_code; /* 1 when FEC is used (Channel Coding Indicator codepoint 0) */

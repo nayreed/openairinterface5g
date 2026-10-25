@@ -628,6 +628,8 @@ Not supported:
 * A second receiver in the UE's UL band: in the rooms the UE receives the D2R in the guard band of
   its DL
 * A Reader in a gNB with an nFAPI split
+* D2R reception on more than one antenna: the gNB and the UE take the D2R from their first RX
+  antenna only
 * The A-IoT functions of the core network: Tag data goes over plain UDP on the UE's default bearer
 * Tested over the RFsimulator (`rfsim_hub`) only
 

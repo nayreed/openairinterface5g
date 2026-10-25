@@ -29,15 +29,14 @@
 #include <string.h>
 
 #include "aiot_phy.h"
-
-#define PI 3.14159265358979323846
+#include "common/utils/utils.h" /* sizeofArray */
 
 static const uint8_t SIP[AIOT_N_SIP] = {1, 1, 0, 0, 1, 0, 0, 0}; /* 6.2.3.1 */
 static const uint8_t CAP[AIOT_N_CAP] = {1, 0, 1, 0}; /* 6.2.3.2 */
 static const uint8_t POSTAMBLE[4] = {1, 1, 1, 1}; /* 6.2.4 */
-static const int M_LIST[4] = {2, 6, 12, 24};
+static const int M_LIST[] = {2, 6, 12, 24};
 
-#define MAX_RB 32 /* N_RB x 12 subcarriers must fit in the 384-point symbol */
+#define MAX_RB (AIOT_N_FFT / AIOT_SC_PER_RB) /* the N_RB x 12 subcarriers must fit in the symbol */
 
 /* ---------------------------------------------------------------------------------------------
  * Transmitter
@@ -62,32 +61,23 @@ static int forced(int m, int chip)
 int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t *chips, int max_chips)
 {
   int m = m_chip_symb;
-  if (!aiot_m_valid(m) || a_bits < 0 || (a_bits && !tb_bits) || !chips)
+  if (!aiot_m_valid(m) || a_bits < 0 || a_bits > AIOT_MAX_TB_BITS || (a_bits && !tb_bits) || !chips)
     return AIOT_EINVAL;
   int len = a_bits + aiot_crc_length(a_bits);
-  uint8_t *body = malloc((size_t)(2 * len + 4));
-  if (!body)
-    return AIOT_ENOMEM;
-  uint8_t *tmp = malloc((size_t)len);
-  if (!tmp) {
-    free(body);
-    return AIOT_ENOMEM;
-  }
   /* 6.2.2: CRC, then Manchester, then the postamble (6.2.4) */
   static const uint8_t none = 0;
-  aiot_attach_crc(a_bits ? tb_bits : &none, a_bits, tmp);
-  aiot_manchester(tmp, len, body);
-  free(tmp);
-  memcpy(body + 2 * len, POSTAMBLE, 4);
-  int body_n = 2 * len + 4;
+  uint8_t word[AIOT_MAX_WORD_BITS];
+  aiot_attach_crc(a_bits ? tb_bits : &none, a_bits, word);
+  uint8_t body[2 * AIOT_MAX_WORD_BITS + sizeof(POSTAMBLE)];
+  aiot_manchester(word, len, body);
+  memcpy(body + 2 * len, POSTAMBLE, sizeof(POSTAMBLE));
+  int body_n = 2 * len + sizeof(POSTAMBLE);
 
-  int n = 0, rc = 0;
+  int n = 0;
 #define PUT(c)            \
   do {                    \
-    if (n >= max_chips) { \
-      rc = AIOT_ESPACE;   \
-      goto done;          \
-    }                     \
+    if (n >= max_chips)   \
+      return AIOT_ESPACE; \
     chips[n++] = (c);     \
   } while (0)
   for (int i = 0; i < AIOT_N_SIP; i++)
@@ -108,10 +98,7 @@ int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t 
     PUT(pad);
   }
 #undef PUT
-  rc = n;
-done:
-  free(body);
-  return rc;
+  return n;
 }
 
 int aiot_r2d_n_symbols(int n_chips, int m_chip_symb)
@@ -160,8 +147,8 @@ int aiot_r2d_resource_elements(const uint8_t *chips, int n_chips, int m_chip_sym
   const int N = AIOT_N_FFT;
   double wc[AIOT_N_FFT], ws[AIOT_N_FFT];
   for (int i = 0; i < N; i++) {
-    wc[i] = cos(2.0 * PI * i / N);
-    ws[i] = sin(2.0 * PI * i / N);
+    wc[i] = cos(2.0 * M_PI * i / N);
+    ws[i] = sin(2.0 * M_PI * i / N);
   }
   uint8_t x[AIOT_N_FFT];
   for (int l = 0; l < n_sym; l++) {
@@ -218,8 +205,8 @@ int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_
   /* Each symbol: the inverse DFT of its K subcarriers, then the cyclic prefix. */
   double wc[AIOT_N_FFT], ws[AIOT_N_FFT];
   for (int i = 0; i < N; i++) {
-    wc[i] = cos(2.0 * PI * i / N);
-    ws[i] = sin(2.0 * PI * i / N);
+    wc[i] = cos(2.0 * M_PI * i / N);
+    ws[i] = sin(2.0 * M_PI * i / N);
   }
   cd_t u[AIOT_N_FFT];
   int pos = 0;
@@ -269,7 +256,7 @@ int aiot_r2d_transmission(const uint8_t *tb_bits, int a_bits, int m_chip_symb, i
 #define SIP_MARGIN 0.25 /* how far each SIP chip must be from the threshold, as a share of the on-off gap */
 #define SIP_LEN (2 * AIOT_N_FFT + AIOT_CP_LONG + AIOT_CP_SHORT) /* the SIP's two symbols with their CPs */
 #define TMPL_DEC (SIP_LEN / DECIM)
-#define MAX_BITS (8 * AIOT_MAX_TBS_BYTES + 16 + 8) /* the largest R2D TB and its CRC, plus one byte */
+#define MAX_BITS (AIOT_MAX_WORD_BITS + 8) /* the largest R2D TB and its CRC, plus one byte */
 
 struct aiot_r2d_rx {
   double *env; /* squared envelope not yet consumed */
@@ -327,7 +314,7 @@ aiot_r2d_rx_t *aiot_r2d_rx_new(void)
   memcpy(chips, SIP, AIOT_N_SIP);
   chips[AIOT_N_SIP] = chips[AIOT_N_SIP + 1] = 0;
   cd_t wave[3 * (AIOT_N_FFT + AIOT_CP_LONG)];
-  if (aiot_r2d_waveform(chips, AIOT_N_SIP + 2, 2, 1, wave, (int)(sizeof(wave) / sizeof(wave[0]))) < SIP_LEN) {
+  if (aiot_r2d_waveform(chips, AIOT_N_SIP + 2, 2, 1, wave, sizeofArray(wave)) < SIP_LEN) {
     free(rx);
     return NULL;
   }
@@ -374,7 +361,8 @@ static void consume(aiot_r2d_rx_t *rx, int64_t n)
     n = (int64_t)rx->len;
   if (n < 0)
     n = 0;
-  memmove(rx->env, rx->env + n, (rx->len - (size_t)n) * sizeof(double));
+  if (rx->len > (size_t)n) /* env is NULL before the first samples */
+    memmove(rx->env, rx->env + n, (rx->len - (size_t)n) * sizeof(double));
   rx->len -= (size_t)n;
   rx->base += n;
   rx->cs_ok = 0; /* the running sum restarts at the new first sample */
@@ -550,7 +538,7 @@ static int decode(aiot_r2d_rx_t *rx, int start, double on, double off, aiot_r2d_
   /* CAP: try each M, keep the one whose four chips best show on, off, on, off (7.2.1) */
   int best_m = 0;
   double best_score = -INFINITY;
-  for (int mi = 0; mi < 4; mi++) {
+  for (int mi = 0; mi < sizeofArray(M_LIST); mi++) {
     int m = M_LIST[mi];
     double e[AIOT_N_CAP];
     for (int c = 0; c < AIOT_N_CAP; c++)

@@ -128,6 +128,13 @@ TEST(Link, RejectsBadSettings)
   bad = c;
   bad.r_sfs[1] = 1; /* the same value twice */
   EXPECT_LT(aiot_link_config_check(&bad), 0);
+  bad = link(1, 8, {1, 2, 1}, 1, 0, 0); /* twice, not side by side */
+  EXPECT_LT(aiot_link_config_check(&bad), 0);
+  for (int n : {-1, AIOT_MAX_SHIFTS + 1}) {
+    bad = c;
+    bad.n_r_sfs = n;
+    EXPECT_LT(aiot_link_config_check(&bad), 0) << n;
+  }
   bad = c;
   bad.x = 3;
   EXPECT_LT(aiot_link_config_check(&bad), 0);

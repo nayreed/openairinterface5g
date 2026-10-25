@@ -94,6 +94,15 @@
 extern "C" {
 #endif
 
+/* Adds v to a running sum and lowers *min to it: the statistics the Reader and its peer keep of
+ * these messages. */
+static inline void aiot_node_stat_add(int64_t v, int64_t *sum, int64_t *min)
+{
+  *sum += v;
+  if (v < *min)
+    *min = v;
+}
+
 #define AIOT_NODE_MSG_VERSION 1
 #define AIOT_TAG_DATA_FIXED_BYTES 40 /* a Tag data message without its SDU */
 #define AIOT_NODE_MSG_MAX_BYTES (AIOT_TAG_DATA_FIXED_BYTES + AIOT_MAC_MAX_TBS) /* Tag data */

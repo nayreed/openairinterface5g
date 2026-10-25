@@ -230,7 +230,7 @@ aiot_mac_r2d_msg_t data_sdu(int as_id, const aiot_sched_info_t &s, const Bytes &
   m.as_id = as_id;
   m.has_sdu = 1;
   m.sdu_len = (int)sdu.size();
-  memcpy(m.sdu, sdu.data(), sdu.size());
+  std::copy(sdu.begin(), sdu.end(), m.sdu);
   return m;
 }
 aiot_mac_r2d_msg_t data_received(int as_id, const aiot_sched_info_t &s, int received)
@@ -364,12 +364,17 @@ Bytes sec_bits(int off = 0)
  * Ported from tests/test_mac_procedures.py
  * ------------------------------------------------------------------------------------------- */
 
-TEST(DeviceMac, NewRejectsMissingDraw)
+TEST(DeviceMac, NewRejectsMissingDrawOrAnotherModulation)
 {
   aiot_device_upper_t a;
   memset(&a, 0, sizeof(a));
   EXPECT_EQ(nullptr, aiot_device_new(&a, AIOT_BPSK));
   EXPECT_EQ(nullptr, aiot_device_new(nullptr, AIOT_BPSK));
+  // a device of a modulation the D2R has not would refuse every Msg1 it was paged for
+  Upper u(0, nullptr);
+  a = u.api();
+  EXPECT_EQ(nullptr, aiot_device_new(&a, (aiot_mod_t)2));
+  EXPECT_EQ(nullptr, aiot_device_new(&a, (aiot_mod_t)-1));
 }
 
 TEST(DeviceMac, InitialState)
@@ -667,6 +672,88 @@ TEST(DeviceMac, NackNamingTheDeviceEndsTheWindowWithoutNackMonitoring)
   EXPECT_EQ(0, d.on(nack({1}), &x));
   EXPECT_EQ(1, d.st().as_id);
   EXPECT_EQ(0, d.st().msg2_budget);
+}
+
+// 5.3.1.3, a device with a stored AS ID: an entry is its own when its Assigned AS ID (AIPI 1), or
+// else its Echoed Random ID (AIPI 0), is that AS ID. It then sends on the R_SFS of that entry's
+// place in the bitmap; a Random ID Response with no entry of its own leaves it silent.
+TEST(DeviceMac, StoredAsIdAnswersOnlyItsOwnEntry)
+{
+  Dev d(4);
+  TestReader r;
+  d.u.sdus = {Bytes{'a'}, Bytes{'b'}, Bytes{'c'}};
+  aiot_device_send_t s1, m3, x;
+  ASSERT_EQ(1, d.on(paging_cbra(1, cbra_sched(), 0, 1), &s1)); /* K = 4 */
+  ASSERT_EQ(1, d.on(r.rid_response({heard_of(s1)}, ridr_sched()), &m3));
+  ASSERT_EQ(1, d.st().as_id);
+  const aiot_sched_info_t rs = ridr_sched({2, 8, 32});
+  aiot_mac_r2d_msg_t others = r.rid_response({Heard{0, 0, 0}, Heard{0, 0, 0}, Heard{0, 0, 0}}, rs, true, false);
+  others.entries[0] = {s1.message.random_id, 7, -1}; /* its own Random ID, another device's AS ID */
+  others.entries[1] = {1, 8, -1}; /* Echoed Random ID equal to its AS ID, but an AS ID is assigned */
+  others.entries[2] = {0x5555, -1, -1};
+  EXPECT_EQ(0, d.on(through_bits(others), &x));
+  EXPECT_EQ(1, d.st().as_id);
+  EXPECT_EQ(4, d.st().msg2_budget);
+
+  aiot_mac_r2d_msg_t mine = others;
+  mine.entries[2] = {0x5555, 1, -1};
+  ASSERT_EQ(1, d.on(through_bits(mine), &x));
+  EXPECT_EQ(32, x.params.r_sfs) << "the third entry sends on the third R_SFS of the bitmap";
+  EXPECT_EQ(AIOT_MSG2, x.msg);
+  EXPECT_EQ(Bytes{'b'}, parse_upl(x).sdu);
+  EXPECT_EQ(1, d.st().as_id);
+
+  /* AIPI 0: the Echoed Random ID is the AS ID */
+  mine.entries[2] = {1, -1, -1};
+  ASSERT_EQ(1, d.on(through_bits(mine), &x));
+  EXPECT_EQ(32, x.params.r_sfs);
+}
+
+// A NACK Feedback with 61 AS IDs, the most one holds (6.2.1.5), as it comes from the air: the
+// device named last releases its AS ID and finds the procedure failed (5.5.2); one not named keeps
+// its AS ID and its NACK monitoring.
+TEST(DeviceMac, NackWithSixtyOneAsIds)
+{
+  for (int named = 0; named < 2; named++) {
+    Dev d(7);
+    TestReader r;
+    r.next_as_id = 0xFFFF;
+    d.u.sdus = {Bytes{'a'}};
+    aiot_device_send_t m3, x;
+    cbra_to_msg2(d, r, 3, &m3);
+    ASSERT_EQ(0xFFFF, d.st().as_id);
+    std::vector<int> ids;
+    for (int i = 0; i < AIOT_MAC_MAX_NACK_IDS; i++)
+      ids.push_back(0x100 + i);
+    if (named)
+      ids.back() = 0xFFFF;
+    EXPECT_EQ(0, d.on(through_bits(nack(ids)), &x));
+    EXPECT_EQ(named ? -1 : 0xFFFF, d.st().as_id) << "named=" << named;
+    EXPECT_EQ(named ? 3 : -1, d.st().failed_tid);
+    EXPECT_EQ(named ? 0 : 1, d.st().nack_monitoring);
+  }
+}
+
+// A paging the device cannot act on (a K or occasion code out of range, which the 1-bit and 4-bit
+// fields cannot carry, so only through the API) is refused, and no CBRA is left running: no Msg1
+// follows at an Access Trigger and no Random ID Response is taken.
+TEST(DeviceMac, RefusedCbraPagingLeavesNoProcedureRunning)
+{
+  const int bad[][2] = {{2, 0}, {-1, 0}, {0, 16}, {0, -1}};
+  for (const auto &b : bad) {
+    Dev d(9);
+    TestReader r;
+    aiot_device_send_t x;
+    aiot_mac_r2d_msg_t page = paging_cbra(4, cbra_sched(), b[1], b[0]);
+    EXPECT_EQ(AIOT_EINVAL, d.on(page, &x)) << "k_bit " << b[0] << " code " << b[1];
+    EXPECT_EQ(0, d.st().cbra_active);
+    EXPECT_EQ(-1, d.st().counter);
+    EXPECT_EQ(0, d.st().msg2_budget);
+    for (int i = 0; i < 3; i++)
+      EXPECT_EQ(0, d.on(trigger(), &x));
+    EXPECT_EQ(0, d.on(r.rid_response({Heard{0, 8, 0}}, ridr_sched(), true, false), &x));
+    EXPECT_EQ(-1, d.st().as_id);
+  }
 }
 
 TEST(DeviceMac, Msg2MatchingRules)

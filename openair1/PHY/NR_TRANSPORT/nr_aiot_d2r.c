@@ -26,6 +26,8 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
 #include "common/utils/utils.h"
+#include "common/utils/threadPool/pthread_utils.h"
+#include "common/utils/nr/nr_common.h" /* NR_NB_SC_PER_RB */
 #include "nr_aiot_r2d.h" /* nr_aiot_cell_slot_diff() */
 
 #define FILTER_SPAN 8 /* G = FILTER_SPAN * D radio samples each side */
@@ -150,7 +152,7 @@ nr_aiot_d2r_t *nr_aiot_d2r_new(const nr_aiot_d2r_config_t *cfg, int n_prb, int s
     return NULL;
   }
   /* the carrier's PRBs, then the guard band the samples hold above them (and wrapping round below) */
-  const int n_sampled = (int)(sample_rate_hz / (12 * AIOT_SCS_HZ));
+  const int n_sampled = (int)(sample_rate_hz / (NR_NB_SC_PER_RB * AIOT_SCS_HZ));
   if (!cfg || cfg->prb_start < 0 || cfg->n_rb < 1 || cfg->prb_start + cfg->n_rb > n_sampled) {
     LOG_E(NR_PHY,
           "A-IoT D2R: PRBs %d to %d are not in the %d PRBs the radio samples (the carrier's %d, then its guard band)\n",
@@ -171,13 +173,14 @@ nr_aiot_d2r_t *nr_aiot_d2r_new(const nr_aiot_d2r_config_t *cfg, int n_prb, int s
   d->fs = sample_rate_hz;
   d->d = (int)(sample_rate_hz / AIOT_SAMPLE_RATE_HZ);
   /* subcarrier k of the carrier is (k - 6 n_prb) * 15 kHz from its centre */
-  d->shift_hz = (int64_t)(12 * cfg->prb_start + 6 * cfg->n_rb - 6 * n_prb) * AIOT_SCS_HZ;
+  const int half_rb = NR_NB_SC_PER_RB / 2;
+  d->shift_hz = (int64_t)(NR_NB_SC_PER_RB * cfg->prb_start + half_rb * cfg->n_rb - half_rb * n_prb) * AIOT_SCS_HZ;
   d->noise_w = 2 * cfg->noise_counts * cfg->noise_counts;
   d->next_ts = -1;
   d->rx = new_rx(d);
-  pthread_mutex_init(&d->lock, NULL);
+  mutexinit(d->lock);
   d->clock_slot = -1;
-  pthread_cond_init(&d->cond, NULL);
+  condinit(d->cond);
   if (!d->rx || make_filter(d) != 0 || grow((void **)&d->w, &d->cap_w, d->g + 1, sizeof(cd_t)) != 0) {
     nr_aiot_d2r_free(d);
     return NULL;
@@ -190,10 +193,10 @@ void nr_aiot_d2r_free(nr_aiot_d2r_t *d)
   if (!d)
     return;
   if (d->running) {
-    pthread_mutex_lock(&d->lock);
+    mutexlock(d->lock);
     d->stop = 1;
-    pthread_cond_broadcast(&d->cond);
-    pthread_mutex_unlock(&d->lock);
+    condbroadcast(d->cond);
+    mutexunlock(d->lock);
     pthread_join(d->thread, NULL);
   }
   if (d->ring)
@@ -207,8 +210,8 @@ void nr_aiot_d2r_free(nr_aiot_d2r_t *d)
   free(d->scratch);
   free(d->ex);
   free(d->out);
-  pthread_mutex_destroy(&d->lock);
-  pthread_cond_destroy(&d->cond);
+  mutexdestroy(d->lock);
+  conddestroy(d->cond);
   free(d);
 }
 
@@ -226,7 +229,7 @@ int nr_aiot_d2r_expect(nr_aiot_d2r_t *d, const aiot_d2r_expect_t *e)
 {
   if (!d || !e)
     return AIOT_EINVAL;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   int ret = 0;
   if (d->n_ex == d->cap_ex) {
     int cap = d->cap_ex ? 2 * d->cap_ex : 8;
@@ -240,23 +243,8 @@ int nr_aiot_d2r_expect(nr_aiot_d2r_t *d, const aiot_d2r_expect_t *e)
   }
   if (ret == 0)
     d->ex[d->n_ex++] = *e;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return ret;
-}
-
-/* The A-IoT sample after the last one window e can need (as the receiver's own last_sample). */
-static int64_t window_end(const aiot_d2r_expect_t *e)
-{
-  int64_t m = 0;
-  int n = e->n_r_sfs ? e->n_r_sfs : 1;
-  for (int i = 0; i < n; i++) {
-    aiot_d2r_params_t p = e->params;
-    p.r_sfs = e->n_r_sfs ? e->r_sfs[i] : e->params.r_sfs;
-    int64_t len = (int64_t)aiot_frame_bits(e->a_bits, &p) * aiot_bit_samples(&p);
-    if (len > m)
-      m = len;
-  }
-  return e->start + e->te + 1 + m;
 }
 
 /* Gives rx the windows opened since the last call. */
@@ -264,11 +252,11 @@ static int take_windows(nr_aiot_d2r_t *d)
 {
   if (d->hold_windows)
     return 0;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   int ret = 0;
   for (int i = 0; i < d->n_ex; i++) {
     aiot_d2r_expect_t e = d->ex[i];
-    if (e.start - e.te - 1 < d->received_until)
+    if (aiot_d2r_expect_first(&e) < d->received_until)
       d->stats.late++;
     e.start -= d->a0;
     ret = aiot_d2r_rx_expect(d->rx, &e);
@@ -278,12 +266,10 @@ static int take_windows(nr_aiot_d2r_t *d)
       continue;
     }
     d->in_rx++;
-    int64_t end = window_end(&d->ex[i]);
-    if (end > d->last_end)
-      d->last_end = end;
+    d->last_end = cmax(d->last_end, aiot_d2r_expect_end(&d->ex[i]));
   }
   d->n_ex = 0;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return ret;
 }
 
@@ -301,20 +287,20 @@ static int receive(nr_aiot_d2r_t *d, const cd_t *y, int64_t n)
     d->cap_scratch = d->in_rx;
   }
   int got = aiot_d2r_rx_receive(d->rx, y, (int)n, d->scratch, d->in_rx);
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   d->received_until += n; /* rx has taken the samples, whatever it returns */
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   if (got < 0)
     return got;
   d->in_rx -= got;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   if (got && d->n_out + got > d->cap_out) {
     int cap = d->cap_out ? d->cap_out : 8;
     while (cap < d->n_out + got)
       cap *= 2;
     aiot_d2r_outcome_t *no = realloc(d->out, sizeof(*no) * (size_t)cap);
     if (!no) {
-      pthread_mutex_unlock(&d->lock);
+      mutexunlock(d->lock);
       return AIOT_ENOMEM;
     }
     d->out = no;
@@ -330,7 +316,7 @@ static int receive(nr_aiot_d2r_t *d, const cd_t *y, int64_t n)
     d->stats.decoded += o->n_decoded;
     d->stats.collided += o->collided;
   }
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return 0;
 }
 
@@ -409,9 +395,9 @@ static void restart(nr_aiot_d2r_t *d, int64_t ts)
   d->next_ts = ts;
   d->next_m = m0;
   d->a0 = m0;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   d->received_until = m0;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
 }
 
 /* Receives zeros for the radio samples next_ts .. ts - 1. After a gap longer than MAX_GAP_S, once
@@ -426,13 +412,13 @@ static int fill_gap(nr_aiot_d2r_t *d, int64_t ts)
      * sample last_end - 1 is made once w reaches radio sample (last_end - 1) D + g */
     int64_t need = d->in_rx ? (d->last_end - 1) * d->d + d->g + 1 - d->next_ts : 0;
     if (need < gap) {
-      fill = need > 0 ? need : 0;
+      fill = cmax(need, 0);
       again = 1;
     }
   }
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   d->stats.zero_filled += fill / d->d;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   d->hold_windows = again; /* the windows rx holds end within fill; the others wait for the new rx */
   int ret = 0;
   while (fill > 0 && ret == 0) {
@@ -487,24 +473,24 @@ int nr_aiot_d2r_feed(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
 static void *worker(void *arg)
 {
   nr_aiot_d2r_t *d = arg;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   for (;;) {
     while (d->head == d->tail && !d->stop)
-      pthread_cond_wait(&d->cond, &d->lock);
+      condwait(d->cond, d->lock);
     if (d->head == d->tail)
       break; /* stopped, and nothing left */
     d2r_slot_t *s = &d->ring[d->head % d->ring_n];
-    pthread_mutex_unlock(&d->lock);
+    mutexunlock(d->lock);
     int ret = feed(d, s->ts, s->x, s->n);
     if (ret < 0)
       LOG_E(NR_PHY, "A-IoT D2R: receiving the slot at %ld failed (%d)\n", (long)s->ts, ret);
-    pthread_mutex_lock(&d->lock);
+    mutexlock(d->lock);
     d->head++;
-    pthread_cond_broadcast(&d->cond);
+    condbroadcast(d->cond);
     if (d->received_until >= d->next_log) {
       nr_aiot_d2r_stats_t st = d->stats;
       d->next_log = d->received_until + STATS_EVERY_S * (int64_t)AIOT_SAMPLE_RATE_HZ;
-      pthread_mutex_unlock(&d->lock);
+      mutexunlock(d->lock);
       LOG_I(NR_PHY,
             "A-IoT D2R: %" PRIu64 " windows, %" PRIu64 " D2Rs decoded, %" PRIu64 " collided, %" PRIu64 " late; %" PRIu64
             " samples missed, %" PRIu64 " slots overrun\n",
@@ -514,10 +500,10 @@ static void *worker(void *arg)
             st.late,
             st.zero_filled,
             st.overruns);
-      pthread_mutex_lock(&d->lock);
+      mutexlock(d->lock);
     }
   }
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return NULL;
 }
 
@@ -571,24 +557,24 @@ nr_aiot_d2r_t *nr_aiot_d2r_open(const nr_aiot_d2r_config_t *cfg,
 /* Hands one piece of at most max_slot_samples samples to the worker. */
 static int push_piece(nr_aiot_d2r_t *d, int64_t ts, const c16_t *x, int n)
 {
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   while (d->wait_when_full && d->tail - d->head == (uint64_t)d->ring_n)
-    pthread_cond_wait(&d->cond, &d->lock);
+    condwait(d->cond, d->lock);
   if (d->tail - d->head == (uint64_t)d->ring_n) {
     d->stats.overruns++;
-    pthread_mutex_unlock(&d->lock);
+    mutexunlock(d->lock);
     return AIOT_ESPACE;
   }
   d2r_slot_t *s = &d->ring[d->tail % d->ring_n];
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   /* only this thread writes slot tail, and the worker reads it only once tail has moved past it */
   memcpy(s->x, x, sizeof(c16_t) * (size_t)n);
   s->ts = ts;
   s->n = n;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   d->tail++;
-  pthread_cond_broadcast(&d->cond);
-  pthread_mutex_unlock(&d->lock);
+  condbroadcast(d->cond);
+  mutexunlock(d->lock);
   return 0;
 }
 
@@ -611,47 +597,49 @@ void nr_aiot_d2r_drain(nr_aiot_d2r_t *d)
 {
   if (!d || !d->running)
     return;
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   while (d->head != d->tail)
-    pthread_cond_wait(&d->cond, &d->lock);
-  pthread_mutex_unlock(&d->lock);
+    condwait(d->cond, d->lock);
+  mutexunlock(d->lock);
 }
 
 int nr_aiot_d2r_pop(nr_aiot_d2r_t *d, aiot_d2r_outcome_t *out, int max)
 {
   if (!d || max < 0 || (max && !out))
     return AIOT_EINVAL;
-  pthread_mutex_lock(&d->lock);
-  int n = d->n_out < max ? d->n_out : max;
-  memcpy(out, d->out, sizeof(*out) * (size_t)n);
-  memmove(d->out, d->out + n, sizeof(*out) * (size_t)(d->n_out - n));
-  d->n_out -= n;
-  pthread_mutex_unlock(&d->lock);
+  mutexlock(d->lock);
+  int n = cmin(d->n_out, max);
+  if (n > 0) { /* d->out is NULL until the first outcome, out may be NULL when max is 0 */
+    memcpy(out, d->out, sizeof(*out) * (size_t)n);
+    memmove(d->out, d->out + n, sizeof(*out) * (size_t)(d->n_out - n));
+    d->n_out -= n;
+  }
+  mutexunlock(d->lock);
   return n;
 }
 
 int64_t nr_aiot_d2r_received_until(nr_aiot_d2r_t *d)
 {
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   int64_t t = d->received_until;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return t;
 }
 
 void nr_aiot_d2r_set_slot_time(nr_aiot_d2r_t *d, int frame, int slot, int64_t ts)
 {
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   d->clock_slot = frame * AIOT_CELL_SLOTS_PER_FRAME + slot;
   d->clock_ts = ts;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
 }
 
 int64_t nr_aiot_d2r_cell_time(nr_aiot_d2r_t *d, int frame, int slot, int sample)
 {
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   const int ref = d->clock_slot;
   const int64_t ts = d->clock_ts;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   if (ref < 0)
     return -1;
   const int k = nr_aiot_cell_slot_diff(ref, frame * AIOT_CELL_SLOTS_PER_FRAME + slot);
@@ -668,19 +656,19 @@ int64_t nr_aiot_d2r_wait(nr_aiot_d2r_t *d, int64_t after, int timeout_ms)
     until.tv_sec++;
     until.tv_nsec -= 1000000000L;
   }
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   while (d->received_until <= after && !d->stop)
     if (pthread_cond_timedwait(&d->cond, &d->lock, &until) != 0)
       break;
   int64_t t = d->received_until;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return t;
 }
 
 nr_aiot_d2r_stats_t nr_aiot_d2r_stats(nr_aiot_d2r_t *d)
 {
-  pthread_mutex_lock(&d->lock);
+  mutexlock(d->lock);
   nr_aiot_d2r_stats_t s = d->stats;
-  pthread_mutex_unlock(&d->lock);
+  mutexunlock(d->lock);
   return s;
 }

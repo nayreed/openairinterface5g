@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "aiot_phy.h"
+#include "common/utils/utils.h" /* cmin, cmax, sizeofArray */
 
 /* A preamble is accepted when its correlation reaches this SNR over the noise measured on the
  * frame's ambles, after the bit correlation. */
@@ -38,9 +39,10 @@
 /* The search looks this many samples past each end of the +-te window; a peak there is a frame
  * starting outside the window, not one in it. */
 #define SEARCH_GUARD 1
-#define PI 3.14159265358979323846
-/* V at most: E = 6096 bits and a midamble every 48 bits */
-#define AIOT_D2R_MAX_V (6 * (AIOT_MAX_TB_BITS + 16) + 130 * 31)
+#define MIN_I_BIT 48 /* the smallest I_bit (38.391 Table 6.2.1.6-1) */
+#define MAX_L_AMBLE 31
+/* V at most: the largest E, the preamble, a midamble every I_bit and the additional one */
+#define AIOT_D2R_MAX_V (AIOT_MAX_E_BITS + (2 + AIOT_MAX_E_BITS / MIN_I_BIT) * MAX_L_AMBLE)
 
 /* ---------------------------------------------------------------------------------------------
  * Transmitter
@@ -49,7 +51,7 @@
 /* B = A + L, E after block repetition and the optional TBCC (§6.1.2). */
 static int coded_len(int a_bits, const aiot_d2r_params_t *p)
 {
-  return (a_bits + aiot_crc_length(a_bits)) * p->r_block * (p->r_code ? 3 : 1);
+  return (a_bits + aiot_crc_length(a_bits)) * p->r_block * (p->r_code ? AIOT_TBCC_RATE : 1);
 }
 
 /* V for a given E (§6.1.3): floor(E / I_bit) midambles, ceil with the additional one. */
@@ -57,6 +59,16 @@ static int frame_bits_from_e(int e_bits, const aiot_d2r_params_t *p)
 {
   int n_mid = p->i_add ? (e_bits + p->i_bit - 1) / p->i_bit : e_bits / p->i_bit;
   return e_bits + (1 + n_mid) * p->l_amble;
+}
+
+int aiot_frame_bits(int a_bits, const aiot_d2r_params_t *p)
+{
+  return frame_bits_from_e(coded_len(a_bits, p), p);
+}
+
+int aiot_frame_samples(int a_bits, const aiot_d2r_params_t *p)
+{
+  return aiot_frame_bits(a_bits, p) * aiot_bit_samples(p);
 }
 
 static int tx_args_ok(int a_bits, const aiot_d2r_params_t *p)
@@ -72,13 +84,13 @@ int aiot_d2r_coded_bits(const uint8_t *tb_bits, int a_bits, const aiot_d2r_param
   int n_e = coded_len(a_bits, p);
   if (n_e > max_e)
     return AIOT_ESPACE;
-  uint8_t word[AIOT_MAX_TB_BITS + 16];
+  uint8_t word[AIOT_MAX_WORD_BITS];
   aiot_attach_crc(tb_bits, a_bits, word);
   if (!p->r_code) {
     aiot_repeat_block(word, b, p->r_block, e);
     return n_e;
   }
-  uint8_t rep[2 * (AIOT_MAX_TB_BITS + 16)];
+  uint8_t rep[AIOT_MAX_BLOCK_BITS];
   aiot_repeat_block(word, b, p->r_block, rep);
   aiot_tbcc_encode(rep, b * p->r_block, e);
   return n_e;
@@ -115,13 +127,13 @@ int aiot_d2r_assemble(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
   if (!tx_args_ok(a_bits, p))
     return AIOT_EINVAL;
   int n_e = coded_len(a_bits, p);
-  int n_v = frame_bits_from_e(n_e, p);
+  int n_v = aiot_frame_bits(a_bits, p);
   if (n_v > max_v)
     return AIOT_ESPACE;
-  uint8_t e[6 * (AIOT_MAX_TB_BITS + 16)];
-  uint8_t amble[31];
+  uint8_t e[AIOT_MAX_E_BITS];
+  uint8_t amble[MAX_L_AMBLE];
   int lay[AIOT_D2R_MAX_V];
-  if ((size_t)n_v > sizeof(lay) / sizeof(lay[0]))
+  if (n_v > sizeofArray(lay))
     return AIOT_ESPACE;
   aiot_d2r_coded_bits(tb_bits, a_bits, p, e, (int)sizeof(e));
   aiot_m_sequence(p->l_amble, amble);
@@ -161,7 +173,7 @@ int aiot_d2r_waveform(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
 {
   if (!tx_args_ok(a_bits, p))
     return AIOT_EINVAL;
-  int n_v = frame_bits_from_e(coded_len(a_bits, p), p);
+  int n_v = aiot_frame_bits(a_bits, p);
   int cs = aiot_chip_samples(p);
   int64_t total = (int64_t)n_v * aiot_bit_samples(p);
   if (total > max_out)
@@ -201,7 +213,7 @@ static int fft_plan(fft_plan_t *f, size_t n)
   if (!f->tw)
     return AIOT_ENOMEM;
   for (size_t k = 0; k < n / 2; k++) {
-    double a = -2.0 * PI * (double)k / (double)n;
+    double a = -2.0 * M_PI * (double)k / (double)n;
     f->tw[k].r = cos(a);
     f->tw[k].i = sin(a);
   }
@@ -391,15 +403,81 @@ static void solve_normal(int nf, double *g, cd_t *b, cd_t *a)
   }
 }
 
+/* The +-1 waveform the bit patterns see of a decoded frame (OOK's constant half drops out): n
+ * samples into w. */
+static int frame_wave(const uint8_t *bits, int a_bits, const aiot_d2r_params_t *p, int8_t *w, int64_t n)
+{
+  int n_bits = aiot_frame_bits(a_bits, p), r = p->r_sfs, cs = aiot_chip_samples(p);
+  uint8_t *v = malloc((size_t)n_bits);
+  double *chips = malloc(sizeof(double) * (size_t)n_bits * 2 * r);
+  if (!v || !chips) {
+    free(v);
+    free(chips);
+    return AIOT_ENOMEM;
+  }
+  aiot_d2r_assemble(bits, a_bits, p, v, n_bits);
+  int nc = aiot_d2r_sfs_chips(v, n_bits, p, chips, n_bits * 2 * r);
+  for (int c = 0; c < nc && (int64_t)(c + 1) * cs <= n; c++) {
+    const int8_t x = (int8_t)(p->modulation == AIOT_OOK ? 2 * chips[c] - 1 : chips[c]);
+    memset(w + (int64_t)c * cs, x, (size_t)cs);
+  }
+  free(v);
+  free(chips);
+  return 0;
+}
+
+/* Fits the amplitudes of nf frames together over the samples of buf they cover (least squares on
+ * the normal equations: the waveforms are real) and takes the frames out of buf. Frame i is the
+ * +-1 waveform wave[i], len[i] samples from buf[off[i]]; what falls outside buf is left out. amp
+ * gets the amplitudes. */
+static int fit_and_cancel(cd_t *buf, int64_t nbuf, int8_t *const *wave, const int64_t *off, const int64_t *len, int nf, cd_t *amp)
+{
+  double *g = malloc(sizeof(double) * (size_t)nf * nf);
+  cd_t *rhs = malloc(sizeof(cd_t) * (size_t)nf);
+  if (!g || !rhs) {
+    free(g);
+    free(rhs);
+    return AIOT_ENOMEM;
+  }
+  for (int i = 0; i < nf; i++) {
+    const int64_t lo = cmax(off[i], (int64_t)0), hi = cmin(off[i] + len[i], nbuf);
+    double sr = 0, si = 0;
+    for (int64_t t = lo; t < hi; t++) {
+      sr += wave[i][t - off[i]] * buf[t].r;
+      si += wave[i][t - off[i]] * buf[t].i;
+    }
+    rhs[i].r = sr;
+    rhs[i].i = si;
+    for (int j = i; j < nf; j++) {
+      const int64_t l2 = cmax(off[j], lo), h2 = cmin(off[j] + len[j], hi);
+      int64_t acc = 0;
+      for (int64_t t = l2; t < h2; t++)
+        acc += wave[i][t - off[i]] * wave[j][t - off[j]];
+      g[i * nf + j] = g[j * nf + i] = (double)acc;
+    }
+  }
+  solve_normal(nf, g, rhs, amp);
+  for (int i = 0; i < nf; i++) {
+    const int64_t lo = cmax(off[i], (int64_t)0), hi = cmin(off[i] + len[i], nbuf);
+    for (int64_t t = lo; t < hi; t++) {
+      buf[t].r -= amp[i].r * wave[i][t - off[i]];
+      buf[t].i -= amp[i].i * wave[i][t - off[i]];
+    }
+  }
+  free(g);
+  free(rhs);
+  return 0;
+}
+
 /* Undo coding and repetition, check the CRC. Returns 1 and the transport block, or 0. */
 static int read_frame(const double *soft, int a_bits, const aiot_d2r_params_t *p, uint8_t *tb)
 {
   int b = a_bits + aiot_crc_length(a_bits);
   int k = b * p->r_block;
   int a;
-  uint8_t c[2 * (AIOT_MAX_TB_BITS + 16)];
+  uint8_t c[AIOT_MAX_BLOCK_BITS];
   if (p->r_code) {
-    if (aiot_tbcc_decode(soft, 3 * k, c) != k)
+    if (aiot_tbcc_decode(soft, AIOT_TBCC_RATE * k, c) != k)
       return AIOT_ENOMEM;
     for (int cp = 0; cp < p->r_block; cp++) { /* any copy whose CRC holds */
       if (aiot_check_crc(c + cp * b, b, &a) == 1) {
@@ -409,7 +487,7 @@ static int read_frame(const double *soft, int a_bits, const aiot_d2r_params_t *p
     }
     return 0;
   }
-  double comb[AIOT_MAX_TB_BITS + 16];
+  double comb[AIOT_MAX_WORD_BITS];
   aiot_combine_repetitions(soft, k, p->r_block, comb);
   for (int i = 0; i < b; i++)
     c[i] = comb[i] < 0;
@@ -463,7 +541,7 @@ static int decode_shift(const cd_t *buf,
   double *z_soft = malloc(sizeof(double) * (size_t)n_e);
   cd_t *z = malloc(sizeof(cd_t) * (size_t)n_bits);
   int8_t *waves[AIOT_MAX_SIC_ROUNDS] = {0};
-  int64_t offs[AIOT_MAX_SIC_ROUNDS];
+  int64_t offs[AIOT_MAX_SIC_ROUNDS], lens[AIOT_MAX_SIC_ROUNDS];
   search_t sr = {0};
   if (!seg || !seg0 || !pat || !pre_ref || !lay || !z_soft || !z)
     goto done;
@@ -476,8 +554,8 @@ static int decode_shift(const cd_t *buf,
       pat[c * cs + s] = (c & 1) ? -1.0 : 1.0;
   /* The reference: the frame's ambles at their places (+-1 per bit) */
   aiot_d2r_amble_layout(n_e, &p, lay, n_bits);
-  uint8_t mseq[31];
-  double amble[31];
+  uint8_t mseq[MAX_L_AMBLE];
+  double amble[MAX_L_AMBLE];
   aiot_m_sequence(l, mseq);
   for (int i = 0; i < l; i++) {
     amble[i] = 1.0 - 2.0 * mseq[i];
@@ -575,67 +653,21 @@ static int decode_shift(const cd_t *buf,
     d->start = base + lo + k;
     d->rssi_w = hr * hr + hi_ * hi_;
     d->tag = e->tag;
-    /* the +-1 waveform of the frame (the part the pattern sees; OOK's constant half drops out) */
-    uint8_t *v = malloc((size_t)n_bits);
-    double *chips = malloc(sizeof(double) * (size_t)n_bits * 2 * r);
     waves[nf] = malloc((size_t)n);
-    if (!v || !chips || !waves[nf]) {
-      free(v);
-      free(chips);
+    if (!waves[nf] || frame_wave(d->bits, a_bits, &p, waves[nf], n) != 0)
       goto done;
-    }
-    aiot_d2r_assemble(d->bits, a_bits, &p, v, n_bits);
-    int nc = aiot_d2r_sfs_chips(v, n_bits, &p, chips, n_bits * 2 * r);
-    for (int c = 0; c < nc; c++) {
-      double x = p.modulation == AIOT_OOK ? 2 * chips[c] - 1 : chips[c];
-      for (int s = 0; s < cs; s++)
-        waves[nf][(int64_t)c * cs + s] = (int8_t)x;
-    }
-    free(v);
-    free(chips);
     offs[nf] = k;
+    lens[nf] = n;
     nf++;
     res->n_decoded = d0 + nf;
 
-    /* fit all decoded frames together (normal equations; the waveforms are real), take them out, look again */
-    double *g = malloc(sizeof(double) * (size_t)nf * nf);
-    cd_t *rhs = malloc(sizeof(cd_t) * (size_t)nf);
-    cd_t *amp = malloc(sizeof(cd_t) * (size_t)nf);
-    if (!g || !rhs || !amp) {
-      free(g);
-      free(rhs);
-      free(amp);
-      goto done;
-    }
-    for (int i = 0; i < nf; i++) {
-      double sr_ = 0, si_ = 0;
-      for (int64_t t = 0; t < n; t++) {
-        sr_ += waves[i][t] * seg0[offs[i] + t].r;
-        si_ += waves[i][t] * seg0[offs[i] + t].i;
-      }
-      rhs[i].r = sr_;
-      rhs[i].i = si_;
-      for (int j = i; j < nf; j++) {
-        int64_t a0 = offs[i] > offs[j] ? offs[i] : offs[j];
-        int64_t a1 = (offs[i] < offs[j] ? offs[i] : offs[j]) + n;
-        long acc = 0;
-        for (int64_t t = a0; t < a1; t++)
-          acc += waves[i][t - offs[i]] * waves[j][t - offs[j]];
-        g[i * nf + j] = g[j * nf + i] = (double)acc;
-      }
-    }
-    solve_normal(nf, g, rhs, amp);
+    /* fit all decoded frames together, take them out, look again */
+    cd_t amp[AIOT_MAX_SIC_ROUNDS];
     memcpy(seg, seg0, sizeof(cd_t) * (size_t)seg_len);
-    for (int i = 0; i < nf; i++) {
-      for (int64_t t = 0; t < n; t++) {
-        seg[offs[i] + t].r -= amp[i].r * waves[i][t];
-        seg[offs[i] + t].i -= amp[i].i * waves[i][t];
-      }
+    if (fit_and_cancel(seg, seg_len, waves, offs, lens, nf, amp) != 0)
+      goto done;
+    for (int i = 0; i < nf; i++)
       res->decoded[d0 + i].rssi_w = (amp[i].r * amp[i].r + amp[i].i * amp[i].i) * (p.modulation == AIOT_OOK ? 4 : 1);
-    }
-    free(g);
-    free(rhs);
-    free(amp);
     if (!sic) {
       /* without SIC a second frame in the window cannot be read; a preamble left is a collision */
       int64_t k2;
@@ -665,29 +697,6 @@ done:
 static int n_shifts(const aiot_d2r_expect_t *e);
 static int shift_of(const aiot_d2r_expect_t *e, int i);
 
-/* The +-1 waveform the bit patterns see of a decoded frame: n samples into w. */
-static int frame_wave(const uint8_t *bits, int a_bits, const aiot_d2r_params_t *p, double *w, int64_t n)
-{
-  int n_bits = aiot_frame_bits(a_bits, p), r = p->r_sfs, cs = aiot_chip_samples(p);
-  uint8_t *v = malloc((size_t)n_bits);
-  double *chips = malloc(sizeof(double) * (size_t)n_bits * 2 * r);
-  if (!v || !chips) {
-    free(v);
-    free(chips);
-    return AIOT_ENOMEM;
-  }
-  aiot_d2r_assemble(bits, a_bits, p, v, n_bits);
-  int nc = aiot_d2r_sfs_chips(v, n_bits, p, chips, n_bits * 2 * r);
-  for (int c = 0; c < nc && (int64_t)(c + 1) * cs <= n; c++) {
-    double x = p->modulation == AIOT_OOK ? 2 * chips[c] - 1 : chips[c];
-    for (int t = 0; t < cs; t++)
-      w[(int64_t)c * cs + t] = x;
-  }
-  free(v);
-  free(chips);
-  return 0;
-}
-
 /* buf (in place) with the given decoded frames fitted together and taken out. fe[i] is the
  * expected D2R frame fr[i] was decoded for. */
 static int cancel_frames(cd_t *buf,
@@ -698,59 +707,21 @@ static int cancel_frames(cd_t *buf,
                          int nf)
 {
   int ret = AIOT_ENOMEM;
-  double **waves = calloc((size_t)nf, sizeof(double *));
+  int8_t **waves = calloc((size_t)nf, sizeof(*waves));
   int64_t *offs = malloc(sizeof(int64_t) * (size_t)nf), *lens = malloc(sizeof(int64_t) * (size_t)nf);
-  double *g = malloc(sizeof(double) * (size_t)nf * nf);
-  cd_t *rhs = malloc(sizeof(cd_t) * (size_t)nf), *amp = malloc(sizeof(cd_t) * (size_t)nf);
-  if (!waves || !offs || !lens || !g || !rhs || !amp)
+  cd_t *amp = malloc(sizeof(cd_t) * (size_t)nf);
+  if (!waves || !offs || !lens || !amp)
     goto done;
-  int64_t a = INT64_MAX, b = INT64_MIN;
   for (int i = 0; i < nf; i++) {
     aiot_d2r_params_t p = fe[i]->params;
     p.r_sfs = fr[i]->r_sfs;
     lens[i] = aiot_frame_samples(fr[i]->n_bits, &p);
     offs[i] = fr[i]->start - base;
-    waves[i] = malloc(sizeof(double) * (size_t)lens[i]);
+    waves[i] = malloc((size_t)lens[i]);
     if (!waves[i] || frame_wave(fr[i]->bits, fr[i]->n_bits, &p, waves[i], lens[i]) != 0)
       goto done;
-    if (offs[i] < a)
-      a = offs[i];
-    if (offs[i] + lens[i] > b)
-      b = offs[i] + lens[i];
   }
-  if (a < 0)
-    a = 0;
-  if (b > nbuf)
-    b = nbuf;
-  ret = 0;
-  if (b <= a)
-    goto done;
-  /* normal equations over [a, b): the waveforms are real */
-  for (int i = 0; i < nf; i++) {
-    int64_t lo = offs[i] > a ? offs[i] : a, hi = offs[i] + lens[i] < b ? offs[i] + lens[i] : b;
-    double sr = 0, si = 0;
-    for (int64_t t = lo; t < hi; t++) {
-      sr += waves[i][t - offs[i]] * buf[t].r;
-      si += waves[i][t - offs[i]] * buf[t].i;
-    }
-    rhs[i].r = sr;
-    rhs[i].i = si;
-    for (int j = i; j < nf; j++) {
-      int64_t l2 = offs[j] > lo ? offs[j] : lo, h2 = offs[j] + lens[j] < hi ? offs[j] + lens[j] : hi;
-      double acc = 0;
-      for (int64_t t = l2; t < h2; t++)
-        acc += waves[i][t - offs[i]] * waves[j][t - offs[j]];
-      g[i * nf + j] = g[j * nf + i] = acc;
-    }
-  }
-  solve_normal(nf, g, rhs, amp);
-  for (int i = 0; i < nf; i++) {
-    int64_t lo = offs[i] > a ? offs[i] : a, hi = offs[i] + lens[i] < b ? offs[i] + lens[i] : b;
-    for (int64_t t = lo; t < hi; t++) {
-      buf[t].r -= amp[i].r * waves[i][t - offs[i]];
-      buf[t].i -= amp[i].i * waves[i][t - offs[i]];
-    }
-  }
+  ret = fit_and_cancel(buf, nbuf, waves, offs, lens, nf, amp);
 
 done:
   for (int i = 0; waves && i < nf; i++)
@@ -758,8 +729,6 @@ done:
   free(waves);
   free(offs);
   free(lens);
-  free(g);
-  free(rhs);
   free(amp);
   return ret;
 }
@@ -959,16 +928,18 @@ static int shift_of(const aiot_d2r_expect_t *e, int i)
   return e->n_r_sfs ? e->r_sfs[i] : e->params.r_sfs;
 }
 
-/* Expect.last_sample */
-static int64_t last_sample(const aiot_d2r_expect_t *e)
+int64_t aiot_d2r_expect_first(const aiot_d2r_expect_t *e)
+{
+  return e->start - e->te - SEARCH_GUARD;
+}
+
+int64_t aiot_d2r_expect_end(const aiot_d2r_expect_t *e)
 {
   int64_t m = 0;
   for (int i = 0; i < n_shifts(e); i++) {
     aiot_d2r_params_t p = e->params;
     p.r_sfs = shift_of(e, i);
-    int64_t len = (int64_t)aiot_frame_bits(e->a_bits, &p) * aiot_bit_samples(&p);
-    if (len > m)
-      m = len;
+    m = cmax(m, (int64_t)aiot_frame_samples(e->a_bits, &p));
   }
   return e->start + e->te + SEARCH_GUARD + m;
 }
@@ -1009,7 +980,7 @@ int aiot_d2r_rx_receive(aiot_d2r_rx_t *rx, const cd_t *y, int n, aiot_d2r_outcom
   int64_t end = rx->base + rx->n + n;
   int n_done = 0;
   for (int i = 0; i < rx->n_ex; i++)
-    n_done += last_sample(&rx->ex[i]) <= end;
+    n_done += aiot_d2r_expect_end(&rx->ex[i]) <= end;
   if (n_done > max_out)
     return AIOT_ESPACE;
   if (rx->n + n > rx->cap) {
@@ -1030,7 +1001,7 @@ int aiot_d2r_rx_receive(aiot_d2r_rx_t *rx, const cd_t *y, int n, aiot_d2r_outcom
     return AIOT_ENOMEM;
   int nd = 0, nk = 0;
   for (int i = 0; i < rx->n_ex; i++) {
-    if (last_sample(&rx->ex[i]) <= end)
+    if (aiot_d2r_expect_end(&rx->ex[i]) <= end)
       done[nd++] = rx->ex[i];
     else
       rx->ex[nk++] = rx->ex[i];
@@ -1055,8 +1026,7 @@ int aiot_d2r_rx_receive(aiot_d2r_rx_t *rx, const cd_t *y, int n, aiot_d2r_outcom
   free(done);
   int64_t keep_from = end;
   for (int i = 0; i < rx->n_ex; i++)
-    if (rx->ex[i].start - rx->ex[i].te - SEARCH_GUARD < keep_from)
-      keep_from = rx->ex[i].start - rx->ex[i].te - SEARCH_GUARD;
+    keep_from = cmin(keep_from, aiot_d2r_expect_first(&rx->ex[i]));
   int64_t drop = keep_from - rx->base;
   if (drop < 0)
     drop = 0;

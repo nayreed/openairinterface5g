@@ -127,6 +127,11 @@ RUN ldconfig && \
       amber-compose --image oai-amber:latest "$new/scenario.toml" "$new" --cells-dir ../../conf_files && \
       diff -r --exclude=README.md "$room" "$new" || exit 1; \
     done && \
+    echo "---- the room with the gNB and the UE placed: gains from positions ----" && \
+    mkdir -p /tmp/new/geometry && cp /tmp/rooms/5g_rfsimulator_aiot/scenario.toml /tmp/new/geometry/ && \
+    printf '\n[network.gnb]\nx = 300.0\ny = 0.0\n\n[network.ue]\nx = 50.0\ny = 80.0\n' >> /tmp/new/geometry/scenario.toml && \
+    amber-compose /tmp/new/geometry/scenario.toml /tmp/new/geometry && \
+    ! diff -q /tmp/rooms/5g_rfsimulator_aiot/rfsim_hub.conf /tmp/new/geometry/rfsim_hub.conf && \
     rm -r /tmp/rooms /tmp/new /tmp/conf_files
 
 WORKDIR /opt/oai-amber

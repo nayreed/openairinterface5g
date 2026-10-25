@@ -20,6 +20,8 @@
 #define AIOT_PROTOCOL_MAX_PARAMS 8
 #define AIOT_PROTOCOL_STATE_BYTES 8192
 #define AIOT_PROTOCOL_WAIT 2
+/* registration: how many times an AS ID whose data was not heard is polled before it is dropped */
+#define AIOT_REGISTRATION_UNCONFIRMED_POLLS 3
 
 typedef struct {
   aiot_mac_r2d_msg_t msg;

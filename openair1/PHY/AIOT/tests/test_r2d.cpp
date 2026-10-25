@@ -61,7 +61,7 @@ std::vector<aiot_r2d_frame_t> Receive(aiot_r2d_rx_t *rx, const std::vector<cd_t>
 // The R2D transmission of tb, placed at sample at of a stream of total samples.
 void Place(std::vector<cd_t> &y, int at, const std::vector<uint8_t> &tb, int m, int n_rb)
 {
-  std::vector<cd_t> x(400000);
+  std::vector<cd_t> x(aiot_r2d_n_samples(aiot_r2d_n_symbols(AIOT_R2D_MAX_CHIPS((int)tb.size()), m)));
   int n = aiot_r2d_transmission(tb.data(), (int)tb.size(), m, n_rb, x.data(), (int)x.size());
   ASSERT_GT(n, 0);
   if ((int)y.size() < at + n)
@@ -298,6 +298,28 @@ TEST(R2DRx, ReceivesWhatTheReaderSends)
         EXPECT_TRUE(std::equal(tb.begin(), tb.end(), found[0].bits));
         EXPECT_EQ(found[0].end_sample, end);
       }
+}
+
+// The largest transport block (125 bytes) at every M: the chips fit AIOT_R2D_MAX_CHIPS and the
+// device takes it back whole. One bit more is refused.
+TEST(R2DRx, ReceivesTheLargestTransportBlock)
+{
+  std::mt19937 gen(7);
+  for (int m : kM) {
+    std::vector<uint8_t> tb = RandomBits(gen, AIOT_MAX_TB_BITS + 1);
+    std::vector<uint8_t> chips(AIOT_R2D_MAX_CHIPS(AIOT_MAX_TB_BITS + 1));
+    EXPECT_GT(aiot_r2d_chips(tb.data(), AIOT_MAX_TB_BITS, m, chips.data(), AIOT_R2D_MAX_CHIPS(AIOT_MAX_TB_BITS)), 0);
+    EXPECT_EQ(aiot_r2d_chips(tb.data(), AIOT_MAX_TB_BITS + 1, m, chips.data(), (int)chips.size()), AIOT_EINVAL);
+    tb.pop_back();
+    std::vector<cd_t> y(1000, cd_t{0, 0});
+    Place(y, 1000, tb, m, aiot_n_rb_min(m));
+    y.resize(y.size() + 6000, cd_t{0, 0});
+    RxPtr rx = NewRx();
+    std::vector<aiot_r2d_frame_t> found = Receive(rx.get(), y, AIOT_SAMPLES_PER_MS);
+    ASSERT_EQ(found.size(), 1u) << "M = " << m;
+    EXPECT_EQ(found[0].n_bits, AIOT_MAX_TB_BITS);
+    EXPECT_TRUE(std::equal(tb.begin(), tb.end(), found[0].bits)) << "M = " << m;
+  }
 }
 
 // A gNB maps the resource elements onto PRBs of its own carrier (here 25 PRBs, the 300 subcarriers

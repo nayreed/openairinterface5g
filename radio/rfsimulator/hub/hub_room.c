@@ -148,11 +148,19 @@ static bool check_conf(const hub_conf_t *c, char *why, size_t why_len)
   if (c->num_nodes <= 0)
     return refuse(why, why_len, "the room has no node");
   for (int i = 0; i < c->num_nodes; i++) {
-    if (c->nodes[i].lookahead < 0)
-      return refuse(why, why_len, "node %s: lookahead must not be negative", c->nodes[i].name);
-    for (int j = 0; j < i; j++)
-      if (c->nodes[i].port == c->nodes[j].port)
-        return refuse(why, why_len, "nodes %s and %s share port %d", c->nodes[j].name, c->nodes[i].name, c->nodes[i].port);
+    const hub_node_conf_t *n = &c->nodes[i];
+    if (n->port < 1 || n->port > UINT16_MAX)
+      return refuse(why, why_len, "node %s: port %d is not a TCP port", n->name, n->port);
+    if (n->lookahead < 0)
+      return refuse(why, why_len, "node %s: lookahead must not be negative", n->name);
+    if (!(n->noise_counts >= 0))
+      return refuse(why, why_len, "node %s: noise_counts must not be negative", n->name);
+    for (int j = 0; j < i; j++) {
+      if (strcmp(n->name, c->nodes[j].name) == 0)
+        return refuse(why, why_len, "two nodes are named %s", n->name);
+      if (n->port == c->nodes[j].port)
+        return refuse(why, why_len, "nodes %s and %s share port %d", c->nodes[j].name, n->name, n->port);
+    }
   }
   for (int l = 0; l < c->num_links; l++) {
     const hub_link_conf_t *k = &c->links[l];
@@ -303,7 +311,7 @@ static cf_t gaussian_pair(int node, int64_t t)
 static int16_t saturate(float v)
 {
   float r = rintf(v);
-  return (int16_t)(r > 32767.f ? 32767.f : r < -32768.f ? -32768.f : r);
+  return (int16_t)(r > INT16_MAX ? INT16_MAX : r < INT16_MIN ? INT16_MIN : r);
 }
 
 void hub_room_write(hub_room_t *room, int node, uint64_t timestamp, const c16_t *samples, int64_t n, float gain_dB)
@@ -311,7 +319,7 @@ void hub_room_write(hub_room_t *room, int node, uint64_t timestamp, const c16_t 
   hub_node_t *nd = &room->nodes[node];
   const int64_t mask = room->conf.history - 1;
   int64_t ts = (int64_t)timestamp;
-  int64_t gap_start = nd->written > ts - room->conf.history ? nd->written : ts - room->conf.history;
+  int64_t gap_start = cmax(nd->written, ts - room->conf.history);
   for (int64_t t = gap_start; t < ts; t++) {
     nd->history[t & mask] = (c16_t){0, 0};
     if ((t & (GROUP - 1)) == 0)
