@@ -737,13 +737,17 @@ void *ru_thread(void *param)
     if (ru->idx != 0)
       proc->frame_tx = (proc->frame_tx + proc->frame_offset) & 1023;
 
-    // Ambient IoT D2R: the slot's time-domain samples, from a radio of this RU (feprx). Not the first
-    // slot: rx_rf() may have moved its timestamp to the next slot boundary without its samples
-    if (gNB->aiot_d2r && ru->feprx && d2r_slots++ > 0)
-      nr_aiot_d2r_push(gNB->aiot_d2r,
-                       proc->timestamp_rx,
-                       (const c16_t *)&ru->common.rxdata[0][get_samples_slot_timestamp(fp, proc->tti_rx)],
-                       get_samples_per_slot(proc->tti_rx, fp));
+    // Ambient IoT D2R: the slot's time-domain samples of the first antenna (the D2R receiver takes
+    // one), from a radio of this RU (feprx). Not the first slot: rx_rf() may have moved its timestamp
+    // to the next slot boundary without its samples
+    if (gNB->aiot_d2r && ru->feprx) {
+      if (d2r_slots > 0)
+        nr_aiot_d2r_push(gNB->aiot_d2r,
+                         proc->timestamp_rx,
+                         (const c16_t *)&ru->common.rxdata[0][get_samples_slot_timestamp(fp, proc->tti_rx)],
+                         get_samples_per_slot(proc->tti_rx, fp));
+      d2r_slots++;
+    }
 
     // do RX front-end processing (frequency-shift, dft) if needed
     int slot_type = nr_slot_select(&ru->config, proc->frame_rx, proc->tti_rx);
