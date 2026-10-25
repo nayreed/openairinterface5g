@@ -185,6 +185,10 @@ one hub node per Tag, with the same gains on every Tag's links. The containers s
 `[network]` and `cell = "n28-25prb"` added. The room's network has addresses for 121 Tags, and each
 Tag is a container of its own. `git checkout -- .` brings back the checked-in room.
 
+Add `--check` to the same command to write nothing and only compare: it shows how the folder's files
+differ from what the scenario gives, and fails if any does. The `oai-amber` image build runs it on
+every checked-in room.
+
 `[network]` also names who sends R2D, who receives D2R and who sends the carrier: the four
 topologies of the Rel-19 study. As checked in, a standalone Reader does all three. With
 `r2d = d2r = "gnb"` and `cw = "gnb-dl"` the gNB is the Reader (topology 1):

@@ -123,9 +123,7 @@ RUN ldconfig && \
     echo "---- each checked-in 5G room is what amber-compose writes from its scenario ----" && \
     mkdir -p /tmp/conf_files && cp /opt/oai-amber/etc/cells/* /tmp/conf_files/ && \
     for room in /tmp/rooms/*; do \
-      new=/tmp/new/${room##*/} && mkdir -p "$new" && cp "$room/scenario.toml" "$new/" && \
-      amber-compose --image oai-amber:latest "$new/scenario.toml" "$new" --cells-dir ../../conf_files && \
-      diff -r --exclude=README.md "$room" "$new" || exit 1; \
+      amber-compose --image oai-amber:latest "$room/scenario.toml" "$room" --cells-dir ../../conf_files --check || exit 1; \
     done && \
     echo "---- the room with the gNB and the UE placed: gains from positions ----" && \
     mkdir -p /tmp/new/geometry && cp /tmp/rooms/5g_rfsimulator_aiot/scenario.toml /tmp/new/geometry/ && \

@@ -21,6 +21,10 @@ The scenario is either a file inside DIR, which the containers see under /room, 
 image, such as /opt/amber/tests/scenarios/registration.toml. Every program writes its CSV logs to
 ./out, or to the amber.out volume in a 5G room.
 
+With --check, it writes nothing: it compares the files it would write with those in DIR, shows how
+they differ, and exits with 1 if any does, so that a room kept in a repository cannot drift from
+its scenario.
+
 Topology 1 of the Rel-19 study (r2d = d2r = "gnb") puts the A-IoT Reader in the gNB: the gNB sends
 the R2D in its DL PRBs and receives the D2R in its UL PRBs, with the scenario's protocol, link and
 Tags (openair2/LAYER2/AIOT_MAC/nr_aiot_reader.c), and there is no Reader of Amber's. The carrier the
@@ -38,6 +42,7 @@ other carrier options are not built yet, and this script says so.
 
 import argparse
 import contextlib
+import difflib
 import json
 import math
 import os
@@ -889,6 +894,34 @@ def not_built(network, phy=None):
     return None
 
 
+# The files this script writes in a room, whatever the scenario
+WRITTEN = ("docker-compose.yaml", "rfsim_hub.conf", "gnb.conf", "nr-ue.conf")
+
+
+def stale_files(room, files, copies):
+    """The files of room that differ from files ({name: text}) and copies ({name: source}), that it
+    lacks, or that this script would write for another scenario but not for this one (WRITTEN, and a
+    compose file per machine); each one's differences go to stdout as a unified diff."""
+    stale = sorted(n for n in os.listdir(room) if n not in files and n not in copies and
+                   (n in WRITTEN or (n.startswith("docker-compose.") and n.endswith(".yaml"))))
+    for name in list(files) + list(copies):
+        path = os.path.join(room, name)
+        if name in files:
+            want = files[name]
+        else:
+            with open(copies[name]) as f:
+                want = f.read()
+        have = None
+        if os.path.isfile(path):
+            with open(path) as f:
+                have = f.read()
+        if have != want:
+            stale.append(name)
+            sys.stdout.writelines(difflib.unified_diff((have or "").splitlines(True), want.splitlines(True),
+                                                       f"{name} (in the folder)", f"{name} (from the scenario)"))
+    return stale
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scenario", help="the scenario file: in DIR, or a path inside the image")
@@ -898,6 +931,9 @@ def main():
     parser.add_argument("--cells-dir", metavar="REL",
                         help="mount the 5G cell's configuration files from REL, a folder relative to DIR that holds "
                              "them (in this repository: ../../conf_files), instead of copying them into DIR")
+    parser.add_argument("--check", action="store_true",
+                        help="write nothing: compare the files DIR has with those this would write, and exit with 1 "
+                             "if any differs")
     args = parser.parse_args()
     room = os.path.abspath(args.dir)
     scenario_file = os.path.abspath(args.scenario)
@@ -953,6 +989,14 @@ def main():
             except ValueError as e:
                 parser.error(f"{args.scenario}: [network]: {e}")
             files["rfsim_hub.conf"] = hub_conf(scenario_path, cell, node_ids, gains)
+    if args.check:
+        stale = stale_files(room, files, copies)
+        for name in stale:
+            print(f"amber-compose: {os.path.join(args.dir, name)} is not what {args.scenario} gives", file=sys.stderr)
+        if stale:
+            sys.exit(1)
+        print(f"amber-compose: {args.dir} is what {args.scenario} gives", file=sys.stderr)
+        return
     for name, text in files.items():
         with open(os.path.join(room, name), "w") as f:
             f.write(text)
