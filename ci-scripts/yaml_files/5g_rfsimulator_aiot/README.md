@@ -172,6 +172,46 @@ the gNB runs the Reader's MAC and the UE does the other half of its radio work (
 `d2r = "gnb"` it sends the R2D, [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md). The
 other carriers are not built yet, and `amber-compose` refuses those scenarios with that reason.
 
+### On several machines
+
+Every machine pulls the same three images and runs only its own part of the room. Add a
+`[network.hosts]` table to the scenario that says where each node runs, by the machine's address
+or host name:
+
+```toml
+[network.hosts]
+hub = "192.0.2.3"     # required: the address the other machines reach the hub at
+gnb = "192.0.2.1"     # the gNB, and amber.sink in topology 2
+ue = "192.0.2.2"
+tags = "192.0.2.2"    # every Tag
+cw = "192.0.2.2"      # the CW node, when the scenario has one
+# reader = ...        # the standalone Reader, when the scenario has one
+```
+
+A node it does not name runs with the hub. `amber-compose` then writes one
+`docker-compose.<machine>.yaml` per machine instead of `docker-compose.yaml`, and the same
+`rfsim_hub.conf`. The hub's machine keeps the room's network and publishes the ports of the nodes
+that run elsewhere, which connect to the hub's address. Only the hub's address is dialled: the
+others only name the machine. Copy the folder to every machine, then:
+
+1. On the hub's machine: `docker compose -f docker-compose.192-0-2-3.yaml up -d`. Open the
+   published ports (4043 and up, listed in that file) to the other machines.
+2. On the gNB's machine: start its file. With `--do-ra` the gNB writes the UE's radio
+   configuration at start-up; copy it to the UE's machine, into `rrc/` next to its file:
+   `docker cp rfsim5g-oai-gnb:/opt/oai-gnb/reconfig.raw rrc/` and the same for `rbconfig.raw`.
+3. On the UE's machine: start its file last.
+
+The hub waits for every node before it starts the room, so the order only matters for the radio
+configuration. Each machine has its own `amber.out` volume: the Reader's records are on the
+Reader's machine (the gNB's or the UE's) and the Tags' on theirs. `aiot_check_room.sh` runs such a
+folder on one host, one compose project per machine, and CI runs topologies 1 and 2 that way, with
+the hub on the gNB's machine and on a third one.
+
+In simulated time no machine gains anything from where the hub runs: it waits for every node
+before it moves the air on. Where it runs changes only wall-clock time, so a node far from the hub
+gets less time for its real-time deadlines, such as the gNB's R2D. A hub on a third machine
+makes both sides cross the network.
+
 ## Timing
 
 The hub moves the room at the pace of its slowest node. While Amber runs that is Amber (about a

@@ -12,6 +12,11 @@ writes into DIR (here the current folder):
   ci-scripts/yaml_files/5g_rfsimulator_aiot (see the README there);
 - without one: one amber-reader and one amber-tag per node of the scenario, over plain rfsim.
 
+A 5G room whose scenario places its nodes on several machines ([network.hosts]) gets one
+docker-compose.<machine>.yaml per machine instead of docker-compose.yaml: the hub's machine has the
+room's network and publishes the ports of the nodes that run elsewhere, which connect to the hub's
+address (see "On several machines" in that README).
+
 The scenario is either a file inside DIR, which the containers see under /room, or a file in the
 image, such as /opt/amber/tests/scenarios/registration.toml. Every program writes its CSV logs to
 ./out, or to the amber.out volume in a 5G room.
@@ -435,32 +440,86 @@ def prb_blacklists(reader, split=None):
     return list(GNB_R2D_PRBS), list(range(D2R_PRB_START, D2R_PRB_START + D2R_N_RB))
 
 
+class Machines:
+    """Where each node of a 5G room runs: all on one machine, or on the machines [network.hosts]
+    names, each with a compose file of its own. The nodes are those of [network.hosts]: "hub", "gnb",
+    "ue", "cw", "reader" and "tags"; amber.sink runs with the gNB, in its network."""
+
+    def __init__(self, network=None):
+        self.network = network
+        self.several = bool(network and network.hosts)
+
+    def host(self, node):
+        """The machine node runs on: its address, or None on one machine."""
+        return self.network.host(node) if self.several else None
+
+    def with_hub(self, node):
+        return self.host(node) == self.host("hub")
+
+    def hub_addr(self, node):
+        """The address node connects to the hub at: the hub's in the room's network on its machine,
+        else its machine's."""
+        return HUB_ADDR if self.with_hub(node) else self.host("hub")
+
+
+
+def host_label(host):
+    """A machine's address as a name a file, a docker network or a compose project can have."""
+    return "".join(c if c.isalnum() else "-" for c in host)
+
+
+def compose_name(host=None):
+    """The compose file of the room, or of the part of it on machine host."""
+    return "docker-compose.yaml" if host is None else f"docker-compose.{host_label(host)}.yaml"
+
+
+# Where the UE of a machine without the gNB finds the gNB's radio configuration, in its folder, and
+# where the gNB writes it (--do-ra: its working directory).
+RRC_DIR = "./rrc"
+GNB_RRC_FILES = ("/opt/oai-gnb/reconfig.raw", "/opt/oai-gnb/rbconfig.raw")
+
+
 def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw_node=False, relay=False, split=None,
-                 peer_opts=(), cell_files=("./gnb.conf", "./nr-ue.conf")):
+                 peer_opts=(), cell_files=("./gnb.conf", "./nr-ue.conf"), machines=Machines()):
     """The 5G room; with reader "gnb" (topologies 1 and 3) or "ue" (topologies 2 and 4), that node is
     the Reader, with reader_opts, and there is no Reader of Amber's; with cw_node, amber-reader is the
     CW node; with relay (topology 2), amber.sink takes the UE's Tag data in the gNB's network; with
     split (topology 3), the UE sends the gNB's R2D or receives its D2R, with peer_opts. cell_files are
-    the gNB's and the UE's configuration files, from the room's folder."""
+    the gNB's and the UE's configuration files, from the room's folder.
+
+    {file name: text}: docker-compose.yaml, or with machines of [network.hosts], one
+    docker-compose.<machine>.yaml per machine, the hub's first."""
     def cmd(words):  # a command as one YAML flow list
         return json.dumps(words)
 
     def prbs(name, prb_list):
         return [f"--gNBs.[0].{name} {','.join(str(p) for p in prb_list)}"] if prb_list else []
 
+    def rfsim(node, port):
+        return ["--rfsimulator.[0].serveraddr", machines.hub_addr(node), "--rfsimulator.[0].serverport", str(port)]
+
+    def fixed(node, addr):  # the node's address in the room's network, on the hub's machine
+        if not machines.with_hub(node):
+            return ["        networks: [public_net]"]
+        return ["        networks:", "            public_net:", f"                ipv4_address: {addr}"]
+
+    def after(node, other, service):  # wait for another service, when it runs on the same machine
+        return [f"        depends_on: [{service}]"] if machines.host(node) == machines.host(other) else []
+
     amber_volumes = ["amber.out:/out"]
     if scenario_path.startswith(ROOM + "/"):
         amber_volumes.append(f".:{ROOM}:ro")
     amber = ["--amber.block_bytes", str(AMBER_BLOCK_BYTES), "--amber.output_dir", "/out", "--amber.scenario", scenario_path]
-    rfsim = lambda port: ["--rfsimulator.[0].serveraddr", HUB_ADDR, "--rfsimulator.[0].serverport", str(port)]
     dl_free, ul_free = prb_blacklists(reader, split)
-    gnb_opts = " ".join(["-E --do-ra --rfsim --noS1"] + rfsim(GNB_PORT) +
+    gnb_opts = " ".join(["-E --do-ra --rfsim --noS1"] + rfsim("gnb", GNB_PORT) +
                         prbs("dl_prbblacklist", dl_free) + prbs("ul_prbblacklist", ul_free) +
                         [f"--L1s.[0].prach_dtx_threshold {PRACH_THRESHOLD}"] +
                         ([f"--MACRLCs.[0].ulsch_max_frame_inactivity {T3_UL_INACTIVITY_FRAMES}"] if split else []) +
                         (list(reader_opts) if reader == "gnb" else []) + LOG)
     ue_opts = " ".join(["-E --do-ra --rfsim --noS1 --reconfig-file etc/rrc/reconfig.raw --rbconfig-file etc/rrc/rbconfig.raw"]
-                       + rfsim(UE_PORT) + (list(reader_opts) if reader == "ue" else list(peer_opts)) + LOG)
+                       + rfsim("ue", UE_PORT) + (list(reader_opts) if reader == "ue" else list(peer_opts)) + LOG)
+    ue_rrc = "rrc.config:/opt/oai-nr-ue/etc/rrc/" if machines.host("gnb") == machines.host("ue") else \
+        f"{RRC_DIR}:/opt/oai-nr-ue/etc/rrc/:ro  # reconfig.raw and rbconfig.raw, from the gNB's machine"
     whose = {"gnb": "whose gNB is the Ambient IoT Reader of {} Tags (topology 1),",
              "ue": ("whose UE is the Ambient IoT Reader of {} Tags and sends their data to the gNB (topology 2),"
                     if relay else "whose UE is the Ambient IoT Reader of {} Tags (topology 4),"),
@@ -468,22 +527,17 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
     if split:
         whose = ("whose gNB is the Ambient IoT Reader of {} Tags and whose UE " +
                  ("sends its R2D" if split == "r2d" else "receives its D2R") + " (topology 3),")
-    lines = [
+    head = [
         "# SPDX-License-Identifier: MIT",
         f"# Written by amber-compose from {json.dumps(scenario_path)}",
         "#",
         "# A 5G cell (gNB and UE, --do-ra --noS1) " + whose.format(len(node_ids)),
         ("# with a CW node in the UL band, through rfsim_hub. See README.md in this folder." if cw_node else
          "# through rfsim_hub. See README.md in this folder."),
-        "",
-        "x-amber: &amber",
-        f"    image: ${{AMBER_IMG:-{image}}}",
-        "    init: true",
-        "    depends_on: [rfsim-hub]",
-        f"    volumes: {json.dumps(amber_volumes)}",
-        "    networks: [public_net]",
-        "",
-        "services:",
+    ]
+
+    # (node, lines) of each service, in the order of the compose file
+    services = [("hub", [
         "    rfsim-hub:",
         f"        image: ${{AMBER_IMG:-{image}}}",
         "        container_name: rfsim5g-aiot-hub",
@@ -493,7 +547,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        networks:",
         "            public_net:",
         f"                ipv4_address: {HUB_ADDR}",
-        "",
+    ]), ("gnb", [
         "    oai-gnb:",
         "        image: ${REGISTRY-oaisoftwarealliance/}${GNB_IMG:-oai-gnb}:${TAG:-develop}",
         "        container_name: rfsim5g-oai-gnb",
@@ -502,10 +556,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        environment:",
         f"            USE_ADDITIONAL_OPTIONS: {gnb_opts}",
         "            ASAN_OPTIONS: detect_leaks=0",
-        "        depends_on: [rfsim-hub]",
-        "        networks:",
-        "            public_net:",
-        f"                ipv4_address: {GNB_ADDR}",
+    ] + after("gnb", "hub", "rfsim-hub") + fixed("gnb", GNB_ADDR) + [
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
         f"            - {cell_files[0]}:/opt/oai-gnb/etc/gnb.conf",
@@ -516,7 +567,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "            interval: 10s",
         "            timeout: 5s",
         "            retries: 5",
-        "",
+    ]), ("ue", [
         "    oai-nr-ue:",
         "        image: ${REGISTRY-oaisoftwarealliance/}${NRUE_IMG:-oai-nr-ue}:${TAG:-develop}",
         "        container_name: rfsim5g-oai-nr-ue",
@@ -528,54 +579,103 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
         f"            - {cell_files[1]}:/opt/oai-nr-ue/etc/nr-ue.conf",
-        "            - rrc.config:/opt/oai-nr-ue/etc/rrc/",
-    ] + (["            - amber.out:/out  # the Reader's records"] if reader == "ue" else []) + [
-        "        depends_on: [oai-gnb]",
-        "        networks:",
-        "            public_net:",
-        f"                ipv4_address: {UE_ADDR}",
+        f"            - {ue_rrc}",
+    ] + (["            - amber.out:/out  # the Reader's records"] if reader == "ue" else []) +
+        after("ue", "gnb", "oai-gnb") + fixed("ue", UE_ADDR) + [
         "        healthcheck:",
         "            test: /bin/bash -c \"pgrep nr-uesoftmodem\"",
         "            interval: 10s",
         "            timeout: 5s",
         "            retries: 5",
-    ]
+    ])]
     if reader is None:
-        lines += ["",
-                  "    amber-reader:",
-                  "        <<: *amber",
-                  "        container_name: rfsim5g-aiot-reader",
-                  f"        command: {cmd(['amber-reader'] + rfsim(READER_PORT) + amber + LOG)}"]
+        services.append(("reader", [
+            "    amber-reader:",
+            "        <<: *amber",
+            "        container_name: rfsim5g-aiot-reader",
+            f"        command: {cmd(['amber-reader'] + rfsim('reader', READER_PORT) + amber + LOG)}"]))
     if relay:
-        lines += ["",
-                  "    amber-sink:",
-                  f"        image: ${{AMBER_IMG:-{image}}}",
-                  "        container_name: rfsim5g-aiot-sink",
-                  "        init: true",
-                  "        network_mode: \"service:oai-gnb\"  # the gNB's end of the UE's user plane",
-                  "        depends_on: [oai-gnb]",
-                  f"        command: {cmd(['python3', '-m', 'amber.sink', '--port', str(SINK_PORT), '--output_dir', '/out'])}",
-                  "        volumes: [\"amber.out:/out\"]"]
+        services.append(("gnb", [
+            "    amber-sink:",
+            f"        image: ${{AMBER_IMG:-{image}}}",
+            "        container_name: rfsim5g-aiot-sink",
+            "        init: true",
+            "        network_mode: \"service:oai-gnb\"  # the gNB's end of the UE's user plane",
+            "        depends_on: [oai-gnb]",
+            f"        command: {cmd(['python3', '-m', 'amber.sink', '--port', str(SINK_PORT), '--output_dir', '/out'])}",
+            "        volumes: [\"amber.out:/out\"]"]))
     if cw_node:
-        lines += ["",
-                  "    amber-cw:",
-                  "        <<: *amber",
-                  "        container_name: rfsim5g-aiot-cw",
-                  f"        command: {cmd(['amber-reader', '--amber.role', 'carrier'] + rfsim(CW_PORT) + amber + LOG)}"]
+        services.append(("cw", [
+            "    amber-cw:",
+            "        <<: *amber",
+            "        container_name: rfsim5g-aiot-cw",
+            f"        command: {cmd(['amber-reader', '--amber.role', 'carrier'] + rfsim('cw', CW_PORT) + amber + LOG)}"]))
     for i, n in enumerate(node_ids):
-        lines += ["", f"    amber-tag{n}:", "        <<: *amber", f"        container_name: rfsim5g-aiot-tag{n}",
-                  f"        command: {cmd(['amber-tag', '--amber.node_id', str(n)] + rfsim(FIRST_TAG_PORT + i) + amber + LOG)}"]
-    lines += ["", "volumes:", "    rrc.config:", "    amber.out:", "",
-              "networks:",
-              "    public_net:",
-              "        driver: bridge",
-              "        name: rfsim5g-oai-public-net",
-              "        ipam:",
-              "            config:",
-              f"                - subnet: {subnet(len(node_ids))}",
-              "        driver_opts:",
-              "            com.docker.network.bridge.name: \"rfsim5g-public\""]
-    return "\n".join(lines) + "\n"
+        services.append(("tags", [
+            f"    amber-tag{n}:", "        <<: *amber", f"        container_name: rfsim5g-aiot-tag{n}",
+            f"        command: {cmd(['amber-tag', '--amber.node_id', str(n)] + rfsim('tags', FIRST_TAG_PORT + i) + amber + LOG)}"]))
+    ports = {"gnb": [GNB_PORT], "ue": [UE_PORT], "reader": [READER_PORT], "cw": [CW_PORT],
+             "tags": [FIRST_TAG_PORT + i for i in range(len(node_ids))]}
+
+    def anchor(hub_here):
+        return ["x-amber: &amber",
+                f"    image: ${{AMBER_IMG:-{image}}}",
+                "    init: true"] + (["    depends_on: [rfsim-hub]"] if hub_here else []) + [
+                f"    volumes: {json.dumps(amber_volumes)}",
+                "    networks: [public_net]",
+                ""]
+
+    def room_net(n_tags):  # the room's network, with the hub's fixed address
+        return ["    public_net:",
+                "        driver: bridge",
+                "        name: rfsim5g-oai-public-net",
+                "        ipam:",
+                "            config:",
+                f"                - subnet: {subnet(n_tags)}",
+                "        driver_opts:",
+                "            com.docker.network.bridge.name: \"rfsim5g-public\""]
+
+    def text(about, mine, anchored, hub_here, volumes, network):
+        lines = head + about + [""] + (anchor(hub_here) if anchored else []) + ["services:"]
+        for i, (_, svc) in enumerate(mine):
+            lines += ([""] if i else []) + svc
+        if volumes:
+            lines += ["", "volumes:"] + [f"    {v}:" for v in volumes]
+        lines += ["", "networks:"] + network
+        return "\n".join(lines) + "\n"
+
+    amber_nodes = ("reader", "cw", "tags")
+    if not machines.several:
+        return {compose_name(): text([], services, True, True, ["rrc.config", "amber.out"], room_net(len(node_ids)))}
+
+    hosts = []
+    for node, _ in services:
+        if machines.host(node) not in hosts:
+            hosts.append(machines.host(node))
+    hub_host = machines.host("hub")
+    remote = [n for n in ports if any(node == n for node, _ in services) and not machines.with_hub(n)]
+    files = {}
+    for host in hosts:
+        mine = [(node, list(svc)) for node, svc in services if machines.host(node) == host]
+        nodes = {node for node, _ in mine}
+        if host == hub_host and remote:
+            published = [p for n in remote for p in ports[n]]
+            mine[0][1].insert(len(mine[0][1]) - 3, f"        ports: {json.dumps([f'{p}:{p}' for p in published])}"
+                              "  # for the nodes of the other machines")
+        about = ["#", f"# The part of the room that runs on {host}" +
+                 (", with the hub." if host == hub_host else f"; the hub runs on {hub_host}, ports open to this machine.")]
+        if "ue" in nodes and machines.host("gnb") != host:
+            about += [f"# Start the gNB's machine first, then copy its {' and '.join(GNB_RRC_FILES)} (docker cp",
+                      f"# rfsim5g-oai-gnb:FILE) into {RRC_DIR} next to this file, then start this one."]
+        anchored = bool(nodes & set(amber_nodes))
+        records = anchored or any("amber.out:/out" in line for _, svc in mine for line in svc)
+        volumes = (["rrc.config"] if "gnb" in nodes else []) + (["amber.out"] if records else [])
+        if host == hub_host:
+            network = room_net(len(node_ids))
+        else:
+            network = ["    public_net:", "        driver: bridge", f"        name: rfsim5g-aiot-{host_label(host)}"]
+        files[compose_name(host)] = text(about, mine, anchored, host == hub_host, volumes, network)
+    return files
 
 
 def cell_file(name):
@@ -667,15 +767,15 @@ def main():
         else:
             cell_files = ("./gnb.conf", "./nr-ue.conf")
             copies = {"gnb.conf": cell_file(gnb_conf), "nr-ue.conf": cell_file(ue_conf)}
+        machines = Machines(network)
         if reader:
-            files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image, reader,
-                                                         reader_options(scenario, node_ids, reader),
-                                                         network.cw == "cw-node-ul", network.relay, split,
-                                                         peer_options(scenario) if split else (), cell_files),
-                     "rfsim_hub.conf": hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)}
+            files = room_compose(scenario_path, node_ids, args.image, reader, reader_options(scenario, node_ids, reader),
+                                 network.cw == "cw-node-ul", network.relay, split,
+                                 peer_options(scenario) if split else (), cell_files, machines)
+            files["rfsim_hub.conf"] = hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)
         else:
-            files = {"docker-compose.yaml": room_compose(scenario_path, node_ids, args.image, cell_files=cell_files),
-                     "rfsim_hub.conf": hub_conf(scenario_path, node_ids)}
+            files = room_compose(scenario_path, node_ids, args.image, cell_files=cell_files, machines=machines)
+            files["rfsim_hub.conf"] = hub_conf(scenario_path, node_ids)
     for name, text in files.items():
         with open(os.path.join(room, name), "w") as f:
             f.write(text)
