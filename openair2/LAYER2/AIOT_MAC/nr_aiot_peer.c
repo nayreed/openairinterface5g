@@ -178,12 +178,6 @@ static int clamp(int64_t v, int lo, int hi)
   return (int)cmax((int64_t)lo, cmin(v, (int64_t)hi));
 }
 
-static void stat_add(int64_t v, int64_t *sum, int64_t *min)
-{
-  *sum += v;
-  *min = cmin(*min, v);
-}
-
 static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
 {
   aiot_node_r2d_t *m = &p->r2d_msg;
@@ -198,7 +192,7 @@ static void on_r2d(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
   const int ahead = now >= 0 ? nr_aiot_cell_slot_diff(now, m->frame * AIOT_CELL_SLOTS_PER_FRAME + m->slot) : 0;
   nr_aiot_peer_stats_t *s = &p->stats;
   s->r2ds++;
-  stat_add(ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
+  aiot_node_stat_add(ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
   if (rc == NR_AIOT_R2D_ETOOLATE) {
     s->r2d_too_late++;
   } else if (rc < 0) {
@@ -269,7 +263,7 @@ static void on_window(nr_aiot_peer_t *p, const struct sockaddr_in *from, int n)
     return;
   }
   const int64_t ahead = e.start - nr_aiot_d2r_received_until(p->d2r);
-  stat_add(ahead, &s->window_ahead_sum, &s->window_ahead_min);
+  aiot_node_stat_add(ahead, &s->window_ahead_sum, &s->window_ahead_min);
   if (ahead < 0)
     s->windows_late++;
   window_t *slot = &p->windows[p->next_local % MAX_WINDOWS];

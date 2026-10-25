@@ -658,12 +658,6 @@ static void set_lead(nr_aiot_reader_t *r, int64_t lead)
   r->lead = (int)cmin(lead, (int64_t)NR_AIOT_READER_MAX_LEAD_SLOTS);
 }
 
-static void stat_add(int64_t v, int64_t *sum, int64_t *min)
-{
-  *sum += v;
-  *min = cmin(*min, v);
-}
-
 static void stat_add_max(int64_t v, int64_t *sum, int64_t *max)
 {
   *sum += v;
@@ -766,7 +760,7 @@ static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
       s->r2d_early_late++;
     return;
   }
-  stat_add(d.ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
+  aiot_node_stat_add(d.ahead, &s->r2d_ahead_sum, &s->r2d_ahead_min);
   stat_add_max(now - r->sent_at[d.seq % SENT_RING], &s->r2d_rtt_sum, &s->r2d_rtt_max);
   if (d.result == NR_AIOT_R2D_ETOOLATE) {
     s->too_late++;
@@ -834,7 +828,7 @@ static int on_outcome(nr_aiot_reader_t *r, int n, int64_t now)
     if (o->ahead < 0)
       s->windows_early_late++;
   } else {
-    stat_add(o->ahead, &s->window_ahead_sum, &s->window_ahead_min);
+    aiot_node_stat_add(o->ahead, &s->window_ahead_sum, &s->window_ahead_min);
     stat_add_max(now - (w->deadline - WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES), &s->outcome_delay_sum, &s->outcome_delay_max);
     if (o->ahead < 0) {
       /* the UE opened it after its receiver had passed its start, and decoded what was left: the lead
