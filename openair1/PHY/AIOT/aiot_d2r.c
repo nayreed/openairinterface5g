@@ -39,8 +39,10 @@
 /* The search looks this many samples past each end of the +-te window; a peak there is a frame
  * starting outside the window, not one in it. */
 #define SEARCH_GUARD 1
-/* V at most: the largest E and a midamble of 31 every 48 bits */
-#define AIOT_D2R_MAX_V (AIOT_MAX_E_BITS + 130 * 31)
+#define MIN_I_BIT 48 /* the smallest I_bit (38.391 Table 6.2.1.6-1) */
+#define MAX_L_AMBLE 31
+/* V at most: the largest E, the preamble, a midamble every I_bit and the additional one */
+#define AIOT_D2R_MAX_V (AIOT_MAX_E_BITS + (2 + AIOT_MAX_E_BITS / MIN_I_BIT) * MAX_L_AMBLE)
 
 /* ---------------------------------------------------------------------------------------------
  * Transmitter
@@ -129,7 +131,7 @@ int aiot_d2r_assemble(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
   if (n_v > max_v)
     return AIOT_ESPACE;
   uint8_t e[AIOT_MAX_E_BITS];
-  uint8_t amble[31];
+  uint8_t amble[MAX_L_AMBLE];
   int lay[AIOT_D2R_MAX_V];
   if (n_v > sizeofArray(lay))
     return AIOT_ESPACE;
@@ -552,8 +554,8 @@ static int decode_shift(const cd_t *buf,
       pat[c * cs + s] = (c & 1) ? -1.0 : 1.0;
   /* The reference: the frame's ambles at their places (+-1 per bit) */
   aiot_d2r_amble_layout(n_e, &p, lay, n_bits);
-  uint8_t mseq[31];
-  double amble[31];
+  uint8_t mseq[MAX_L_AMBLE];
+  double amble[MAX_L_AMBLE];
   aiot_m_sequence(l, mseq);
   for (int i = 0; i < l; i++) {
     amble[i] = 1.0 - 2.0 * mseq[i];
