@@ -16,7 +16,9 @@
  *               heard. The AS IDs whose data was not heard get a NACK Feedback right after that
  *               Random ID Response: the Tag releases its AS ID and finds its procedure failed
  *               (5.5.2), so it joins again at the next paging instead of waiting for a poll that
- *               never comes.
+ *               never comes. A Tag that missed the NACK keeps the AS ID and ignores the pagings, so
+ *               those AS IDs are also polled, up to AIOT_REGISTRATION_UNCONFIRMED_POLLS times: a
+ *               poll answered registers the AS ID, and one never answered is dropped.
  * broadcast     Each frame: a CBRA paging with a new Transaction ID, so every Tag answers again,
  *               offering 2^occasions_exp access occasions over the paging and its Access Triggers;
  *               every Msg1 decoded is answered, which brings that Tag's data.
@@ -96,7 +98,7 @@ static int within(const char *name, double v, double lo, double hi, char *err, i
 /* -- registration ----------------------------------------------------------------------------- */
 
 /* the AS IDs polled, as many as the protocol state holds next to the rest (asserted below) */
-#define MAX_REGISTERED 4000
+#define MAX_REGISTERED 3900
 
 typedef struct {
   bool started, polling, nacked;
@@ -104,6 +106,11 @@ typedef struct {
   int tid, i, n;
   int n_registered, j;
   uint16_t registered[MAX_REGISTERED];
+  /* the AS IDs NACKed and not heard since: their Tag may have missed the NACK (see the top) */
+  int n_unconfirmed;
+  uint16_t unconfirmed[AIOT_MAC_MAX_NACK_IDS];
+  uint8_t polls_left[AIOT_MAC_MAX_NACK_IDS];
+  bool answered[AIOT_MAC_MAX_NACK_IDS];
 } registration_t;
 
 /* true when as_id is, or now is, in the list; false when the list is full */
@@ -116,6 +123,44 @@ static bool registration_add(registration_t *s, int as_id)
     return false;
   s->registered[s->n_registered++] = (uint16_t)as_id;
   return true;
+}
+
+static void registration_unconfirmed(registration_t *s, int as_id)
+{
+  for (int u = 0; u < s->n_unconfirmed; u++)
+    if (s->unconfirmed[u] == as_id)
+      return;
+  if (s->n_unconfirmed == AIOT_MAC_MAX_NACK_IDS)
+    return;
+  s->unconfirmed[s->n_unconfirmed] = (uint16_t)as_id;
+  s->polls_left[s->n_unconfirmed] = AIOT_REGISTRATION_UNCONFIRMED_POLLS;
+  s->answered[s->n_unconfirmed] = false;
+  s->n_unconfirmed++;
+}
+
+/* After the polls: an unconfirmed AS ID that answered is registered, one out of polls is dropped. */
+static void registration_settle(registration_t *s)
+{
+  int kept = 0;
+  for (int u = 0; u < s->n_unconfirmed; u++) {
+    if (s->answered[u] && registration_add(s, s->unconfirmed[u]))
+      continue;
+    if (s->answered[u] || s->polls_left[u] == 0)
+      continue; /* the list is full, or nobody holds that AS ID */
+    s->unconfirmed[kept] = s->unconfirmed[u];
+    s->polls_left[kept] = s->polls_left[u];
+    s->answered[kept] = false;
+    kept++;
+  }
+  s->n_unconfirmed = kept;
+}
+
+static bool data_from(const aiot_reader_heard_t *h, int as_id)
+{
+  for (int a = 0; h && a < h->n_answers; a++)
+    if (h->answers[a].kind == AIOT_ANSWER_DATA && h->answers[a].as_id == as_id)
+      return true;
+  return false;
 }
 
 static int registration_check(const double *p, char *err, int err_len)
@@ -162,13 +207,12 @@ static int registration_step(void *state,
       for (int k = 0; k < h2->sent.n_entries; k++) {
         const aiot_mac_rid_entry_t *e = &h2->sent.entries[k];
         const int as_id = e->assigned_as_id >= 0 ? e->assigned_as_id : e->echoed_random_id;
-        int heard = 0;
-        for (int a = 0; a < h2->n_answers && !heard; a++)
-          heard = h2->answers[a].kind == AIOT_ANSWER_DATA && h2->answers[a].as_id == as_id;
-        if (heard && registration_add(s, as_id))
+        if (data_from(h2, as_id) && registration_add(s, as_id))
           continue;
-        if (nack.msg.n_as_ids < AIOT_MAC_MAX_NACK_IDS)
+        if (nack.msg.n_as_ids < AIOT_MAC_MAX_NACK_IDS) {
           nack.msg.as_ids[nack.msg.n_as_ids++] = as_id;
+          registration_unconfirmed(s, as_id);
+        }
       }
       if (nack.msg.n_as_ids > 0) {
         *next = nack;
@@ -183,20 +227,31 @@ static int registration_step(void *state,
     s->polling = true;
     s->j = 0;
   } else {
+    const int u = s->j - s->n_registered;
+    if (u >= 0 && data_from(h1, s->unconfirmed[u]))
+      s->answered[u] = true; /* the Tag missed its NACK and kept the AS ID */
     s->j++;
   }
-  if (s->j < s->n_registered) {
+  /* the registered AS IDs, then the unconfirmed ones */
+  const int u = s->j - s->n_registered;
+  if (u < s->n_unconfirmed) {
     aiot_sched_info_t uni;
     if (aiot_link_unicast(ctx->cfg, 0, 0, &uni) < 0)
       return 0;
     memset(next, 0, sizeof(*next));
     next->msg.kind = AIOT_R2D_UPPER_LAYER_DATA;
-    next->msg.as_id = s->registered[s->j];
+    if (u < 0) {
+      next->msg.as_id = s->registered[s->j];
+    } else {
+      next->msg.as_id = s->unconfirmed[u];
+      s->polls_left[u]--;
+    }
     next->msg.sched = uni;
     next->msg.has_sdu = 0;
     next->msg.received_data_size = 0;
     return 1;
   }
+  registration_settle(s);
   s->polling = false;
   s->i = 0;
   registration_join(s, p, next);

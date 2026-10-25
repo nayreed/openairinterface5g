@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "aiot_mac.h"
+#include "aiot_protocols.h"
 
 namespace {
 
@@ -85,6 +86,7 @@ struct Air {
   int unmatched = 0; /* D2Rs no window of the Reader caught */
   int late_r2d = 0; /* R2Ds that started before a D2R had ended */
   int lose_ridr = 0; /* the next Random ID Responses whose answers the air loses */
+  int lose_nack = 0; /* the next NACK Feedbacks no device gets */
 
   Air(const char *protocol, std::vector<aiot_param_t> params, int n_nodes, const aiot_link_config_t &cfg = default_link())
   {
@@ -131,7 +133,10 @@ struct Air {
     aiot_mac_r2d_msg_t msg;
     EXPECT_EQ(aiot_mac_parse_r2d(r2d.bits, r2d.n_bits, &msg), 0);
     std::vector<Sent> sent;
+    const bool unheard = msg.kind == AIOT_R2D_NACK_FEEDBACK && lose_nack > 0 && lose_nack--;
     for (auto &n : nodes) {
+      if (unheard)
+        break;
       Sent s;
       if (aiot_device_on_r2d(n->mac, &msg, &s.s) == 1) {
         s.at = end + aiot_device_send_offset(&s.s, 6);
@@ -345,8 +350,8 @@ TEST(Reader, RegistrationNacksATagWhoseFirstDataWasLost)
     nacked.insert(nack.as_ids[i]);
   }
 
-  /* every node joined again and sent data; no poll goes to an AS ID that was NACKed, and every
-   * poll is answered */
+  /* every node joined again and sent data, and holds an AS ID that was not NACKed. A NACKed AS ID
+   * is polled a few times, unanswered, then no more; every other poll is answered. */
   const std::vector<int> from = air.data_from();
   for (auto &n : air.nodes) {
     EXPECT_NE(std::find(from.begin(), from.end(), n->id), from.end()) << "no data from node " << n->id;
@@ -356,13 +361,62 @@ TEST(Reader, RegistrationNacksATagWhoseFirstDataWasLost)
     EXPECT_EQ(nacked.count(st.as_id), 0u);
   }
   int polls = 0;
+  std::map<int, int> nacked_polls;
   for (auto &h : air.heard)
     if (h->sent.kind == AIOT_R2D_UPPER_LAYER_DATA) {
       polls++;
-      EXPECT_EQ(nacked.count(h->sent.as_id), 0u);
-      EXPECT_EQ(h->n_answers, 1);
+      if (nacked.count(h->sent.as_id)) {
+        nacked_polls[h->sent.as_id]++;
+        EXPECT_EQ(h->n_answers, 0);
+      } else {
+        EXPECT_EQ(h->n_answers, 1);
+      }
     }
   EXPECT_GT(polls, 6);
+  for (int as_id : nacked)
+    EXPECT_EQ(nacked_polls[as_id], AIOT_REGISTRATION_UNCONFIRMED_POLLS) << "AS ID " << as_id;
+}
+
+// The NACK Feedback is lost too: the Tag keeps the AS ID whose data the Reader did not hear, and
+// ignores every later paging of the run's one Transaction ID (38.391 5.2), so only a poll of that
+// AS ID reaches it. The Reader polls it: the Tag answers and is registered with it.
+TEST(Reader, RegistrationPollsATagThatMissedItsNack)
+{
+  Air air("registration", {{"occasions_exp", 3}}, 6);
+  air.lose_ridr = 1;
+  air.lose_nack = 1;
+  air.run(120);
+  EXPECT_EQ(air.lose_ridr, 0);
+  EXPECT_EQ(air.lose_nack, 0);
+  EXPECT_EQ(air.unmatched, 0);
+
+  size_t first = 0;
+  while (first < air.heard.size() && air.heard[first]->sent.kind != AIOT_R2D_RANDOM_ID_RESPONSE)
+    first++;
+  ASSERT_LT(first + 1, air.heard.size());
+  const aiot_mac_r2d_msg_t &ridr = air.heard[first]->sent;
+  ASSERT_EQ(air.heard[first + 1]->sent.kind, AIOT_R2D_NACK_FEEDBACK);
+  std::set<int> given;
+  for (int i = 0; i < ridr.n_entries; i++)
+    given.insert(ridr.entries[i].assigned_as_id);
+  ASSERT_FALSE(given.empty());
+
+  const std::vector<int> from = air.data_from();
+  for (auto &n : air.nodes) {
+    EXPECT_NE(std::find(from.begin(), from.end(), n->id), from.end()) << "no data from node " << n->id;
+    aiot_device_state_t st;
+    aiot_device_state(n->mac, &st);
+    EXPECT_GE(st.as_id, 1);
+  }
+  /* the AS IDs of that Random ID Response are kept by their Tags and polled on, every poll answered */
+  std::map<int, int> polls;
+  for (auto &h : air.heard)
+    if (h->sent.kind == AIOT_R2D_UPPER_LAYER_DATA) {
+      polls[h->sent.as_id]++;
+      EXPECT_EQ(h->n_answers, 1) << "poll of AS ID " << h->sent.as_id;
+    }
+  for (int as_id : given)
+    EXPECT_GT(polls[as_id], AIOT_REGISTRATION_UNCONFIRMED_POLLS) << "AS ID " << as_id;
 }
 
 // Every Tag's data is heard: no NACK Feedback is sent.
