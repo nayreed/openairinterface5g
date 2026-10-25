@@ -62,32 +62,23 @@ static int forced(int m, int chip)
 int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t *chips, int max_chips)
 {
   int m = m_chip_symb;
-  if (!aiot_m_valid(m) || a_bits < 0 || (a_bits && !tb_bits) || !chips)
+  if (!aiot_m_valid(m) || a_bits < 0 || a_bits > AIOT_MAX_TB_BITS || (a_bits && !tb_bits) || !chips)
     return AIOT_EINVAL;
   int len = a_bits + aiot_crc_length(a_bits);
-  uint8_t *body = malloc((size_t)(2 * len + 4));
-  if (!body)
-    return AIOT_ENOMEM;
-  uint8_t *tmp = malloc((size_t)len);
-  if (!tmp) {
-    free(body);
-    return AIOT_ENOMEM;
-  }
   /* 6.2.2: CRC, then Manchester, then the postamble (6.2.4) */
   static const uint8_t none = 0;
-  aiot_attach_crc(a_bits ? tb_bits : &none, a_bits, tmp);
-  aiot_manchester(tmp, len, body);
-  free(tmp);
-  memcpy(body + 2 * len, POSTAMBLE, 4);
-  int body_n = 2 * len + 4;
+  uint8_t word[AIOT_MAX_WORD_BITS];
+  aiot_attach_crc(a_bits ? tb_bits : &none, a_bits, word);
+  uint8_t body[2 * AIOT_MAX_WORD_BITS + sizeof(POSTAMBLE)];
+  aiot_manchester(word, len, body);
+  memcpy(body + 2 * len, POSTAMBLE, sizeof(POSTAMBLE));
+  int body_n = 2 * len + sizeof(POSTAMBLE);
 
-  int n = 0, rc = 0;
+  int n = 0;
 #define PUT(c)            \
   do {                    \
-    if (n >= max_chips) { \
-      rc = AIOT_ESPACE;   \
-      goto done;          \
-    }                     \
+    if (n >= max_chips)   \
+      return AIOT_ESPACE; \
     chips[n++] = (c);     \
   } while (0)
   for (int i = 0; i < AIOT_N_SIP; i++)
@@ -108,10 +99,7 @@ int aiot_r2d_chips(const uint8_t *tb_bits, int a_bits, int m_chip_symb, uint8_t 
     PUT(pad);
   }
 #undef PUT
-  rc = n;
-done:
-  free(body);
-  return rc;
+  return n;
 }
 
 int aiot_r2d_n_symbols(int n_chips, int m_chip_symb)
@@ -269,7 +257,7 @@ int aiot_r2d_transmission(const uint8_t *tb_bits, int a_bits, int m_chip_symb, i
 #define SIP_MARGIN 0.25 /* how far each SIP chip must be from the threshold, as a share of the on-off gap */
 #define SIP_LEN (2 * AIOT_N_FFT + AIOT_CP_LONG + AIOT_CP_SHORT) /* the SIP's two symbols with their CPs */
 #define TMPL_DEC (SIP_LEN / DECIM)
-#define MAX_BITS (8 * AIOT_MAX_TBS_BYTES + 16 + 8) /* the largest R2D TB and its CRC, plus one byte */
+#define MAX_BITS (AIOT_MAX_WORD_BITS + 8) /* the largest R2D TB and its CRC, plus one byte */
 
 struct aiot_r2d_rx {
   double *env; /* squared envelope not yet consumed */
