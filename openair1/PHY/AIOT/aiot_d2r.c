@@ -31,7 +31,7 @@
 #include <string.h>
 
 #include "aiot_phy.h"
-#include "common/utils/utils.h" /* cmin, cmax */
+#include "common/utils/utils.h" /* cmin, cmax, sizeofArray */
 
 /* A preamble is accepted when its correlation reaches this SNR over the noise measured on the
  * frame's ambles, after the bit correlation. */
@@ -39,7 +39,6 @@
 /* The search looks this many samples past each end of the +-te window; a peak there is a frame
  * starting outside the window, not one in it. */
 #define SEARCH_GUARD 1
-#define PI 3.14159265358979323846
 /* V at most: the largest E and a midamble of 31 every 48 bits */
 #define AIOT_D2R_MAX_V (AIOT_MAX_E_BITS + 130 * 31)
 
@@ -132,7 +131,7 @@ int aiot_d2r_assemble(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
   uint8_t e[AIOT_MAX_E_BITS];
   uint8_t amble[31];
   int lay[AIOT_D2R_MAX_V];
-  if ((size_t)n_v > sizeof(lay) / sizeof(lay[0]))
+  if (n_v > sizeofArray(lay))
     return AIOT_ESPACE;
   aiot_d2r_coded_bits(tb_bits, a_bits, p, e, (int)sizeof(e));
   aiot_m_sequence(p->l_amble, amble);
@@ -212,7 +211,7 @@ static int fft_plan(fft_plan_t *f, size_t n)
   if (!f->tw)
     return AIOT_ENOMEM;
   for (size_t k = 0; k < n / 2; k++) {
-    double a = -2.0 * PI * (double)k / (double)n;
+    double a = -2.0 * M_PI * (double)k / (double)n;
     f->tw[k].r = cos(a);
     f->tw[k].i = sin(a);
   }

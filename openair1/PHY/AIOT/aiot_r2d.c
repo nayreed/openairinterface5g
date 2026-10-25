@@ -29,15 +29,14 @@
 #include <string.h>
 
 #include "aiot_phy.h"
-
-#define PI 3.14159265358979323846
+#include "common/utils/utils.h" /* sizeofArray */
 
 static const uint8_t SIP[AIOT_N_SIP] = {1, 1, 0, 0, 1, 0, 0, 0}; /* 6.2.3.1 */
 static const uint8_t CAP[AIOT_N_CAP] = {1, 0, 1, 0}; /* 6.2.3.2 */
 static const uint8_t POSTAMBLE[4] = {1, 1, 1, 1}; /* 6.2.4 */
-static const int M_LIST[4] = {2, 6, 12, 24};
+static const int M_LIST[] = {2, 6, 12, 24};
 
-#define MAX_RB 32 /* N_RB x 12 subcarriers must fit in the 384-point symbol */
+#define MAX_RB (AIOT_N_FFT / AIOT_SC_PER_RB) /* the N_RB x 12 subcarriers must fit in the symbol */
 
 /* ---------------------------------------------------------------------------------------------
  * Transmitter
@@ -148,8 +147,8 @@ int aiot_r2d_resource_elements(const uint8_t *chips, int n_chips, int m_chip_sym
   const int N = AIOT_N_FFT;
   double wc[AIOT_N_FFT], ws[AIOT_N_FFT];
   for (int i = 0; i < N; i++) {
-    wc[i] = cos(2.0 * PI * i / N);
-    ws[i] = sin(2.0 * PI * i / N);
+    wc[i] = cos(2.0 * M_PI * i / N);
+    ws[i] = sin(2.0 * M_PI * i / N);
   }
   uint8_t x[AIOT_N_FFT];
   for (int l = 0; l < n_sym; l++) {
@@ -206,8 +205,8 @@ int aiot_r2d_waveform(const uint8_t *chips, int n_chips, int m_chip_symb, int n_
   /* Each symbol: the inverse DFT of its K subcarriers, then the cyclic prefix. */
   double wc[AIOT_N_FFT], ws[AIOT_N_FFT];
   for (int i = 0; i < N; i++) {
-    wc[i] = cos(2.0 * PI * i / N);
-    ws[i] = sin(2.0 * PI * i / N);
+    wc[i] = cos(2.0 * M_PI * i / N);
+    ws[i] = sin(2.0 * M_PI * i / N);
   }
   cd_t u[AIOT_N_FFT];
   int pos = 0;
@@ -315,7 +314,7 @@ aiot_r2d_rx_t *aiot_r2d_rx_new(void)
   memcpy(chips, SIP, AIOT_N_SIP);
   chips[AIOT_N_SIP] = chips[AIOT_N_SIP + 1] = 0;
   cd_t wave[3 * (AIOT_N_FFT + AIOT_CP_LONG)];
-  if (aiot_r2d_waveform(chips, AIOT_N_SIP + 2, 2, 1, wave, (int)(sizeof(wave) / sizeof(wave[0]))) < SIP_LEN) {
+  if (aiot_r2d_waveform(chips, AIOT_N_SIP + 2, 2, 1, wave, sizeofArray(wave)) < SIP_LEN) {
     free(rx);
     return NULL;
   }
@@ -538,7 +537,7 @@ static int decode(aiot_r2d_rx_t *rx, int start, double on, double off, aiot_r2d_
   /* CAP: try each M, keep the one whose four chips best show on, off, on, off (7.2.1) */
   int best_m = 0;
   double best_score = -INFINITY;
-  for (int mi = 0; mi < 4; mi++) {
+  for (int mi = 0; mi < sizeofArray(M_LIST); mi++) {
     int m = M_LIST[mi];
     double e[AIOT_N_CAP];
     for (int c = 0; c < AIOT_N_CAP; c++)

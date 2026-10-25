@@ -26,6 +26,7 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
 #include "common/utils/utils.h"
+#include "common/utils/nr/nr_common.h" /* NR_NB_SC_PER_RB */
 #include "nr_aiot_r2d.h" /* nr_aiot_cell_slot_diff() */
 
 #define FILTER_SPAN 8 /* G = FILTER_SPAN * D radio samples each side */
@@ -150,7 +151,7 @@ nr_aiot_d2r_t *nr_aiot_d2r_new(const nr_aiot_d2r_config_t *cfg, int n_prb, int s
     return NULL;
   }
   /* the carrier's PRBs, then the guard band the samples hold above them (and wrapping round below) */
-  const int n_sampled = (int)(sample_rate_hz / (12 * AIOT_SCS_HZ));
+  const int n_sampled = (int)(sample_rate_hz / (NR_NB_SC_PER_RB * AIOT_SCS_HZ));
   if (!cfg || cfg->prb_start < 0 || cfg->n_rb < 1 || cfg->prb_start + cfg->n_rb > n_sampled) {
     LOG_E(NR_PHY,
           "A-IoT D2R: PRBs %d to %d are not in the %d PRBs the radio samples (the carrier's %d, then its guard band)\n",
@@ -171,7 +172,8 @@ nr_aiot_d2r_t *nr_aiot_d2r_new(const nr_aiot_d2r_config_t *cfg, int n_prb, int s
   d->fs = sample_rate_hz;
   d->d = (int)(sample_rate_hz / AIOT_SAMPLE_RATE_HZ);
   /* subcarrier k of the carrier is (k - 6 n_prb) * 15 kHz from its centre */
-  d->shift_hz = (int64_t)(12 * cfg->prb_start + 6 * cfg->n_rb - 6 * n_prb) * AIOT_SCS_HZ;
+  const int half_rb = NR_NB_SC_PER_RB / 2;
+  d->shift_hz = (int64_t)(NR_NB_SC_PER_RB * cfg->prb_start + half_rb * cfg->n_rb - half_rb * n_prb) * AIOT_SCS_HZ;
   d->noise_w = 2 * cfg->noise_counts * cfg->noise_counts;
   d->next_ts = -1;
   d->rx = new_rx(d);
