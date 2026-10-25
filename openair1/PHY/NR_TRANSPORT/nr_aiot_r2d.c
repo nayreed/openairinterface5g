@@ -18,6 +18,7 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/fsn.h"
 #include "common/utils/utils.h"
+#include "common/utils/threadPool/pthread_utils.h"
 
 _Static_assert(NR_AIOT_R2D_MAX_SC == AIOT_N_FFT * 3 / 4, "NR_AIOT_R2D_MAX_SC is 3/4 of AIOT_N_FFT");
 _Static_assert(AIOT_CELL_FRAMES == MAX_FRAME_NUMBER, "A-IoT counts the cell's frames as NR does");
@@ -75,7 +76,7 @@ int nr_aiot_r2d_init(const nr_aiot_r2d_config_t *cfg,
   r2d->symbols_per_slot = symbols_per_slot;
   r2d->ofdm_symbol_size = ofdm_symbol_size;
   r2d->n_prb = n_prb;
-  pthread_mutex_init(&r2d->lock, NULL);
+  mutexinit(r2d->lock);
   if (cfg->prb_start < 0 || cfg->n_rb_max == 0)
     return 0; /* no R2D: a gNB configured without one, or zeroed (the simulators) */
   if (slots_per_frame != AIOT_CELL_SLOTS_PER_FRAME || symbols_per_slot != NR_SYMBOLS_PER_SLOT) {
@@ -137,9 +138,9 @@ int nr_aiot_r2d_init(const nr_aiot_r2d_config_t *cfg,
 
 void nr_aiot_r2d_set_tx_slots(nr_aiot_r2d_t *r2d, uint32_t tx_slots)
 {
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   r2d->tx_slots = tx_slots;
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
 }
 
 uint32_t nr_aiot_r2d_slot_mask(int slots_per_frame, bool (*sends)(const void *ctx, int frame, int slot), const void *ctx)
@@ -165,7 +166,7 @@ void nr_aiot_r2d_free(nr_aiot_r2d_t *r2d)
   r2d->n_pending = 0;
   r2d->clock = false;
   r2d->slots_per_frame = 0;
-  pthread_mutex_destroy(&r2d->lock);
+  mutexdestroy(r2d->lock);
 }
 
 int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
@@ -212,7 +213,7 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
 
   const int start = frame * r2d->slots_per_frame + slot;
   const int first = symbol, last = symbol + n_sym; /* symbols counted from the start slot */
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   rc = n_sym;
   for (int d = 0; d * r2d->symbols_per_slot < last && rc > 0; d++)
     if (!(r2d->tx_slots >> ((start + d) % AIOT_CELL_WRAP_SLOTS % NR_AIOT_R2D_TX_SLOT_PERIOD) & 1))
@@ -245,7 +246,7 @@ int nr_aiot_r2d_schedule(nr_aiot_r2d_t *r2d,
                                                         .last_mapped = -1};
     re16 = NULL;
   }
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
   free(re16);
   return rc;
 }
@@ -265,10 +266,10 @@ void nr_aiot_r2d_set_slot_time(nr_aiot_r2d_t *r2d, int frame, int slot, int64_t 
 {
   if (!r2d->clock)
     return; /* no R2D, and no Reader plans on the node's slots */
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   r2d->timed_slot = frame * r2d->slots_per_frame + slot;
   r2d->timed_ts = ts;
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
 }
 
 int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d, int64_t *ts)
@@ -277,10 +278,10 @@ int nr_aiot_r2d_now(nr_aiot_r2d_t *r2d, int64_t *ts)
     *ts = -1;
     return -1;
   }
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   int now = r2d->now_slot;
   *ts = r2d->now_ts;
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
   return now;
 }
 
@@ -360,9 +361,9 @@ int nr_aiot_r2d_take(nr_aiot_r2d_t *r2d, int frame, int slot, nr_aiot_r2d_slot_t
     empty_slot(r2d, frame, slot, out);
   if (!r2d->clock)
     return 0;
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   const int taken = take_locked(r2d, frame * r2d->slots_per_frame + slot, out);
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
   return taken;
 }
 
@@ -371,7 +372,7 @@ nr_aiot_r2d_slot_t *nr_aiot_r2d_take_new(nr_aiot_r2d_t *r2d, int frame, int slot
   if (!r2d->clock)
     return NULL;
   const int now = frame * r2d->slots_per_frame + slot;
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   bool any = r2d->cfg.carrier && r2d->cfg.prb_start >= 0;
   for (int i = 0; i < r2d->n_pending && !any; i++)
     any = due(r2d, &r2d->pending[i], now);
@@ -381,7 +382,7 @@ nr_aiot_r2d_slot_t *nr_aiot_r2d_take_new(nr_aiot_r2d_t *r2d, int frame, int slot
     empty_slot(r2d, frame, slot, out);
   }
   take_locked(r2d, now, out);
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
   return out;
 }
 
@@ -432,12 +433,12 @@ int nr_aiot_r2d_put(nr_aiot_r2d_t *r2d, const nr_aiot_r2d_slot_t *in, const c16_
   }
   if (!collisions && !blocked)
     return written;
-  pthread_mutex_lock(&r2d->lock);
+  mutexlock(r2d->lock);
   r2d->collisions += collisions;
   r2d->collided_symbols += collided;
   const uint64_t events = collided ? ++r2d->collided_slots : 0;
   r2d->carrier_blocked += blocked;
-  pthread_mutex_unlock(&r2d->lock);
+  mutexunlock(r2d->lock);
   /* a misconfiguration repeats every slot: logged at the 1st, 2nd, 4th... slot it hits */
   if (aiot_log_due(events))
     LOG_E(NR_PHY,

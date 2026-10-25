@@ -23,6 +23,7 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/system.h"
 #include "common/utils/utils.h"
+#include "common/utils/threadPool/pthread_utils.h"
 
 #define SLOT_SAMPLES AIOT_SAMPLES_PER_MS /* one 15 kHz slot */
 #define LEAD_MARGIN_SLOTS 2 /* a remote R2D's lead over the delay of the one that came too late */
@@ -506,7 +507,7 @@ nr_aiot_reader_t *nr_aiot_reader_new(const nr_aiot_reader_config_t *cfg,
   r->stats.r2d_ahead_min = INT64_MAX;
   r->stats.window_ahead_min = INT64_MAX;
   r->lead = cfg->lead_slots > 0 ? cfg->lead_slots : NR_AIOT_READER_LEAD_SLOTS;
-  pthread_mutex_init(&r->lock, NULL);
+  mutexinit(r->lock);
   r->outcomes = malloc_or_fail(sizeof(*r->outcomes) * MAX_OUTCOMES);
   r->heard = malloc_or_fail(sizeof(*r->heard));
   r->mac =
@@ -582,9 +583,9 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r)
   if (!r)
     return;
   if (r->running) {
-    pthread_mutex_lock(&r->lock);
+    mutexlock(r->lock);
     r->stop = 1;
-    pthread_mutex_unlock(&r->lock);
+    mutexunlock(r->lock);
     pthread_join(r->thread, NULL);
   }
   if (r->mac)
@@ -605,7 +606,7 @@ void nr_aiot_reader_free(nr_aiot_reader_t *r)
   free(r->outcomes);
   free(r->heard);
   free(r->rows);
-  pthread_mutex_destroy(&r->lock);
+  mutexdestroy(r->lock);
   free(r);
 }
 
@@ -1030,10 +1031,10 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
 
 int nr_aiot_reader_step(nr_aiot_reader_t *r)
 {
-  pthread_mutex_lock(&r->lock);
+  mutexlock(r->lock);
   const int64_t now = reader_now(r);
   if (now < 0) {
-    pthread_mutex_unlock(&r->lock);
+    mutexunlock(r->lock);
     return 0; /* the node has sent no slot yet */
   }
   int acted = 0, k;
@@ -1087,23 +1088,23 @@ int nr_aiot_reader_step(nr_aiot_reader_t *r)
   }
   if (acted)
     flush_files(r);
-  pthread_mutex_unlock(&r->lock);
+  mutexunlock(r->lock);
   return acted;
 }
 
 int nr_aiot_reader_done(nr_aiot_reader_t *r)
 {
-  pthread_mutex_lock(&r->lock);
+  mutexlock(r->lock);
   int d = r->ended;
-  pthread_mutex_unlock(&r->lock);
+  mutexunlock(r->lock);
   return d;
 }
 
 nr_aiot_reader_stats_t nr_aiot_reader_stats(nr_aiot_reader_t *r)
 {
-  pthread_mutex_lock(&r->lock);
+  mutexlock(r->lock);
   nr_aiot_reader_stats_t s = r->stats;
-  pthread_mutex_unlock(&r->lock);
+  mutexunlock(r->lock);
   return s;
 }
 
@@ -1112,9 +1113,9 @@ static void *reader_thread(void *arg)
   nr_aiot_reader_t *r = arg;
   int64_t seen = -1;
   for (;;) {
-    pthread_mutex_lock(&r->lock);
+    mutexlock(r->lock);
     int stop = r->stop;
-    pthread_mutex_unlock(&r->lock);
+    mutexunlock(r->lock);
     if (stop)
       break;
     nr_aiot_reader_step(r);
