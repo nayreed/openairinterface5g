@@ -735,10 +735,9 @@ static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, 
     give_up_window(r, e, now);
     return;
   }
-  const int64_t end = e->start + e->te + aiot_frame_samples(e->a_bits, &e->params);
   r->windows[i] = (remote_window_t){.used = 1,
                                     .e = *e,
-                                    .deadline = end + WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES,
+                                    .deadline = aiot_d2r_expect_end(e) + WINDOW_TIMEOUT_SLOTS * (int64_t)SLOT_SAMPLES,
                                     .lead = r->lead,
                                     .early = !r->d2r_up};
   r->stats.windows_remote++;

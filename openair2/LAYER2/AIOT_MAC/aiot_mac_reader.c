@@ -31,6 +31,7 @@
 
 #include "aiot_node_msg.h"
 #include "aiot_protocols.h"
+#include "common/utils/utils.h" /* cmin, cmax */
 
 #define MAX_EXPECTS 16
 #define HEARD_QUEUE 16
@@ -314,9 +315,8 @@ static int add_expect(aiot_reader_t *r,
   for (int k = 0; k < n_r_sfs; k++) {
     aiot_d2r_params_t pr = *p;
     pr.r_sfs = r_sfs[k];
-    const int64_t last = e->start + e->te + (int64_t)aiot_frame_bits(a_bits, &pr) * aiot_bit_samples(&pr) + aiot_t_d2r_min(&pr);
-    if (last > r->last_d2r_end)
-      r->last_d2r_end = last;
+    const int64_t last = e->start + e->te + aiot_frame_samples(a_bits, &pr) + aiot_t_d2r_min(&pr);
+    r->last_d2r_end = cmax(r->last_d2r_end, last);
   }
   return 0;
 }
