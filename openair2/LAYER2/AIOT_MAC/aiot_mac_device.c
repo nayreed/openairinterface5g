@@ -47,7 +47,7 @@ typedef enum { SEND_MSG2, SEND_CFA, SEND_DATA } data_kind_t;
 
 aiot_device_t *aiot_device_new(const aiot_device_upper_t *upper, aiot_mod_t modulation)
 {
-  if (!upper || !upper->draw)
+  if (!upper || !upper->draw || (modulation != AIOT_OOK && modulation != AIOT_BPSK))
     return NULL;
   aiot_device_t *d = calloc(1, sizeof(*d));
   if (!d)

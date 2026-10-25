@@ -231,6 +231,7 @@ typedef struct {
   void (*security_param)(void *user, const uint8_t *bits, int n_bits);
 } aiot_device_upper_t;
 
+/* NULL without upper->draw or with a modulation other than OOK and BPSK. */
 aiot_device_t *aiot_device_new(const aiot_device_upper_t *upper, aiot_mod_t modulation);
 void aiot_device_free(aiot_device_t *d);
 
