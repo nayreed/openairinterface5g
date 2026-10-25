@@ -378,7 +378,7 @@ TEST(MacPdu, MessageLayouts)
   m.as_ids[1] = 0xbeef;
   Bits want;
   Put(want, 5, 3);
-  Put(want, 6, 7); // TBS 6 bytes
+  Put(want, 6 - 1, 7); // R2D TBS 6 bytes: the first codepoint is 1 byte
   Put(want, 0, 6);
   Put(want, 0x1234, 16);
   Put(want, 0xbeef, 16);
@@ -515,7 +515,7 @@ TEST(MacPdu, PagingCbraLayout)
   m.k_bit = 1;
   Bits want;
   Put(want, AIOT_MAC_R2D_TYPE_PAGING, 3);
-  Put(want, 22, 7);
+  Put(want, 22 - 1, 7); // R2D TBS
   Put(want, 1, 1); // SPPI
   PutSecurity(want);
   Put(want, 1, 1); // AT = CBRA
@@ -552,7 +552,7 @@ TEST(MacPdu, PagingCbraLayout)
   m.k_bit = 1;
   want.clear();
   Put(want, AIOT_MAC_R2D_TYPE_PAGING, 3);
-  Put(want, 25, 7);
+  Put(want, 25 - 1, 7);
   Put(want, 1, 1);
   PutSecurity(want);
   Put(want, 1, 1);
@@ -574,7 +574,7 @@ TEST(MacPdu, PagingCbraLayout)
   // SPPI = 1 but the PDU ends inside the Security Parameter
   Bits cut;
   Put(cut, AIOT_MAC_R2D_TYPE_PAGING, 3);
-  Put(cut, 4, 7);
+  Put(cut, 4 - 1, 7);
   Put(cut, 1, 1);
   Put(cut, 0, 21);
   EXPECT_EQ(aiot_mac_parse_r2d(cut.data(), (int)cut.size(), &back), AIOT_EINVAL);
@@ -586,7 +586,7 @@ TEST(MacPdu, PagingCfaLayout)
   aiot_mac_r2d_msg_t m = Paging(AIOT_R2D_PAGING_CFA, true, 16);
   Bits want;
   Put(want, AIOT_MAC_R2D_TYPE_PAGING, 3);
-  Put(want, 24, 7);
+  Put(want, 24 - 1, 7);
   Put(want, 1, 1); // SPPI
   PutSecurity(want);
   Put(want, 0, 1); // AT = CFA
@@ -664,6 +664,18 @@ TEST(MacPdu, PagingIdLengthTenBits)
   ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
   EXPECT_EQ(back.r2d_tbs, AIOT_MAC_MAX_TBS);
   ExpectSameR2d(m, back);
+  // the R2D TBS field holds TBS - 1 (6.1.1: the first codepoint is the first value, 1 byte), so
+  // 125 bytes is codepoint 124, and codepoints 125 to 127 are not used
+  Bits field;
+  Put(field, AIOT_MAC_MAX_TBS - 1, 7);
+  EXPECT_TRUE(std::equal(field.begin(), field.end(), b.begin() + 3));
+  for (int cp : {125, 126, 127}) {
+    Bits x = b;
+    x.insert(x.end(), 8 * (cp + 1 - AIOT_MAC_MAX_TBS), 0);
+    for (int j = 0; j < 7; j++)
+      x[3 + j] = (cp >> (6 - j)) & 1;
+    EXPECT_EQ(aiot_mac_parse_r2d(x.data(), (int)x.size(), &back), AIOT_EINVAL) << cp;
+  }
   m = Paging(AIOT_R2D_PAGING_CFA, false, 955);
   EXPECT_EQ(aiot_mac_r2d_natural_bytes(&m), AIOT_EINVAL);
   uint8_t bits[AIOT_MAC_MAX_PDU_BITS];
@@ -763,7 +775,7 @@ TEST(MacPdu, ReceivedDataSizeRange)
   for (int rds : {125, 126, 127}) {
     Bits b;
     Put(b, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, 3);
-    Put(b, 7, 7);
+    Put(b, 7 - 1, 7);
     Put(b, 7, 16);
     b.insert(b.end(), sched.begin(), sched.end());
     Put(b, 0, 1); // CI
@@ -1075,11 +1087,11 @@ TEST(MacPdu, NackWithSixtyOneAsIds)
   Bits odd = b;
   odd.insert(odd.end(), 8, 0);
   for (int j = 0; j < 7; j++)
-    odd[3 + j] = (125 >> (6 - j)) & 1;
+    odd[3 + j] = ((AIOT_MAC_MAX_TBS - 1) >> (6 - j)) & 1; // R2D TBS 125
   EXPECT_EQ(aiot_mac_parse_r2d(odd.data(), (int)odd.size(), &back), AIOT_EINVAL);
   Bits empty;
   Put(empty, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, 3);
-  Put(empty, 2, 7);
+  Put(empty, 2 - 1, 7);
   Put(empty, 0, 6);
   EXPECT_EQ(aiot_mac_parse_r2d(empty.data(), (int)empty.size(), &back), AIOT_EINVAL);
 }

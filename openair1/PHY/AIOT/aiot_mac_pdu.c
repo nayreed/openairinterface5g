@@ -348,11 +348,13 @@ static int paging_id_ok(const aiot_mac_r2d_msg_t *m)
   return bits_clean(m->paging_id, m->paging_id_len);
 }
 
-/* Validates the content of msg and writes its body with the TBS field set to tbs, without Fill
- * Bits (_check + _body). Returns the bit count or AIOT_EINVAL; out holds SCRATCH_BITS. */
+/* Validates the content of msg and writes its body with the TBS field set to tbs (0 while the
+ * message is only sized), without Fill Bits (_check + _body). Returns the bit count or AIOT_EINVAL;
+ * out holds SCRATCH_BITS. */
 static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
 {
   wr_t w = {out, 0, SCRATCH_BITS, 0};
+  const int tbs_cp = tbs > 0 ? tbs - 1 : 0; /* R2D TBS: first codepoint = 1 byte (6.1.1) */
   switch (m->kind) {
     case AIOT_R2D_PAGING_CBRA: /* Figure 6.2.1.1-1 */
       if (m->sched.variant != AIOT_SCHED_PAGING_CBRA || !flag_ok(m->k_bit))
@@ -362,7 +364,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
       if (!security_ok(m))
         return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
-      put(&w, tbs, 7);
+      put(&w, tbs_cp, 7);
       put(&w, m->has_security_param, 1); /* SPPI */
       if (m->has_security_param)
         put_bits(&w, m->security_param, SEC_BITS);
@@ -387,7 +389,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
       if (!security_ok(m))
         return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
-      put(&w, tbs, 7);
+      put(&w, tbs_cp, 7);
       put(&w, m->has_security_param, 1); /* SPPI */
       if (m->has_security_param)
         put_bits(&w, m->security_param, SEC_BITS);
@@ -416,7 +418,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
           return AIOT_EINVAL;
       }
       put(&w, AIOT_MAC_R2D_TYPE_RANDOM_ID_RESPONSE, 3);
-      put(&w, tbs, 7);
+      put(&w, tbs_cp, 7);
       if (aiot_mac_sched_validate(&m->sched) < 0)
         return AIOT_EINVAL;
       sched_put(&w, &m->sched);
@@ -442,7 +444,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
                      : (m->received_data_size < 0 || m->received_data_size > AIOT_MAC_MAX_RECEIVED_DATA_SIZE))
         return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, 3);
-      put(&w, tbs, 7);
+      put(&w, tbs_cp, 7);
       put(&w, m->as_id, 16);
       if (aiot_mac_sched_validate(&m->sched) < 0)
         return AIOT_EINVAL;
@@ -461,7 +463,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
       if (m->n_as_ids < 1 || m->n_as_ids > AIOT_MAC_MAX_NACK_IDS)
         return AIOT_EINVAL;
       put(&w, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, 3);
-      put(&w, tbs, 7);
+      put(&w, tbs_cp, 7);
       put(&w, 0, 6); /* R */
       for (int i = 0; i < m->n_as_ids; i++)
         put(&w, m->as_ids[i], 16);
@@ -555,8 +557,8 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
   if (n % 8)
     return AIOT_EINVAL;
   rd_t r = {bits, n, 3};
-  int tbs = rd_take(&r, 7);
-  if (tbs < 1 || tbs > MAX_TBS || n != 8 * tbs)
+  int tbs = rd_take(&r, 7) + 1; /* R2D TBS: first codepoint = 1 byte (6.1.1) */
+  if (tbs < 1 || tbs > MAX_TBS || n != 8 * tbs) /* codepoints 125..127 are not used in this release */
     return AIOT_EINVAL;
   m->r2d_tbs = tbs;
 
