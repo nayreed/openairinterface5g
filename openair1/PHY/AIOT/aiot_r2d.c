@@ -361,7 +361,8 @@ static void consume(aiot_r2d_rx_t *rx, int64_t n)
     n = (int64_t)rx->len;
   if (n < 0)
     n = 0;
-  memmove(rx->env, rx->env + n, (rx->len - (size_t)n) * sizeof(double));
+  if (rx->len > (size_t)n) /* env is NULL before the first samples */
+    memmove(rx->env, rx->env + n, (rx->len - (size_t)n) * sizeof(double));
   rx->len -= (size_t)n;
   rx->base += n;
   rx->cs_ok = 0; /* the running sum restarts at the new first sample */

@@ -608,9 +608,11 @@ int nr_aiot_d2r_pop(nr_aiot_d2r_t *d, aiot_d2r_outcome_t *out, int max)
     return AIOT_EINVAL;
   pthread_mutex_lock(&d->lock);
   int n = d->n_out < max ? d->n_out : max;
-  memcpy(out, d->out, sizeof(*out) * (size_t)n);
-  memmove(d->out, d->out + n, sizeof(*out) * (size_t)(d->n_out - n));
-  d->n_out -= n;
+  if (n > 0) { /* d->out is NULL until the first outcome, out may be NULL when max is 0 */
+    memcpy(out, d->out, sizeof(*out) * (size_t)n);
+    memmove(d->out, d->out + n, sizeof(*out) * (size_t)(d->n_out - n));
+    d->n_out -= n;
+  }
   pthread_mutex_unlock(&d->lock);
   return n;
 }

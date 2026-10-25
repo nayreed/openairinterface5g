@@ -230,7 +230,7 @@ aiot_mac_r2d_msg_t data_sdu(int as_id, const aiot_sched_info_t &s, const Bytes &
   m.as_id = as_id;
   m.has_sdu = 1;
   m.sdu_len = (int)sdu.size();
-  memcpy(m.sdu, sdu.data(), sdu.size());
+  std::copy(sdu.begin(), sdu.end(), m.sdu);
   return m;
 }
 aiot_mac_r2d_msg_t data_received(int as_id, const aiot_sched_info_t &s, int received)
