@@ -172,20 +172,14 @@ int nr_aiot_reader_parse_r_sfs(nr_aiot_reader_config_t *cfg, const char *s)
       break;
     char *end;
     long v = strtol(p, &end, 10);
-    if (end == p || n == 8 || v < 1)
+    if (end == p || n == AIOT_MAX_SHIFTS || v < 1)
       return -1;
     cfg->link.r_sfs[n++] = (int)v;
     p = end;
   }
   if (!n)
     return -1;
-  /* ascending, as the link wants them */
-  for (int i = 1; i < n; i++)
-    for (int j = i; j > 0 && cfg->link.r_sfs[j] < cfg->link.r_sfs[j - 1]; j--) {
-      int t = cfg->link.r_sfs[j];
-      cfg->link.r_sfs[j] = cfg->link.r_sfs[j - 1];
-      cfg->link.r_sfs[j - 1] = t;
-    }
+  aiot_link_sort_r_sfs(cfg->link.r_sfs, n);
   cfg->link.n_r_sfs = n;
   return 0;
 }

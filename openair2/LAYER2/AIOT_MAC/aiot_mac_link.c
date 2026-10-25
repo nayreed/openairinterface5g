@@ -44,19 +44,23 @@ static int common(const aiot_link_config_t *cfg, aiot_sched_variant_t variant, a
   return 0;
 }
 
+void aiot_link_sort_r_sfs(int *r_sfs, int n)
+{
+  for (int i = 1; i < n; i++) {
+    int v = r_sfs[i], j = i;
+    for (; j > 0 && r_sfs[j - 1] > v; j--)
+      r_sfs[j] = r_sfs[j - 1];
+    r_sfs[j] = v;
+  }
+}
+
 /* Copies n R_SFS values, sorted ascending. */
 static int set_r_sfs(aiot_sched_info_t *s, const int *r_sfs, int n)
 {
-  if (n < 1 || n > 8)
+  if (n < 1 || n > AIOT_MAX_SHIFTS)
     return AIOT_EINVAL;
-  for (int i = 0; i < n; i++) {
-    int v = r_sfs[i], j = i;
-    while (j > 0 && s->r_sfs[j - 1] > v) {
-      s->r_sfs[j] = s->r_sfs[j - 1];
-      j--;
-    }
-    s->r_sfs[j] = v;
-  }
+  memcpy(s->r_sfs, r_sfs, n * sizeof(*r_sfs));
+  aiot_link_sort_r_sfs(s->r_sfs, n);
   s->n_sfs = n;
   return 0;
 }

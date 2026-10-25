@@ -200,12 +200,7 @@ aiot_reader_t *aiot_reader_new(const aiot_link_config_t *cfg,
     return NULL;
   }
   r->cfg = *cfg;
-  for (int i = 1; i < r->cfg.n_r_sfs; i++) /* ascending, as a paging's bitmap lists them */
-    for (int j = i; j > 0 && r->cfg.r_sfs[j - 1] > r->cfg.r_sfs[j]; j--) {
-      const int t = r->cfg.r_sfs[j];
-      r->cfg.r_sfs[j] = r->cfg.r_sfs[j - 1];
-      r->cfg.r_sfs[j - 1] = t;
-    }
+  aiot_link_sort_r_sfs(r->cfg.r_sfs, r->cfg.n_r_sfs);
   r->proto = proto;
   memcpy(r->params, p, sizeof(p));
   r->open = open;
