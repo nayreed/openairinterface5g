@@ -49,15 +49,17 @@ modulation = "bpsk"      # the Tags' D2R modulation, "bpsk" or "ook" (not signal
 timing_error = 0.5       # a Tag's largest D2R start error, as a fraction of Te (38.191 §9.2.1)
 tag_snr_db = 10.0        # R2D SNR a Tag has at its sensitivity_dbm
 
+# The gNB and the CW node at 20 dBm a sector: at the macro's 46 dBm the CW node's carrier would
+# reach the Tags 24 to 28 dB over the UE's R2D, which they could not then make out.
 [[base_station]]
 id = 0
 x = 0
 y = 0
 site_radius = 2
 sectors = [
-  { azimuth_deg = 0,   beamwidth_deg = 65, power = 46, antenna_gain_dbi = 15, sensitivity_dbm = -100, height = 25 },
-  { azimuth_deg = 120, beamwidth_deg = 65, power = 46, antenna_gain_dbi = 15, sensitivity_dbm = -100, height = 25 },
-  { azimuth_deg = 240, beamwidth_deg = 65, power = 46, antenna_gain_dbi = 15, sensitivity_dbm = -100, height = 25 },
+  { azimuth_deg = 0,   beamwidth_deg = 65, power = 20, antenna_gain_dbi = 15, sensitivity_dbm = -100, height = 25 },
+  { azimuth_deg = 120, beamwidth_deg = 65, power = 20, antenna_gain_dbi = 15, sensitivity_dbm = -100, height = 25 },
+  { azimuth_deg = 240, beamwidth_deg = 65, power = 20, antenna_gain_dbi = 15, sensitivity_dbm = -100, height = 25 },
 ]
 
 [radio]
