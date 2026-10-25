@@ -748,7 +748,13 @@ static void open_remote_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, 
 static void on_r2d_done(nr_aiot_reader_t *r, int n, int64_t now)
 {
   aiot_node_r2d_done_t d;
-  if (aiot_node_msg_parse_r2d_done(r->msg, n, &d) != 0 || r->r2d_seq - d.seq > SENT_RING || d.seq >= r->r2d_seq) {
+  if (aiot_node_msg_parse_r2d_done(r->msg, n, &d) != 0) {
+    r->stats.peer_refused++;
+    return;
+  }
+  /* d.seq must be one of the last SENT_RING R2Ds sent, counted mod 2^32 as r2d_seq is */
+  const uint32_t age = r->r2d_seq - d.seq;
+  if (age == 0 || age > SENT_RING) {
     r->stats.peer_refused++;
     return;
   }
