@@ -272,7 +272,7 @@ int aiot_reader_next_r2d(aiot_reader_t *r, int64_t now, aiot_reader_r2d_t *out)
   if (n < 0)
     return n;
   out->n_bits = n;
-  out->earliest_start = r->free_at > now ? r->free_at : now;
+  out->earliest_start = cmax(r->free_at, now);
   return 1;
 }
 
@@ -515,7 +515,7 @@ int aiot_reader_table(const aiot_reader_t *r, const char **name, const char *con
 int aiot_reader_pop_rows(aiot_reader_t *r, double *rows, int max_rows)
 {
   const int nc = r->proto->n_cols;
-  const int n = r->n_rows < max_rows ? r->n_rows : max_rows;
+  const int n = cmin(r->n_rows, max_rows);
   if (n <= 0 || !nc)
     return 0;
   memcpy(rows, r->rows, (size_t)n * nc * sizeof(double));

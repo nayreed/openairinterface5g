@@ -411,7 +411,7 @@ static int fill_gap(nr_aiot_d2r_t *d, int64_t ts)
      * sample last_end - 1 is made once w reaches radio sample (last_end - 1) D + g */
     int64_t need = d->in_rx ? (d->last_end - 1) * d->d + d->g + 1 - d->next_ts : 0;
     if (need < gap) {
-      fill = need > 0 ? need : 0;
+      fill = cmax(need, 0);
       again = 1;
     }
   }
@@ -607,7 +607,7 @@ int nr_aiot_d2r_pop(nr_aiot_d2r_t *d, aiot_d2r_outcome_t *out, int max)
   if (!d || max < 0 || (max && !out))
     return AIOT_EINVAL;
   pthread_mutex_lock(&d->lock);
-  int n = d->n_out < max ? d->n_out : max;
+  int n = cmin(d->n_out, max);
   if (n > 0) { /* d->out is NULL until the first outcome, out may be NULL when max is 0 */
     memcpy(out, d->out, sizeof(*out) * (size_t)n);
     memmove(d->out, d->out + n, sizeof(*out) * (size_t)(d->n_out - n));

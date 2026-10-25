@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include "aiot_phy.h"
+#include "common/utils/utils.h" /* cmax */
 
 /* 38.391 Table 6.2.1.6-1, by Bit Duration codepoint */
 static const aiot_bit_duration_t bit_durations[AIOT_N_BIT_DURATIONS] = {
@@ -249,5 +250,5 @@ int aiot_t_d2r_min(const aiot_d2r_params_t *p)
   int three_chips = 3 * aiot_chip_samples(p);
   /* 10 us is 57.6 samples: rounded up, so that the gap is never shorter than 10 us */
   int ten_us = (AIOT_SAMPLE_RATE_HZ + 99999) / 100000;
-  return three_chips > ten_us ? three_chips : ten_us;
+  return cmax(three_chips, ten_us);
 }
