@@ -364,12 +364,17 @@ Bytes sec_bits(int off = 0)
  * Ported from tests/test_mac_procedures.py
  * ------------------------------------------------------------------------------------------- */
 
-TEST(DeviceMac, NewRejectsMissingDraw)
+TEST(DeviceMac, NewRejectsMissingDrawOrAnotherModulation)
 {
   aiot_device_upper_t a;
   memset(&a, 0, sizeof(a));
   EXPECT_EQ(nullptr, aiot_device_new(&a, AIOT_BPSK));
   EXPECT_EQ(nullptr, aiot_device_new(nullptr, AIOT_BPSK));
+  // a device of a modulation the D2R has not would refuse every Msg1 it was paged for
+  Upper u(0, nullptr);
+  a = u.api();
+  EXPECT_EQ(nullptr, aiot_device_new(&a, (aiot_mod_t)2));
+  EXPECT_EQ(nullptr, aiot_device_new(&a, (aiot_mod_t)-1));
 }
 
 TEST(DeviceMac, InitialState)

@@ -708,6 +708,32 @@ TEST(Reader, RegistrationWhenARandomIdResponseCannotAnswerEveryMsg1)
   EXPECT_TRUE(full);
 }
 
+// An operator may list the R_SFS values in any order. A paging's bitmap and its Scheduling Info
+// list them ascending, so registration still gives every Tag an AS ID, and Gen2 Q, which pages on
+// one R_SFS, takes the smallest rather than the first listed.
+TEST(Reader, RSfsListedOutOfOrder)
+{
+  aiot_link_config_t c = default_link();
+  const int r_sfs[4] = {8, 2, 4, 1};
+  std::copy(r_sfs, r_sfs + 4, c.r_sfs);
+  Air reg("registration", {{"occasions_exp", 3}}, 12, c);
+  register_all(reg, 4000);
+  expect_registered(reg);
+
+  Air q("gen2_q", {}, 8, c);
+  q.run(20);
+  EXPECT_EQ(q.unmatched, 0);
+  int pagings = 0;
+  for (auto &h : q.heard) {
+    if (h->sent.kind != AIOT_R2D_PAGING_CBRA)
+      continue;
+    pagings++;
+    ASSERT_EQ(h->sent.sched.n_sfs, 1);
+    EXPECT_EQ(h->sent.sched.r_sfs[0], 1);
+  }
+  EXPECT_GT(pagings, 0);
+}
+
 // A protocol with nothing to do ends: the Reader is done, sends nothing and takes no message.
 TEST(Reader, UnicastWithoutNodesEnds)
 {
