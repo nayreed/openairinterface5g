@@ -45,6 +45,7 @@ import shutil
 import sys
 
 from amber.hosts import load_scenario
+from amber.coexist import room_powers
 from amber.iq import ADC_NOISE_COUNTS, TX_COUNTS, dbm_to_w, thermal_noise_w, up_scale
 from amber.sink import PORT as SINK_PORT
 
@@ -391,7 +392,49 @@ def peer_options(scenario):
         [f"--aiot.serve_port {PEER_PORT}"]
 
 
-def hub_conf(scenario_path, node_ids):
+# The rms levels the nodes of the room send, measured in it (README.md): the gNB's DL at full load, the
+# UE's UL, and the Reader's carrier and R2D. The gains from positions (amber.coexist) bring each sender to
+# each receiver at the power the geometry gives, in the receiver's own scale: the 5G receivers' is their
+# wanted signal (the 5G link is 0 dB), a Tag's is Amber's carrier at TX_COUNTS, and the Reader's has its
+# thermal noise at ADC_NOISE_COUNTS on I and on Q.
+GNB_DL_COUNTS, UE_UL_COUNTS, READER_COUNTS = 166.0, 118.0, 7466.0
+# The most the links may bring to one receiver, summed as rms levels: -6 dBFS, the headroom of 16-bit samples.
+RX_LIMIT_COUNTS = 16384.0
+
+
+def db(x):
+    return 20 * math.log10(x)
+
+
+def geometry_gains(scenario, powers):
+    """{(tx, rx): gain dB} of the links between the 5G cell and the A-IoT link, from amber.coexist's
+    powers: each sender at each receiver as strong, against what that receiver's scale stands for, as
+    the geometry makes it. Refuses gains that would bring a receiver over RX_LIMIT_COUNTS."""
+    noise_dbm = 10 * math.log10(thermal_noise_w(scenario.reader_noise_figure_db)) + 30
+    reader_scale_db = 10 * math.log10(2) - noise_dbm  # Reader counts^2 per mW, as amber.iq.up_scale
+    gains = {("reader", "ue"): db(GNB_DL_COUNTS / READER_COUNTS) + powers.reader_at_ue - powers.gnb_at_ue,
+             ("reader", "gnb"): db(UE_UL_COUNTS / READER_COUNTS) + powers.reader_at_gnb - powers.ue_at_gnb,
+             ("ue", "reader"): powers.ue_at_reader + reader_scale_db - db(UE_UL_COUNTS)}
+    for n, t in powers.tags.items():
+        gains[("gnb", f"tag{n}")] = db(TX_COUNTS / GNB_DL_COUNTS) + t.gnb - t.carrier
+        gains[(f"tag{n}", "gnb")] = db(UE_UL_COUNTS) + t.at_gnb - powers.ue_at_gnb - (t.at_reader + reader_scale_db)
+    gains = {k: round(v, 2) for k, v in gains.items()}
+    sent = {"gnb": GNB_DL_COUNTS, "ue": UE_UL_COUNTS, "reader": READER_COUNTS}
+    at = {"ue": GNB_DL_COUNTS, "gnb": UE_UL_COUNTS}
+    at.update({f"tag{n}": READER_COUNTS for n in powers.tags})
+    for (tx, rx), g in gains.items():
+        if tx in sent:
+            at[rx] = at.get(rx, 0.0) + sent[tx] * 10 ** (g / 20)
+    for rx, level in at.items():
+        if level > RX_LIMIT_COUNTS:
+            raise ValueError(f"the links bring {level:.0f} counts rms to {rx}, over {RX_LIMIT_COUNTS:.0f}: "
+                             "move the gNB or the UE further from the A-IoT nodes")
+    return gains
+
+
+def hub_conf(scenario_path, node_ids, gains=None):
+    """The room with a standalone Reader. Its links between the 5G cell and the A-IoT link have the
+    gains of geometry_gains when the scenario places the gNB and the UE, else the room's fixed ones."""
     tags = [f"tag{n}" for n in node_ids]
     width = max(len(t) for t in ["reader"] + tags) + 3
 
@@ -406,16 +449,29 @@ def hub_conf(scenario_path, node_ids):
     links = ["    # the 5G cell", hub_link("gnb", "ue"), hub_link("ue", "gnb"), "",
              "    # A-IoT: 0 dB, Amber applies its own path loss"]
     links += [hub_link("reader", t) for t in tags] + [hub_link(t, "reader") for t in tags]
-    links += ["", "    # Reader carrier and R2D at the UE, in DL PRBs 0-2 (PRB 1's centre), 10 dB above the 5G DL",
-              hub_link("reader", "ue", READER_TO_UE_DB, -DL_SHIFT_HZ),
-              "    # 5G DL at each Tag, 40 dB below the Reader's carrier there"]
-    links += [hub_link("gnb", t, GNB_TO_TAG_DB, DL_SHIFT_HZ) for t in tags]
-    links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre), 20 dB below the UE's UL"]
-    links += [hub_link(t, "gnb", TAG_TO_GNB_DB, UL_SHIFT_HZ) for t in tags]
-    links += ["    # the Reader's carrier in the UL band, at the gNB, 10 dB above the UE's UL",
-              hub_link("reader", "gnb", READER_TO_GNB_DB, UL_SHIFT_HZ),
-              "    # the UE's UL at the Reader, as strong as a Tag's D2R",
-              hub_link("ue", "reader", UE_TO_READER_DB, -UL_SHIFT_HZ)]
+    if gains is None:
+        links += ["", "    # Reader carrier and R2D at the UE, in DL PRBs 0-2 (PRB 1's centre), 10 dB above the 5G DL",
+                  hub_link("reader", "ue", READER_TO_UE_DB, -DL_SHIFT_HZ),
+                  "    # 5G DL at each Tag, 40 dB below the Reader's carrier there"]
+        links += [hub_link("gnb", t, GNB_TO_TAG_DB, DL_SHIFT_HZ) for t in tags]
+        links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre), 20 dB below the UE's UL"]
+        links += [hub_link(t, "gnb", TAG_TO_GNB_DB, UL_SHIFT_HZ) for t in tags]
+        links += ["    # the Reader's carrier in the UL band, at the gNB, 10 dB above the UE's UL",
+                  hub_link("reader", "gnb", READER_TO_GNB_DB, UL_SHIFT_HZ),
+                  "    # the UE's UL at the Reader, as strong as a Tag's D2R",
+                  hub_link("ue", "reader", UE_TO_READER_DB, -UL_SHIFT_HZ)]
+    else:
+        links += ["", "    # Between the 5G cell and the A-IoT link, gains from where [network] places the gNB and the UE",
+                  "    # (amber.coexist: TR 38.769 Table 6.6.2.1-1). The Reader in DL PRBs 0-2 (PRB 1's centre) at the UE",
+                  hub_link("reader", "ue", gains[("reader", "ue")], -DL_SHIFT_HZ),
+                  "    # the 5G DL at each Tag"]
+        links += [hub_link("gnb", t, gains[("gnb", t)], DL_SHIFT_HZ) for t in tags]
+        links += ["    # each Tag's D2R at the gNB, in UL PRBs 15-21 (PRB 18's centre)"]
+        links += [hub_link(t, "gnb", gains[(t, "gnb")], UL_SHIFT_HZ) for t in tags]
+        links += ["    # the Reader's carrier in the UL band, at the gNB",
+                  hub_link("reader", "gnb", gains[("reader", "gnb")], UL_SHIFT_HZ),
+                  "    # the UE's UL at the Reader",
+                  hub_link("ue", "reader", gains[("ue", "reader")], -UL_SHIFT_HZ)]
     about = ["# rfsim_hub room: the 25-PRB n28 cell of gnb.conf (gNB) and nr-ue.conf (UE) and an",
              f"# Ambient IoT Reader with {len(tags)} Tags, all at 5.76 Msps. The gNB leaves DL PRBs 0-2 and UL PRBs 15-21",
              "# free (dl_prbblacklist, ul_prbblacklist), and the links put the A-IoT carrier there."]
@@ -702,6 +758,9 @@ def not_built(network, phy=None):
     """Why this script cannot build the network yet, or None."""
     if network.topology is None:
         return None
+    if getattr(network, "gnb", None) is not None:
+        return ("[network.gnb] and [network.ue]: gains from positions are built only for the room with a standalone "
+                "Reader yet")
     if network.topology == 1 and network.cw not in T1_CARRIERS:
         return (f'topology 1 with cw = {network.cw!r}: only the gNB\'s own DL carrier (cw = "gnb-dl") and a CW node '
                 'in the UL band (cw = "cw-node-ul") are built yet')
@@ -775,7 +834,13 @@ def main():
             files["rfsim_hub.conf"] = hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)
         else:
             files = room_compose(scenario_path, node_ids, args.image, cell_files=cell_files, machines=machines)
-            files["rfsim_hub.conf"] = hub_conf(scenario_path, node_ids)
+            with contextlib.redirect_stdout(sys.stderr):
+                powers = room_powers(scenario)
+            try:
+                gains = geometry_gains(scenario, powers) if powers else None
+            except ValueError as e:
+                parser.error(f"{args.scenario}: [network]: {e}")
+            files["rfsim_hub.conf"] = hub_conf(scenario_path, node_ids, gains)
     for name, text in files.items():
         with open(os.path.join(room, name), "w") as f:
             f.write(text)

@@ -58,6 +58,35 @@ interference-to-signal ratio (I/S) chosen at each receiver:
 | reader → gnb | the Reader's carrier in UL PRB 18 | +10 dB over the UE's UL | 20 log10(118 √10 / 7466) = −26 dB |
 | ue → reader | the UE's UL | 0 dB, as strong as a Tag's D2R | 20 log10(568 / 118) = +14 dB |
 
+**Gains from positions.** The gains above are chosen levels. Place the gNB and the UE in the
+scenario instead, in the plane of the Tags and the base station, and `amber-compose` computes every
+link between the two systems from the geometry:
+
+```toml
+[network.gnb]
+x = 300.0             # m; required, as is y
+y = 0.0
+# height = 25.0, power_dbm = 46.0, antenna_gain_dbi = 15.0: TR 38.769 Table 6.6.2.2-1
+[network.ue]
+x = 50.0
+y = 80.0
+# height = 1.5, power_dbm = 23.0, antenna_gain_dbi = 0.0, indoor = false
+```
+
+Amber's `amber.coexist` gives each pair the TR 38.901 model of TR 38.769 Table 6.6.2.1-1 (gNB and
+UE: UMa; outdoor UE and Reader or Tag: UMi with the high O2I loss; indoor UE and Tag: InH-Office;
+indoor UE and Reader: InF-DH; the gNB and the A-IoT nodes, which the table leaves out: UMa with the
+O2I loss), with a minimum coupling loss of 70 dB to the gNB and the scenario's `[radio] los`. It
+leaves out the shadow fading and the 0.5 dB per indoor metre. The Reader and its Tags keep Amber's
+own model. Each received power then becomes a gain in the receiver's own scale: the levels in the
+first table stand for the gNB's, the UE's and the Reader's powers, the 5G receivers take their wanted
+signal (the 5G link stays at 0 dB, the RFsimulator adds no noise), a Tag takes Amber's carrier at
+8192 counts, and the Reader its thermal noise at one count. With the gNB at (300, 0) and the UE at
+(50, 80) in this room, for example, the Reader reaches the UE 10 dB under the 5G DL, and the 5G DL
+reaches each Tag 43 to 47 dB under the Reader's carrier. `amber-compose` refuses positions whose
+gains would bring a receiver over −6 dBFS. Only this room, with a standalone Reader, takes positions
+yet.
+
 **PRACH detection.** The RFsimulator adds no noise, so the gNB's PRACH detector measures almost no
 noise floor, and the A-IoT signals in the UL band reach 18 to 23 dB in it. With OAI's default
 threshold of 15 dB they fake preambles; a fake one on the UE's dedicated preamble ends the UE's
