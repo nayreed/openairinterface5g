@@ -118,7 +118,7 @@ characters of the commit and with `latest`. Runs between two hosts are the campa
 
 `amber-compose SCENARIO DIR` writes the compose files that run a scenario into DIR. What it writes
 follows the scenario's `[network]` table: without one, a compose file with one Reader and one Tag
-per node over plain rfsim; with a 5G cell (`cell = "n28-25prb"`), the whole room of
+per node over plain rfsim; with a 5G cell (`cell = "n8-25prb"`), the whole room of
 [5g_rfsimulator_aiot](../../ci-scripts/yaml_files/5g_rfsimulator_aiot/README.md), the cell and the
 Reader and Tags in one air through `rfsim_hub`.
 

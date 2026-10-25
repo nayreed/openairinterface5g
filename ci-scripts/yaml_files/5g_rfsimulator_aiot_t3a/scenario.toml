@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 #
 # The room of this folder: Amber's registration scenario (tests/scenarios/registration.toml) in one
-# air with the 25-PRB n28 5G cell. Four hybrid Tags join with a CBRA paging (4 access occasions), get
+# air with the 25-PRB n8 5G cell. Four hybrid Tags join with a CBRA paging (4 access occasions), get
 # AS IDs in a Random ID Response, then are polled by AS ID with R2D Upper Layer Data Transfers.
 # Topology 3, the UE receiving the D2R: the gNB runs the Reader's MAC and sends the R2D (in its DL
 # PRBs), and the UE opens each D2R window the gNB gives it and sends back what it heard; a CW node
@@ -9,10 +9,17 @@
 # folder from this one (see README.md).
 
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "gnb"
 d2r = "ue"
 cw = "cw-node-ul"
+
+[[network.ue]]
+# indoors, 94 m from the base station, where the gNB's DL leaves room for the D2R;
+# height, power_dbm and antenna_gain_dbi take TR 38.769's values (1.5 m, 23 dBm, 0 dBi)
+x = 50.0
+y = 80.0
+indoor = true
 
 [run]
 sim_time_ms = 8001
@@ -54,7 +61,7 @@ sectors = [
 ]
 
 [radio]
-freq_hz = 924e6
+freq_hz = 932.67e6  # the R2D in the cell's DL PRB 1 (amber-compose checks it is the cell's)
 pathloss_model = "macro"
 los = true
 combine_mode = "max"

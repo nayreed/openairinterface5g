@@ -12,7 +12,15 @@ writes into DIR (here the current folder):
   room of ci-scripts/yaml_files/5g_rfsimulator_aiot (see the README there);
 - without one: one amber-reader and one amber-tag per node of the scenario, over plain rfsim.
 
-A 5G room whose scenario places its nodes on several machines ([network.hosts]) gets one
+A 5G room's scenario has a table per node in [network]: [network.gnb], [[network.ue]] (one yet),
+[network.cw_node], [network.reader], [network.tags] and [network.hub]. Each may say the machine its
+node runs on (host), and the gNB's and the UE's say where they are (x, y, and optionally height,
+power_dbm, antenna_gain_dbi, and indoor for the UE), except for the one that is the A-IoT Reader,
+which stands at the [[base_station]]. The gains between the 5G cell and the A-IoT link come from
+those places (Levels, amber.coexist.Room), and the R2D's frequency in [radio] freq_hz must be the
+cell's (check_frequency).
+
+A 5G room whose scenario places its nodes on several machines (their host keys) gets one
 docker-compose.<machine>.yaml per machine instead of docker-compose.yaml: the hub's machine has the
 room's network and publishes the ports of the nodes that run elsewhere, which connect to the hub's
 address (see "On several machines" in that README).
@@ -46,12 +54,13 @@ import difflib
 import json
 import math
 import os
+import re
 import shutil
 import sys
 from typing import NamedTuple
 
 from amber.hosts import load_scenario
-from amber.coexist import room_powers
+from amber.coexist import Room
 from amber.iq import ADC_NOISE_COUNTS, AIR_BLOCK_BYTES, AIR_SAMPLES, TX_COUNTS, dbm_to_w, thermal_noise_w, up_scale
 from amber.sink import PORT as SINK_PORT
 
@@ -104,7 +113,6 @@ ROOM_NET = "192.168.71.128"
 GNB_ADDR, HUB_ADDR, UE_ADDR = "192.168.71.140", "192.168.71.141", "192.168.71.150"
 ROOM_FIXED_ADDRS = 2 + 5  # network and broadcast, then the gateway, the hub, the gNB, the UE and the Reader
 GNB_PORT, UE_PORT, CW_PORT, READER_PORT, FIRST_TAG_PORT = 4043, 4044, 4049, 4050, 4051
-READER_TO_UE_DB, GNB_TO_TAG_DB, TAG_TO_GNB_DB, READER_TO_GNB_DB, UE_TO_READER_DB = -23.0, -6.0, -34.0, -26.0, 14.0
 LOG = ["--log_config.global_log_options", "level,nocolor,time"]
 # The gNB's PRACH detection threshold, in tenths of a dB above I0. The RFsimulator adds no noise, so
 # I0 is near 0 and the A-IoT signals in the UL band reach up to 23 dB in the PRACH detector: with the
@@ -414,24 +422,52 @@ def hub_conf_reader(scenario_path, node_ids, scenario, r2d_at, d2r_node):
         nodes += ["    # amber-reader --amber.role carrier writes block n, then reads block n",
                   hub_node(width, "cw", CW_PORT, AMBER_LOOKAHEAD)]
 
-    links = ["    # the 5G cell", hub_link("gnb", "ue"), hub_link("ue", "gnb"), ""]
+    levels = Levels(scenario, d2r_node)
+    reader_node = scenario.network.reader_node
+    # the node that receives the D2R hears its 5G peer as far as it is; the other node, its 5G peer as usual
+    links = ["    # the 5G cell: the D2R receiver hears the other node from where it is, the other one hears it as usual"]
+    links += [hub_link(tx, rx, levels.gain(tx, rx), 0.0) if rx == d2r_node else hub_link(tx, rx)
+              for tx, rx in (("gnb", "ue"), ("ue", "gnb"))]
+    links += [""]
     if cw_node or r2d_at == "ue":
         links += [f"    # {r2d_note}, the R2D's \"on\" chips at the Tag's DC as strong as Amber's Reader's carrier"]
     else:
         links += [f"    # {r2d_note}, the carrier at the Tag's DC as strong as Amber's Reader's there"]
-    links += [hub_link(r2d_at, t, r2d_db, r2d_shift_hz) for t in tags]
+    if r2d_at == reader_node:
+        links += [hub_link(r2d_at, t, r2d_db, r2d_shift_hz) for t in tags]
+    else:
+        links += ["    # from where the UE is, against the base station's place (amber.coexist)"]
+        links += [hub_link(r2d_at, t, round(r2d_db + levels.offset(r2d_at, t), 2), r2d_shift_hz) for t in tags]
     if cw_node:
         links += [f"    # the CW node's carrier at each Tag, as strong as Amber's Reader's there, {carrier_at_tag_hz / 1e6:+.2f} MHz "
                   "from the Tag's DC"]
         links += [hub_link("cw", t, 0.0, carrier_at_tag_hz) for t in tags]
     links += [f"    # each Tag's D2R at the {NAMES[d2r_node]}, at the level Amber gives it, as from a Tag "
               "next to the carrier:", f"    # {d2r_note}"]
-    links += [hub_link(t, d2r_node, 0.0, wrap_hz(cell, d2r_hz - carrier_at_tag_hz), d2r_band) for t in tags]
+    if d2r_node == reader_node:
+        links += [hub_link(t, d2r_node, 0.0, wrap_hz(cell, d2r_hz - carrier_at_tag_hz), d2r_band) for t in tags]
+    else:
+        links += ["    # at the UE, from where it is, against the base station's place (amber.coexist)"]
+        links += [hub_link(t, d2r_node, levels.offset(t, d2r_node), wrap_hz(cell, d2r_hz - carrier_at_tag_hz), d2r_band)
+                  for t in tags]
     if cw_node:
-        links += ["    # the carrier at the D2R receiver, in the same PRBs, as strong as Amber's Reader's own carrier leak",
-                  hub_link("cw", d2r_node, cw_leak_db(scenario), d2r_hz),
-                  "    # the CW node hears that node, and does nothing with it: every node hears someone",
+        if d2r_node == reader_node:
+            links += ["    # the carrier at the D2R receiver, in the same PRBs, as strong as Amber's Reader's own carrier leak",
+                      hub_link("cw", d2r_node, cw_leak_db(scenario), d2r_hz)]
+        else:
+            links += ["    # the carrier at the D2R receiver, in the same PRBs, from where the UE is",
+                      hub_link("cw", d2r_node, levels.gain("cw", d2r_node), d2r_hz)]
+        links += ["    # the CW node hears that node, and does nothing with it: every node hears someone",
                   hub_link(d2r_node, "cw")]
+    if cw_node and d2r_node != "gnb":
+        # the CW node's carrier and the Tags' reflections are in the UL band: the gNB hears them
+        ul_free = f"UL {prbs_text(cell.gnb_d2r_prbs)}"
+        links += [f"    # the CW node's carrier at the gNB, in {ul_free}, from where they are (amber.coexist)",
+                  hub_link("cw", "gnb", levels.gain("cw", "gnb"), cell.ul_shift_hz),
+                  f"    # each Tag's reflection at the gNB, in {ul_free}, from where they are (amber.coexist)"]
+        links += [hub_link(t, "gnb", levels.gain(t, "gnb"), wrap_hz(cell, cell.ul_shift_hz - carrier_at_tag_hz),
+                           (cell.ul_shift_hz, cell.d2r_width_hz)) for t in tags]
+    levels.check()
 
     topology = scenario.network.topology
     r2d_where = f"DL {prbs_text(cell.gnb_r2d_prbs)}" if r2d_at == "gnb" else f"UL {prbs_text(cell.ue_r2d_prbs)}"
@@ -502,10 +538,7 @@ def peer_options(scenario):
 
 
 # The rms levels the nodes of the room send, measured in it (README.md): the gNB's DL at full load, the
-# UE's UL, and the Reader's carrier and R2D. The gains from positions (amber.coexist) bring each sender to
-# each receiver at the power the geometry gives, in the receiver's own scale: the 5G receivers' is their
-# wanted signal (the 5G link is 0 dB), a Tag's is Amber's carrier at TX_COUNTS, and the Reader's has its
-# thermal noise at ADC_NOISE_COUNTS on I and on Q.
+# UE's UL, and the Reader's carrier and R2D; a CW node sends its carrier at TX_COUNTS.
 GNB_DL_COUNTS, UE_UL_COUNTS, READER_COUNTS = 166.0, 118.0, 7466.0
 # The most the links may bring to one receiver, summed as rms levels: -6 dBFS, the headroom of 16-bit samples.
 RX_LIMIT_COUNTS = 16384.0
@@ -515,35 +548,80 @@ def db(x):
     return 20 * math.log10(x)
 
 
-def geometry_gains(scenario, powers):
-    """{(tx, rx): gain dB} of the links between the 5G cell and the A-IoT link, from amber.coexist's
-    powers: each sender at each receiver as strong, against what that receiver's scale stands for, as
-    the geometry makes it. Refuses gains that would bring a receiver over RX_LIMIT_COUNTS."""
-    noise_dbm = 10 * math.log10(thermal_noise_w(scenario.reader_noise_figure_db)) + 30
-    reader_scale_db = 10 * math.log10(2) - noise_dbm  # Reader counts^2 per mW, as amber.iq.up_scale
-    gains = {("reader", "ue"): db(GNB_DL_COUNTS / READER_COUNTS) + powers.reader_at_ue - powers.gnb_at_ue,
-             ("reader", "gnb"): db(UE_UL_COUNTS / READER_COUNTS) + powers.reader_at_gnb - powers.ue_at_gnb,
-             ("ue", "reader"): powers.ue_at_reader + reader_scale_db - db(UE_UL_COUNTS)}
-    for n, t in powers.tags.items():
-        gains[("gnb", f"tag{n}")] = db(TX_COUNTS / GNB_DL_COUNTS) + t.gnb - t.carrier
-        gains[(f"tag{n}", "gnb")] = db(UE_UL_COUNTS) + t.at_gnb - powers.ue_at_gnb - (t.at_reader + reader_scale_db)
-    gains = {k: round(v, 2) for k, v in gains.items()}
-    sent = {"gnb": GNB_DL_COUNTS, "ue": UE_UL_COUNTS, "reader": READER_COUNTS}
-    at = {"ue": GNB_DL_COUNTS, "gnb": UE_UL_COUNTS}
-    at.update({f"tag{n}": READER_COUNTS for n in powers.tags})
-    for (tx, rx), g in gains.items():
-        if tx in sent:
-            at[rx] = at.get(rx, 0.0) + sent[tx] * 10 ** (g / 20)
-    for rx, level in at.items():
-        if level > RX_LIMIT_COUNTS:
-            raise ValueError(f"the links bring {level:.0f} counts rms to {rx}, over {RX_LIMIT_COUNTS:.0f}: "
-                             "move the gNB or the UE further from the A-IoT nodes")
-    return gains
+class Levels:
+    """The gains of the links between the 5G cell and the A-IoT link, from where the scenario places
+    their nodes (amber.coexist.Room): each sender at each receiver as strong, in that receiver's own
+    scale, as the geometry makes it.
+
+    A receiver's scale: the node that receives the D2R (d2r_node: "gnb", "ue", or "reader" for
+    Amber's Reader) has the Reader's, its thermal noise at ADC_NOISE_COUNTS on I and on Q, so that it
+    hears everything, its 5G link too, at the power the geometry gives; a 5G node that does not has
+    its wanted 5G signal at the level it sends (its link 0 dB, as its AGC would); a Tag has Amber's
+    carrier at TX_COUNTS. The senders are "gnb", "ue", "reader" (Amber's), "cw" (a CW node) and the
+    Tags (node ids), whose D2R leaves them at the level Amber gives it at the base station."""
+
+    def __init__(self, scenario, d2r_node):
+        self.room = Room(scenario)
+        self.d2r_node = d2r_node
+        noise_dbm = 10 * math.log10(thermal_noise_w(scenario.reader_noise_figure_db)) + 30
+        self.reader_scale_db = 10 * math.log10(2) - noise_dbm  # Reader counts^2 per mW, as amber.iq.up_scale
+        self.cw_leak_dbm = scenario.cw_leak[0]
+        # what each receiver gets, as rms counts summed: its wanted signal, then each link's
+        self.at = {"gnb": 0.0 if d2r_node == "gnb" else UE_UL_COUNTS, "ue": 0.0 if d2r_node == "ue" else GNB_DL_COUNTS}
+
+    @staticmethod
+    def place(node):
+        """The node of amber.coexist.Room a node of the room is at: Amber's Reader and a CW node are
+        at the base station, a Tag "tagN" is N."""
+        if node in ("reader", "cw"):
+            return "bs"
+        return int(node[3:]) if node.startswith("tag") else node
+
+    def scale_db(self, rx):
+        """dB from a dBm at rx to its rms counts."""
+        if rx == self.d2r_node:
+            return self.reader_scale_db
+        if rx.startswith("tag"):
+            return db(TX_COUNTS) - self.room.power("bs", self.place(rx))
+        if rx == "ue":
+            return db(GNB_DL_COUNTS) - self.room.power("gnb", "ue")
+        return db(UE_UL_COUNTS) - self.room.power("ue", "gnb")
+
+    def sent_db(self, tx):
+        """The rms counts tx sends, in dB."""
+        if tx.startswith("tag"):
+            return self.room.power(self.place(tx), "bs") + self.reader_scale_db
+        return db({"gnb": GNB_DL_COUNTS, "ue": UE_UL_COUNTS, "reader": READER_COUNTS, "cw": TX_COUNTS}[tx])
+
+    def gain(self, tx, rx):
+        """The gain of the link tx to rx; a CW node at the same place as rx (the base station) reaches
+        it as Amber's Reader's own carrier leak (cw_leak_dbm in [reader])."""
+        if tx == "cw" and self.room.at_base_station(self.place(rx)):
+            rx_dbm = self.cw_leak_dbm
+        else:
+            rx_dbm = self.room.power(self.place(tx), self.place(rx))
+        g = round(rx_dbm + self.scale_db(rx) - self.sent_db(tx), 2)
+        self.at[rx] = self.at.get(rx, 0.0) + 10 ** ((self.sent_db(tx) + g) / 20)
+        return g
+
+    def offset(self, tx, rx):
+        """How much more (dB) of tx rx gets than the base station would in its place: the R2D of a UE
+        away from the base station at a Tag (tx "ue"), or a Tag's D2R at that UE (rx "ue")."""
+        if tx == "ue":
+            return round(self.room.power("ue", self.place(rx)) - self.room.power("bs", self.place(rx)), 2)
+        return round(self.room.power(self.place(tx), "ue") - self.room.power(self.place(tx), "bs"), 2)
+
+    def check(self):
+        """Refuses links that would bring a receiver over RX_LIMIT_COUNTS."""
+        for rx, level in self.at.items():
+            if level > RX_LIMIT_COUNTS:
+                raise ValueError(f"the links bring {level:.0f} counts rms to {rx}, over {RX_LIMIT_COUNTS:.0f}: "
+                                 "move the gNB or the UE further from the A-IoT nodes")
 
 
-def hub_conf(scenario_path, cell, node_ids, gains=None):
+def hub_conf(scenario_path, scenario, cell, node_ids):
     """The room with a standalone Reader. Its links between the 5G cell and the A-IoT link have the
-    gains of geometry_gains when the scenario places the gNB and the UE, else the room's fixed ones."""
+    gains of Levels, from where the scenario places the gNB and the UE."""
     tags = [f"tag{n}" for n in node_ids]
     width = max(len(t) for t in ["reader"] + tags) + 3
     gnb_node, ue_node = nodes_5g(cell)
@@ -563,29 +641,19 @@ def hub_conf(scenario_path, cell, node_ids, gains=None):
     links = ["    # the 5G cell", hub_link("gnb", "ue"), hub_link("ue", "gnb"), "",
              "    # A-IoT: 0 dB, Amber applies its own path loss"]
     links += [hub_link("reader", t) for t in tags] + [hub_link(t, "reader") for t in tags]
-    if gains is None:
-        links += ["", f"    # Reader carrier and R2D at the UE, in {dl_at}, 10 dB above the 5G DL",
-                  hub_link("reader", "ue", READER_TO_UE_DB, -dl_shift_hz),
-                  "    # 5G DL at each Tag, 40 dB below the Reader's carrier there"]
-        links += [hub_link("gnb", t, GNB_TO_TAG_DB, dl_shift_hz) for t in tags]
-        links += [f"    # each Tag's D2R at the gNB, in {ul_at}, 20 dB below the UE's UL"]
-        links += [hub_link(t, "gnb", TAG_TO_GNB_DB, ul_shift_hz) for t in tags]
-        links += ["    # the Reader's carrier in the UL band, at the gNB, 10 dB above the UE's UL",
-                  hub_link("reader", "gnb", READER_TO_GNB_DB, ul_shift_hz),
-                  "    # the UE's UL at the Reader, as strong as a Tag's D2R",
-                  hub_link("ue", "reader", UE_TO_READER_DB, -ul_shift_hz)]
-    else:
-        links += ["", "    # Between the 5G cell and the A-IoT link, gains from where [network] places the gNB and the UE",
-                  f"    # (amber.coexist: TR 38.769 Table 6.6.2.1-1). The Reader in {dl_at} at the UE",
-                  hub_link("reader", "ue", gains[("reader", "ue")], -dl_shift_hz),
-                  "    # the 5G DL at each Tag"]
-        links += [hub_link("gnb", t, gains[("gnb", t)], dl_shift_hz) for t in tags]
-        links += [f"    # each Tag's D2R at the gNB, in {ul_at}"]
-        links += [hub_link(t, "gnb", gains[(t, "gnb")], ul_shift_hz) for t in tags]
-        links += ["    # the Reader's carrier in the UL band, at the gNB",
-                  hub_link("reader", "gnb", gains[("reader", "gnb")], ul_shift_hz),
-                  "    # the UE's UL at the Reader",
-                  hub_link("ue", "reader", gains[("ue", "reader")], -ul_shift_hz)]
+    levels = Levels(scenario, "reader")
+    links += ["", "    # Between the 5G cell and the A-IoT link, gains from where [network] places the gNB and the UE",
+              f"    # (amber.coexist: TR 38.769 Table 6.6.2.1-1). The Reader in {dl_at} at the UE",
+              hub_link("reader", "ue", levels.gain("reader", "ue"), -dl_shift_hz),
+              "    # the 5G DL at each Tag"]
+    links += [hub_link("gnb", t, levels.gain("gnb", t), dl_shift_hz) for t in tags]
+    links += [f"    # each Tag's D2R at the gNB, in {ul_at}"]
+    links += [hub_link(t, "gnb", levels.gain(t, "gnb"), ul_shift_hz) for t in tags]
+    links += ["    # the Reader's carrier in the UL band, at the gNB",
+              hub_link("reader", "gnb", levels.gain("reader", "gnb"), ul_shift_hz),
+              "    # the UE's UL at the Reader",
+              hub_link("ue", "reader", levels.gain("ue", "reader"), -ul_shift_hz)]
+    levels.check()
     about = [f"# rfsim_hub room: the {cell.name} cell of gnb.conf (gNB) and nr-ue.conf (UE) and an",
              f"# Ambient IoT Reader with {len(tags)} Tags, all at {msps(cell)}. The gNB leaves {dl_free} and UL "
              f"{prbs_text(cell.gnb_d2r_prbs)}",
@@ -613,9 +681,10 @@ def prb_blacklists(cell, r2d_node):
 
 
 class Machines:
-    """Where each node of a 5G room runs: all on one machine, or on the machines [network.hosts]
-    names, each with a compose file of its own. The nodes are those of [network.hosts]: "hub", "gnb",
-    "ue", "cw", "reader" and "tags"; amber.sink runs with the gNB, in its network."""
+    """Where each node of a 5G room runs: all on one machine, or on the machines the host keys of
+    [network]'s node tables name, each with a compose file of its own. The nodes are amber.scenario's
+    HOST_NODES: "hub", "gnb", "ue", "cw", "reader" and "tags"; amber.sink runs with the gNB, in its
+    network."""
 
     def __init__(self, network=None):
         self.network = network
@@ -659,7 +728,7 @@ def room_compose(scenario_path, cell, node_ids, image, reader=None, reader_opts=
     split (topology 3), the UE sends the gNB's R2D or receives its D2R, with peer_opts. cell_files are
     the gNB's and the UE's configuration files, from the room's folder.
 
-    {file name: text}: docker-compose.yaml, or with machines of [network.hosts], one
+    {file name: text}: docker-compose.yaml, or with nodes on several machines, one
     docker-compose.<machine>.yaml per machine, the hub's first."""
     def cmd(words):  # a command as one YAML flow list
         return json.dumps(words)
@@ -850,6 +919,55 @@ def room_compose(scenario_path, cell, node_ids, image, reader=None, reader_opts=
     return files
 
 
+# NR-ARFCN below 3 GHz: 5 kHz steps from 0 Hz (38.104 5.4.2.1)
+ARFCN_STEP_HZ, ARFCN_MAX_BELOW_3GHZ = 5e3, 599999
+
+
+def conf_number(text, key):
+    """The integer value of key in a gNB configuration file, as `key = value;`."""
+    found = re.findall(rf"^\s*{key}\s*=\s*(\d+)\s*;", text, re.MULTILINE)
+    if len(found) != 1:
+        raise ValueError(f"{len(found)} values of {key}, not one")
+    return int(found[0])
+
+
+def r2d_frequency_hz(cell, conf_path, scenario):
+    """Where the Tags listen: the centre of the R2D's PRBs, from the cell's point A in its gnb.conf
+    (DL when the gNB or Amber's Reader sends the R2D, UL when the UE does). Checks that gnb.conf has
+    the carrier the cell's record describes."""
+    with open(conf_path) as f:
+        text = f.read()
+    for key in ("dl_carrierBandwidth", "ul_carrierBandwidth"):
+        if conf_number(text, key) != cell.n_prb:
+            raise ValueError(f"{conf_path}: {key} is not the cell's {cell.n_prb} PRBs")
+    for key in ("dl_subcarrierSpacing", "ul_subcarrierSpacing"):
+        if SCS_REF_HZ * 2 ** conf_number(text, key) != cell.scs_hz:
+            raise ValueError(f"{conf_path}: {key} is not the cell's {cell.scs_hz / 1e3:g} kHz")
+    ue_sends = scenario.network.r2d == "ue"
+    arfcn = conf_number(text, "ul_absoluteFrequencyPointA" if ue_sends else "dl_absoluteFrequencyPointA")
+    if arfcn > ARFCN_MAX_BELOW_3GHZ:
+        raise ValueError(f"{conf_path}: point A at NR-ARFCN {arfcn} is above 3 GHz")
+    if ue_sends:
+        prb_start, n_rb = ue_reader(cell, scenario.phy)[:2]
+    elif scenario.network.r2d == "gnb":
+        prb_start, n_rb = gnb_reader(cell, scenario.phy)[:2]
+    else:
+        prb_start, n_rb = cell.gnb_r2d_prbs.start, len(cell.gnb_r2d_prbs)
+    centre_offset_hz = SC_PER_PRB // 2 * cell.n_prb * cell.scs_hz
+    return arfcn * ARFCN_STEP_HZ + centre_offset_hz + cell.prbs_hz(prb_start, n_rb), n_rb
+
+
+def check_frequency(cell, conf_path, scenario):
+    """Why the scenario's [radio] freq_hz is not where its Tags listen in this cell, or None: it must
+    be within the R2D's PRBs, as Amber's path loss and the Tags' link budget are worked out there."""
+    r2d_hz, n_rb = r2d_frequency_hz(cell, conf_path, scenario)
+    half_width_hz = SC_PER_PRB * n_rb * cell.scs_hz / 2
+    if abs(scenario.freq_hz - r2d_hz) <= half_width_hz:
+        return None
+    return (f"[radio] freq_hz is {scenario.freq_hz / 1e6:g} MHz, but the Tags listen at {r2d_hz / 1e6:g} MHz in the "
+            f"{cell.name} cell (the R2D's centre): set freq_hz = {r2d_hz / 1e6:g}e6")
+
+
 def cell_file(name):
     for d in CELL_DIRS:
         path = os.path.join(d, name)
@@ -874,9 +992,6 @@ def not_built(network, phy=None):
     """Why this script cannot build the network yet, or None."""
     if network.topology is None:
         return None
-    if getattr(network, "gnb", None) is not None:
-        return ("[network.gnb] and [network.ue]: gains from positions are built only for the room with a standalone "
-                "Reader yet")
     if network.topology == 1 and network.cw not in T1_CARRIERS:
         return (f'topology 1 with cw = {network.cw!r}: only the gNB\'s own DL carrier (cw = "gnb-dl") and a CW node '
                 'in the UL band (cw = "cw-node-ul") are built yet')
@@ -975,24 +1090,32 @@ def main():
                 if not os.path.isfile(os.path.join(room, args.cells_dir, name)):
                     parser.error(f"--cells-dir {args.cells_dir}: no {name} there, from {args.dir}")
             cell_files = tuple(f"{args.cells_dir.rstrip('/')}/{name}" for name in (gnb_conf, ue_conf))
+            gnb_conf_path = os.path.join(room, args.cells_dir, gnb_conf)
         else:
             cell_files = ("./gnb.conf", "./nr-ue.conf")
             copies = {"gnb.conf": cell_file(gnb_conf), "nr-ue.conf": cell_file(ue_conf)}
+            gnb_conf_path = copies["gnb.conf"]
+        try:
+            reason = check_frequency(cell, gnb_conf_path, scenario)
+        except ValueError as e:
+            reason = str(e)
+        if reason:
+            parser.error(f"{args.scenario}: {reason}")
         machines = Machines(network)
         if reader:
             files = room_compose(scenario_path, cell, node_ids, args.image, reader, reader_options(scenario, node_ids, reader),
                                  network.cw == "cw-node-ul", network.relay, split,
                                  peer_options(scenario) if split else (), cell_files, machines)
-            files["rfsim_hub.conf"] = hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)
         else:
             files = room_compose(scenario_path, cell, node_ids, args.image, cell_files=cell_files, machines=machines)
+        # Whatever computing the powers prints must not end up in a file either.
+        try:
             with contextlib.redirect_stdout(sys.stderr):
-                powers = room_powers(scenario)
-            try:
-                gains = geometry_gains(scenario, powers) if powers else None
-            except ValueError as e:
-                parser.error(f"{args.scenario}: [network]: {e}")
-            files["rfsim_hub.conf"] = hub_conf(scenario_path, cell, node_ids, gains)
+                files["rfsim_hub.conf"] = (hub_conf_reader(scenario_path, node_ids, scenario, network.r2d, network.d2r)
+                                           if reader else hub_conf(scenario_path, scenario, cell, node_ids))
+        except ValueError as e:
+            message = str(e)  # amber.coexist names the scenario in some
+            parser.error(message if message.startswith(f"{scenario.path}:") else f"{args.scenario}: [network]: {message}")
     if args.check:
         stale = stale_files(room, files, copies)
         for name in stale:

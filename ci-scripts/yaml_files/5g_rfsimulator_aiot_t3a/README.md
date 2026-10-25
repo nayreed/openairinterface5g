@@ -13,10 +13,14 @@ topology 1 CW room's, with
 
 ```toml
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "gnb"          # the gNB sends the R2D, and runs the MAC
 d2r = "ue"           # the UE receives the D2R
 cw = "cw-node-ul"    # a CW node sends the carrier, in the UL band
+[[network.ue]]
+x = 50.0             # m from the base station, where the Tags are; the gNB, the Reader, stands there
+y = 80.0
+indoor = true
 ```
 
 and `amber-compose` writes the other files from it. The containers are `rfsim-hub`, `oai-gnb`,
@@ -52,22 +56,30 @@ is [5g_rfsimulator_aiot_t3b](../5g_rfsimulator_aiot_t3b/README.md).
 
 ## Levels
 
-As in the other rooms, the gains bring each signal to the level Amber's own Reader would give it.
-The links to the Tags are the topology 1 CW room's, and the links to the UE topology 4's, with the
-shifts of the gNB's DL.
+As in the other rooms, the gains bring each signal to the level Amber's own Reader would give it,
+and the links between the cell and the A-IoT nodes come from where they are. The links to the Tags
+are the topology 1 CW room's, and the links to the UE topology 4's, with the shifts of the gNB's DL.
 
 | Link | Gain | Shift | Why |
 |:-----|-----:|------:|:----|
 | gnb → tagN | +19.02 dB | +1.98 MHz | DL PRB 1 at each Tag's DC, the R2D's "on" chips at 8192 counts, as in topology 1 |
 | cw → tagN | 0 dB | −0.90 MHz | the carrier at 8192 counts, 0.9 MHz under the Tag's DC, as in the topology 1 CW room |
-| tagN → ue | 0 dB | −1.98 MHz | the carrier's reflection at 2.88 MHz, the centre of the D2R's DL PRBs 25 to 31 in the guard band of the UE's DL; the link passes only those PRBs (`pass_Hz`, `pass_width_Hz`) |
-| cw → ue | −12.89 dB | +2.88 MHz | the carrier at 1858 counts in the D2R's PRBs: the leak Amber's Reader has of its own carrier, as in topology 4 |
+| gnb → ue | +27.33 dB | 0 | the gNB's DL from the base station, in the scale of the UE's D2R receiver (thermal noise at 1 count): UMa, through the wall of the UE's room |
+| tagN → ue | −20.7 to −13.3 dB | −1.98 MHz | each Tag's D2R as at the base station, less what the UE's place takes off it (InH-Office against Amber's path to the base station); the carrier's reflection at 2.88 MHz, the centre of the D2R's DL PRBs 25 to 31 in the guard band of the UE's DL; the link passes only those PRBs (`pass_Hz`, `pass_width_Hz`) |
+| cw → ue | −6.54 dB | +2.88 MHz | the carrier in the D2R's PRBs, from the base station, as the gNB's DL reaches the UE |
 | ue → cw | 0 dB | 0 | the CW node hears the UE and ignores it: the hub needs every node to hear someone |
 | ue noise | 1 count rms | | the receiver noise of Amber's Reader |
+| cw → gnb | −20.18 dB | +1.08 MHz | the carrier at the gNB, which stands with the CW node: the leak Amber's Reader has of its own carrier, in UL PRB 18 |
+| tagN → gnb | −7.29 dB | +1.98 MHz | each Tag's reflection at the gNB, at the base station, as Amber gives it, in UL PRBs 15 to 21 only |
 
 The UE has one receiver, in its DL band, so the hub moves the Tags' reflection into the guard band
-of its DL, as in [topology 4](../5g_rfsimulator_aiot_t4/README.md#levels). The gNB hears neither the
-carrier nor the Tags.
+of its DL, as in [topology 4](../5g_rfsimulator_aiot_t4/README.md#levels). The gNB hears the carrier
+and the Tags in the UL PRBs it leaves free.
+
+The UE's place is a trade: the closer to the Tags, the stronger their D2R, but the closer to the
+base station too, whose DL and carrier would then bring the UE's receiver over −6 dBFS, which
+`amber-compose` refuses. Indoors 94 m away, the D2R is 13 to 21 dB weaker than at the base station,
+where it arrives 47 to 57 dB over the noise.
 
 ## Run it
 
