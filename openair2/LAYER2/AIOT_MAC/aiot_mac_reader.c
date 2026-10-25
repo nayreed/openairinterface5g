@@ -405,13 +405,16 @@ static void close_open(aiot_reader_t *r, int64_t now)
     if (a->kind != AIOT_ANSWER_MSG1)
       continue;
     int fi = 0;
-    while (fi < 8 && aiot_mac_freq_index_to_r_sfs(fi) != a->r_sfs)
+    while (fi < AIOT_MAX_SHIFTS && aiot_mac_freq_index_to_r_sfs(fi) != a->r_sfs)
       fi++;
     aiot_mac_rid_entry_t *e = &ridr.entries[ridr.n_entries++];
     e->echoed_random_id = a->message.random_id;
     e->assigned_as_id = r->next_as_id;
-    e->freq_index = fi < 8 ? fi : -1;
-    r->next_as_id = (r->next_as_id + 1) & 0xFFFF;
+    e->freq_index = fi < AIOT_MAX_SHIFTS ? fi : -1;
+    /* AS IDs are 16 bits and wrap past 0. A Tag drops its AS ID at the next paging of another
+     * Transaction ID (38.391 5.2), so a wrap reuses one still held only after 65535 Msg1s answered
+     * under one Transaction ID. */
+    r->next_as_id = (r->next_as_id + 1) & UINT16_MAX;
     if (!r->next_as_id)
       r->next_as_id = 1;
   }
