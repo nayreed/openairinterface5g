@@ -202,6 +202,12 @@ static int occasions(const aiot_device_t *d)
   return d->cbra_sched.x * d->cbra_sched.n_sfs;
 }
 
+static void stop_cbra(aiot_device_t *d)
+{
+  d->cbra_active = 0;
+  d->counter = -1;
+}
+
 static int try_occasion(aiot_device_t *d, aiot_device_send_t *out)
 {
   int m = occasions(d);
@@ -211,23 +217,28 @@ static int try_occasion(aiot_device_t *d, aiot_device_send_t *out)
   int n_sfs = d->cbra_sched.n_sfs;
   int slot = k / n_sfs;
   int r_sfs = d->cbra_sched.r_sfs[k % n_sfs];
-  d->counter = -1;
+  aiot_d2r_params_t p;
+  if (aiot_mac_to_d2r_params(&d->cbra_sched, r_sfs, d->modulation, &p) < 0) {
+    stop_cbra(d); /* the occasion cannot be sent: the procedure ends, it does not wait for a Msg2 */
+    return AIOT_EINVAL;
+  }
   /* 5.3.1.2 */
-  d->random_id = (int)d->upper.draw(d->upper.user, 1u << 16);
-  d->msg1_r_sfs = r_sfs;
-  d->msg2_budget = d->k;
   aiot_mac_d2r_msg_t msg;
   memset(&msg, 0, sizeof(msg));
   msg.kind = AIOT_D2R_ACCESS_RANDOM_ID;
-  msg.random_id = d->random_id;
-  aiot_d2r_params_t p;
-  if (aiot_mac_to_d2r_params(&d->cbra_sched, r_sfs, d->modulation, &p) < 0)
-    return AIOT_EINVAL;
+  msg.random_id = (int)d->upper.draw(d->upper.user, 1u << 16);
   memset(out, 0, sizeof(*out));
-  out->message = msg;
   out->n_bits = aiot_mac_pack_d2r(&msg, out->bits, sizeof(out->bits));
-  if (out->n_bits < 0)
+  if (out->n_bits < 0) {
+    stop_cbra(d);
     return AIOT_EINVAL;
+  }
+  /* Msg1 is sent: only now does the device wait for Msg2 */
+  d->counter = -1;
+  d->random_id = msg.random_id;
+  d->msg1_r_sfs = r_sfs;
+  d->msg2_budget = d->k;
+  out->message = msg;
   out->params = p;
   out->msg = AIOT_MSG1;
   out->tbs_bytes = 2;
@@ -238,22 +249,16 @@ static int try_occasion(aiot_device_t *d, aiot_device_send_t *out)
 
 static int start_cbra(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_send_t *out)
 {
-  d->cbra_active = 1;
-  d->cbra_success = 0;
-  d->cbra_sched = m->sched;
   int k = aiot_mac_k_value(m->k_bit);
   int n = aiot_mac_num_access_occasions(m->num_access_occasions_code);
   if (k < 0 || n < 0)
     return AIOT_EINVAL;
+  d->cbra_active = 1;
+  d->cbra_success = 0;
+  d->cbra_sched = m->sched;
   d->k = k;
   d->counter = (int)d->upper.draw(d->upper.user, (uint32_t)n);
   return try_occasion(d, out);
-}
-
-static void stop_cbra(aiot_device_t *d)
-{
-  d->cbra_active = 0;
-  d->counter = -1;
 }
 
 static int access_trigger(aiot_device_t *d, aiot_device_send_t *out)
