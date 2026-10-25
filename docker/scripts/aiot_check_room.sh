@@ -210,9 +210,15 @@ if containers | grep -qx rfsim5g-aiot-reader; then
 fi
 
 # The 5G cell, after Amber has left.
-received=$(docker exec rfsim5g-oai-nr-ue ping -c 10 -W 5 10.0.1.1 | sed -n 's/.* \([0-9]*\) received.*/\1/p' || true)
+ping_out=$(docker exec rfsim5g-oai-nr-ue ping -c 10 -W 5 10.0.1.1 2>&1 || true)
+received=$(sed -n 's/.* \([0-9]*\) received.*/\1/p' <<< "$ping_out")
 echo "5G: ping ${received:-0} of 10"
-[ "${received:-0}" -ge 9 ] || fail "ping got ${received:-0} of 10"
+if [ "${received:-0}" -lt 9 ]; then
+  fail "ping got ${received:-0} of 10"
+  # why: ping's own words, and the UE's tunnel
+  echo "$ping_out" | tail -5
+  docker exec rfsim5g-oai-nr-ue ip -brief address 2>&1 || true
+fi
 stats=$(docker logs rfsim5g-oai-gnb 2>&1 | grep -E 'dlsch_errors|ulsch_errors' | tail -2 || true)
 echo "$stats"
 dl=$(sed -n 's/.*dlsch_errors \([0-9]*\).*/\1/p' <<< "$stats" | tail -1)
@@ -235,6 +241,8 @@ else
   for name in rfsim5g-oai-gnb rfsim5g-oai-nr-ue; do
     echo "---- $name, A-IoT lines (last 30) ----"
     docker logs "$name" 2>&1 | grep -i 'a-iot\|aiot\|amber' | tail -30 || true
+    echo "---- $name, warnings and errors (last 30) ----"
+    docker logs "$name" 2>&1 | grep -E '\] [EWA] ' | grep -vi 'a-iot\|aiot' | tail -30 || true
   done
   echo "$project: FAIL" >&2
 fi
