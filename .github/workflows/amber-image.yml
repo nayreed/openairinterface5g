@@ -1,9 +1,11 @@
 name: oai-amber image
 
-# Builds oai-amber (amber-reader, amber-tag, rfsim_hub and Amber's dev branch, from
-# docker/Dockerfile.amber.ubuntu), checks it, runs every checked-in 5G room with it, and only then
-# publishes it. The gNB and UE images come from the oai-gnb and oai-nr-ue workflow
-# (oai-5g-images.yml); this workflow pulls them and never builds them.
+# Builds oai-amber (amber-reader, amber-tag, rfsim_hub and Amber's amber_ref branch, dev by
+# default, from docker/Dockerfile.amber.ubuntu), checks it, runs every checked-in 5G room with it,
+# and only then publishes it. The gNB and UE images come from the oai-gnb and oai-nr-ue workflow
+# (oai-5g-images.yml); this workflow pulls them and never builds them. A branch whose A-IoT
+# library changed with Amber's names Amber's branch in amber_ref; only an image of Amber's dev is
+# published.
 #
 # It never starts on a push or a pull request. The oai-gnb and oai-nr-ue workflow starts it once it
 # has pushed a new gNB and UE (oai_5g_tag=<commit>); start it by hand with oai_5g_tag=latest to run
@@ -28,6 +30,9 @@ on:
       oai_5g_tag:
         description: oai-gnb and oai-nr-ue tag to run the rooms with (the oai-gnb and oai-nr-ue workflow passes its commit)
         default: latest
+      amber_ref:
+        description: the nayreed/Amber branch to build with, such as the branch that goes with this one's changes
+        default: dev
 
 permissions:
   contents: read
@@ -84,15 +89,17 @@ jobs:
       tag: ${{ steps.name.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
-      - name: Name the image and pick Amber's dev commit
+      - name: Name the image and pick Amber's commit
         id: name
+        env:
+          AMBER_BRANCH: ${{ inputs.amber_ref || 'dev' }}
         run: |
           echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/oai-amber:${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
           echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
-          amber=$(git ls-remote https://github.com/nayreed/Amber refs/heads/dev | cut -f1)
-          [ -n "$amber" ] || { echo "Amber has no dev branch" >&2; exit 1; }
+          amber=$(git ls-remote https://github.com/nayreed/Amber "refs/heads/$AMBER_BRANCH" | cut -f1)
+          [ -n "$amber" ] || { echo "Amber has no $AMBER_BRANCH branch" >&2; exit 1; }
           echo "amber=$amber" >> "$GITHUB_OUTPUT"
-          echo "Amber dev is at $amber"
+          echo "Amber $AMBER_BRANCH is at $amber"
       - uses: docker/setup-buildx-action@v4
       # The dependency layers come from the GitHub Actions cache; only the Amber clone (when dev
       # moved) and the OAI build run again.
@@ -188,7 +195,8 @@ jobs:
   # Nothing is published unless every room passed with these images.
   publish:
     needs: [build, scenarios, gnb-ue, rooms]
-    if: github.ref == 'refs/heads/aiot-rfsim'
+    # Only an image of Amber's dev is published.
+    if: github.ref == 'refs/heads/aiot-rfsim' && (inputs.amber_ref || 'dev') == 'dev'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

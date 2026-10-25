@@ -17,6 +17,10 @@ name: oai-gnb and oai-nr-ue images
 
 on:
   workflow_dispatch:
+    inputs:
+      amber_ref:
+        description: the nayreed/Amber branch the oai-amber workflow builds with, once these images are pushed
+        default: dev
 
 permissions:
   contents: read
@@ -123,7 +127,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.build.outputs.tag }}
+          AMBER_REF: ${{ inputs.amber_ref || 'dev' }}
         run: |
           gh workflow run amber-image.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
-            -f oai_5g_tag="$TAG"
-          echo "Started oai-amber image with oai_5g_tag=$TAG"
+            -f oai_5g_tag="$TAG" -f amber_ref="$AMBER_REF"
+          echo "Started oai-amber image with oai_5g_tag=$TAG amber_ref=$AMBER_REF"
