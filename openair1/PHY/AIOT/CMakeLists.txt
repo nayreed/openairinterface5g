@@ -17,6 +17,8 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     enable_language(CXX)
     set(CMAKE_CXX_STANDARD 17)
     enable_testing()
+    # here, not in tests/: the MAC tests in openair2/LAYER2/AIOT_MAC/tests need GTest too
+    find_package(GTest REQUIRED)
   endif()
 endif()
 
