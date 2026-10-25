@@ -40,8 +40,8 @@
  * starting outside the window, not one in it. */
 #define SEARCH_GUARD 1
 #define PI 3.14159265358979323846
-/* V at most: E = 6096 bits and a midamble every 48 bits */
-#define AIOT_D2R_MAX_V (6 * (AIOT_MAX_TB_BITS + 16) + 130 * 31)
+/* V at most: the largest E and a midamble of 31 every 48 bits */
+#define AIOT_D2R_MAX_V (AIOT_MAX_E_BITS + 130 * 31)
 
 /* ---------------------------------------------------------------------------------------------
  * Transmitter
@@ -50,7 +50,7 @@
 /* B = A + L, E after block repetition and the optional TBCC (§6.1.2). */
 static int coded_len(int a_bits, const aiot_d2r_params_t *p)
 {
-  return (a_bits + aiot_crc_length(a_bits)) * p->r_block * (p->r_code ? 3 : 1);
+  return (a_bits + aiot_crc_length(a_bits)) * p->r_block * (p->r_code ? AIOT_TBCC_RATE : 1);
 }
 
 /* V for a given E (§6.1.3): floor(E / I_bit) midambles, ceil with the additional one. */
@@ -83,13 +83,13 @@ int aiot_d2r_coded_bits(const uint8_t *tb_bits, int a_bits, const aiot_d2r_param
   int n_e = coded_len(a_bits, p);
   if (n_e > max_e)
     return AIOT_ESPACE;
-  uint8_t word[AIOT_MAX_TB_BITS + 16];
+  uint8_t word[AIOT_MAX_WORD_BITS];
   aiot_attach_crc(tb_bits, a_bits, word);
   if (!p->r_code) {
     aiot_repeat_block(word, b, p->r_block, e);
     return n_e;
   }
-  uint8_t rep[2 * (AIOT_MAX_TB_BITS + 16)];
+  uint8_t rep[AIOT_MAX_BLOCK_BITS];
   aiot_repeat_block(word, b, p->r_block, rep);
   aiot_tbcc_encode(rep, b * p->r_block, e);
   return n_e;
@@ -129,7 +129,7 @@ int aiot_d2r_assemble(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
   int n_v = aiot_frame_bits(a_bits, p);
   if (n_v > max_v)
     return AIOT_ESPACE;
-  uint8_t e[6 * (AIOT_MAX_TB_BITS + 16)];
+  uint8_t e[AIOT_MAX_E_BITS];
   uint8_t amble[31];
   int lay[AIOT_D2R_MAX_V];
   if ((size_t)n_v > sizeof(lay) / sizeof(lay[0]))
@@ -474,9 +474,9 @@ static int read_frame(const double *soft, int a_bits, const aiot_d2r_params_t *p
   int b = a_bits + aiot_crc_length(a_bits);
   int k = b * p->r_block;
   int a;
-  uint8_t c[2 * (AIOT_MAX_TB_BITS + 16)];
+  uint8_t c[AIOT_MAX_BLOCK_BITS];
   if (p->r_code) {
-    if (aiot_tbcc_decode(soft, 3 * k, c) != k)
+    if (aiot_tbcc_decode(soft, AIOT_TBCC_RATE * k, c) != k)
       return AIOT_ENOMEM;
     for (int cp = 0; cp < p->r_block; cp++) { /* any copy whose CRC holds */
       if (aiot_check_crc(c + cp * b, b, &a) == 1) {
@@ -486,7 +486,7 @@ static int read_frame(const double *soft, int a_bits, const aiot_d2r_params_t *p
     }
     return 0;
   }
-  double comb[AIOT_MAX_TB_BITS + 16];
+  double comb[AIOT_MAX_WORD_BITS];
   aiot_combine_repetitions(soft, k, p->r_block, comb);
   for (int i = 0; i < b; i++)
     c[i] = comb[i] < 0;

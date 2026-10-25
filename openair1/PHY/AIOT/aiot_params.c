@@ -124,7 +124,7 @@ int aiot_d2r_params_check(const aiot_d2r_params_t *p)
   int r = p->r_sfs;
   if (r < 1 || r > bit_durations[row].max_r_sfs || (r & (r - 1)))
     return AIOT_EINVAL;
-  if (p->r_block != 1 && p->r_block != 2)
+  if (p->r_block < 1 || p->r_block > AIOT_MAX_R_BLOCK)
     return AIOT_EINVAL;
   if (p->l_amble != 7 && p->l_amble != 31)
     return AIOT_EINVAL;

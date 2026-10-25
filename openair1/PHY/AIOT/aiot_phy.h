@@ -57,6 +57,12 @@ extern "C" {
 
 #define AIOT_MAX_TBS_BYTES 125
 #define AIOT_MAX_TB_BITS (8 * AIOT_MAX_TBS_BYTES)
+#define AIOT_MAX_CRC_LEN 16 /* L, the longer of the two CRCs */
+#define AIOT_MAX_WORD_BITS (AIOT_MAX_TB_BITS + AIOT_MAX_CRC_LEN) /* B = A + L */
+#define AIOT_MAX_R_BLOCK 2 /* D2R block repetition R_block */
+#define AIOT_MAX_BLOCK_BITS (AIOT_MAX_R_BLOCK * AIOT_MAX_WORD_BITS) /* B x R_block, the TBCC input */
+#define AIOT_TBCC_RATE 3 /* TBCC coded bits per input bit */
+#define AIOT_MAX_E_BITS (AIOT_TBCC_RATE * AIOT_MAX_BLOCK_BITS) /* E */
 
 /* The NR cell's time, which A-IoT nodes count in: 15 kHz, 10 slots of 1 ms a frame, the SFN wrapping
  * at 1024 frames (TS 38.211 §4.3.1). */

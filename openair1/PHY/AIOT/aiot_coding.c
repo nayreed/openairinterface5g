@@ -82,7 +82,7 @@ int aiot_check_crc(const uint8_t *word, int b_bits, int *a_bits)
   if (b_bits < L)
     return AIOT_EINVAL;
   int a = b_bits - L;
-  uint8_t parity[16];
+  uint8_t parity[AIOT_MAX_CRC_LEN];
   aiot_crc(word, a, L, parity);
   if (a_bits)
     *a_bits = a;
