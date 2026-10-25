@@ -258,7 +258,7 @@ static const char *describe(const aiot_mac_r2d_msg_t *m, char *detail, size_t le
                        "tid=%d n=%d k=%d x=%d r_sfs=[",
                        m->transaction_id,
                        aiot_mac_num_access_occasions(m->num_access_occasions_code),
-                       m->k_bit ? 4 : 1,
+                       aiot_mac_k_value(m->k_bit),
                        m->sched.x);
       for (int i = 0; i < m->sched.n_sfs && o < (int)len; i++)
         o += snprintf(detail + o, len - o, i ? ", %d" : "%d", m->sched.r_sfs[i]);
