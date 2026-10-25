@@ -18,6 +18,8 @@ name: oai-amber image
 #   scenarios  two seeded Amber scenarios in docker compose, compared with amber.run
 #   rooms      each room in ci-scripts/yaml_files/5g_rfsimulator_aiot* with those three images
 #              (docker/scripts/aiot_check_room.sh)
+#   machines   rooms t1 and t2 split over a gNB machine and a device machine, with the hub on the
+#              gNB's or on a third ([network.hosts]), as compose projects on one runner
 #   publish    on aiot-rfsim, once the rooms pass: oai-amber as :<commit> and :latest, and the gNB
 #              and UE the rooms ran with as :latest
 #
@@ -192,9 +194,79 @@ jobs:
           path: ${{ runner.temp }}/room
           retention-days: 14
 
+  # Rooms split over machines, as [network.hosts] places them: the gNB's and the devices', with
+  # the hub on the gNB's or on a third. The machines are compose projects on this runner, which
+  # talk to the hub at the runner's own address, through its published ports, as they would over
+  # a network; aiot_check_room.sh copies the gNB's radio configuration to the UE's machine and runs
+  # the same checks as for one machine.
+  machines:
+    needs: [build, gnb-ue]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        room: [5g_rfsimulator_aiot_t1, 5g_rfsimulator_aiot_t2]
+        hub: [with-gnb, third]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: oai-amber
+          path: ${{ runner.temp }}
+      - name: Get the images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.gnb-ue.outputs.tag }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}
+          docker pull "$registry/oai-gnb:$TAG"
+          docker pull "$registry/oai-nr-ue:$TAG"
+          docker load --input "$RUNNER_TEMP/oai-amber.tar"
+      - name: Place the room's nodes on machines
+        env:
+          AMBER_IMG: ${{ needs.build.outputs.image }}
+          HUB: ${{ matrix.hub }}
+        run: |
+          room=$RUNNER_TEMP/split
+          mkdir -p "$room"
+          cp "ci-scripts/yaml_files/${{ matrix.room }}/scenario.toml" "$room/"
+          addr=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+          [ -n "$addr" ] || { echo "no address on the default route" >&2; exit 1; }
+          gnb=$addr
+          [ "$HUB" = third ] && gnb=gnb-host
+          {
+            echo
+            echo "[network.hosts]"
+            echo "hub = \"$addr\""
+            echo "gnb = \"$gnb\""
+            echo "ue = \"device-host\""
+            echo "tags = \"device-host\""
+            if grep -q '^cw = "cw-node' "$room/scenario.toml"; then echo "cw = \"device-host\""; fi
+          } >> "$room/scenario.toml"
+          docker run --rm --user "$(id -u):$(id -g)" -v "$room:/room" "$AMBER_IMG" \
+            amber-compose /room/scenario.toml /room
+          ls "$room"
+      - name: Run the room and check it
+        env:
+          TAG: ${{ needs.gnb-ue.outputs.tag }}
+          AMBER_IMG: ${{ needs.build.outputs.image }}
+        run: |
+          export REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/
+          docker/scripts/aiot_check_room.sh "$RUNNER_TEMP/split" "$RUNNER_TEMP/room"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: machines-${{ matrix.room }}-hub-${{ matrix.hub }}
+          path: ${{ runner.temp }}/room
+          retention-days: 14
+
   # Nothing is published unless every room passed with these images.
   publish:
-    needs: [build, scenarios, gnb-ue, rooms]
+    needs: [build, scenarios, gnb-ue, rooms, machines]
     # Only an image of Amber's dev is published.
     if: github.ref == 'refs/heads/aiot-rfsim' && (inputs.amber_ref || 'dev') == 'dev'
     runs-on: ubuntu-24.04

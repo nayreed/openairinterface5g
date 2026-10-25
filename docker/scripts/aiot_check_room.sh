@@ -18,6 +18,13 @@
 # REGISTRY and TAG name the oai-gnb and oai-nr-ue images, as in the room's compose file. Nothing
 # is pulled: the images must be on this host. OUT_DIR (default: none) receives the room's records
 # and every container's log, so a failed run can be read afterwards.
+#
+# A room whose scenario places its nodes on several machines ([network.hosts]) has one
+# docker-compose.<machine>.yaml per machine instead of docker-compose.yaml. This script runs them
+# all on this host, as one compose project each: the hub's machine first, the UE's last, with the
+# gNB's reconfig.raw and rbconfig.raw copied into the UE's ./rrc as one would between machines. The
+# hub's machine is then this host, as [network.hosts] must say (an address of this host that
+# containers reach, such as its own address on the default route).
 
 set -euo pipefail
 
@@ -31,10 +38,44 @@ room=$(cd "$1" && pwd)
 out=${2:-}
 timeout_s=${AIOT_ROOM_TIMEOUT:-1200}
 project=$(basename "$room")
-compose=(docker compose --project-directory "$room" -f "$room/docker-compose.yaml" -p "$project")
-volume="${project}_amber.out"
 sim_time_ms=$(sed -n 's/^sim_time_ms *= *\([0-9]*\).*/\1/p' "$room/scenario.toml" | head -1)
 [ -n "$sim_time_ms" ] || { echo "$room/scenario.toml has no sim_time_ms" >&2; exit 2; }
+
+# The room's compose files, the hub's first and the one with the UE last, and a project for each.
+files=()
+if [ -f "$room/docker-compose.yaml" ]; then
+  files=(docker-compose.yaml)
+else
+  hub_file=$(grep -l 'container_name: rfsim5g-aiot-hub' "$room"/docker-compose.*.yaml | head -1 || true)
+  ue_file=$(grep -l 'container_name: rfsim5g-oai-nr-ue' "$room"/docker-compose.*.yaml | head -1 || true)
+  [ -n "$hub_file" ] && [ -n "$ue_file" ] || { echo "$room has no docker-compose.yaml" >&2; exit 2; }
+  files=("$(basename "$hub_file")")
+  for f in "$room"/docker-compose.*.yaml; do
+    [ "$f" = "$hub_file" ] || [ "$f" = "$ue_file" ] || files+=("$(basename "$f")")
+  done
+  [ "$ue_file" = "$hub_file" ] || files+=("$(basename "$ue_file")")
+fi
+projects=()
+for f in "${files[@]}"; do
+  p=${f#docker-compose}
+  p=${p%.yaml}
+  projects+=("$project${p//./-}")
+done
+
+# docker compose on the room's I-th file
+dc() {
+  local i=$1
+  shift
+  docker compose --project-directory "$room" -f "$room/${files[$i]}" -p "${projects[$i]}" "$@"
+}
+
+# Every container of the room
+containers() {
+  local i
+  for i in "${!files[@]}"; do
+    dc "$i" ps --all --format '{{.Name}}'
+  done
+}
 
 failed=0
 fail() {
@@ -42,28 +83,60 @@ fail() {
   failed=1
 }
 
+# Every machine's amber.out, gathered in one folder: what the Reader and the Tags wrote, wherever
+# they ran.
+records=$(mktemp -d)
+gather() {
+  local i
+  for i in "${!files[@]}"; do
+    if docker volume inspect "${projects[$i]}_amber.out" > /dev/null 2>&1; then
+      docker run --rm -v "${projects[$i]}_amber.out:/out:ro" -v "$records:/save" "$AMBER_IMG" \
+        sh -c 'cp -r /out/. /save/' || true
+    fi
+  done
+}
+
 save() {
   [ -n "$out" ] || return 0
   mkdir -p "$out/logs" "$out/amber.out"
-  for name in $("${compose[@]}" ps --all --format '{{.Name}}'); do
+  for name in $(containers); do
     docker logs "$name" > "$out/logs/$name.log" 2>&1 || true
   done
-  docker run --rm -v "$volume:/out:ro" -v "$(cd "$out" && pwd)/amber.out:/save" "$AMBER_IMG" \
-    sh -c 'cp -r /out/. /save/' || true
+  gather
+  cp -r "$records/." "$out/amber.out/" || true
 }
 
 cleanup() {
   save
-  "${compose[@]}" down -v --remove-orphans > /dev/null 2>&1 || true
+  local i
+  for i in "${!files[@]}"; do
+    dc "$i" down -v --remove-orphans > /dev/null 2>&1 || true
+  done
+  rm -rf "$records"
 }
 trap cleanup EXIT
 
-"${compose[@]}" down -v --remove-orphans > /dev/null 2>&1 || true
-"${compose[@]}" up -d --pull never
+for i in "${!files[@]}"; do
+  dc "$i" down -v --remove-orphans > /dev/null 2>&1 || true
+done
+for i in "${!files[@]}"; do
+  if grep -q '^ *- \./rrc:' "$room/${files[$i]}"; then
+    # the gNB's radio configuration, as one copies it from the gNB's machine to the UE's
+    mkdir -p "$room/rrc"
+    for f in reconfig.raw rbconfig.raw; do
+      for _ in $(seq 60); do
+        docker cp "rfsim5g-oai-gnb:/opt/oai-gnb/$f" "$room/rrc/$f" > /dev/null 2>&1 && break
+        sleep 1
+      done
+      [ -s "$room/rrc/$f" ] || { echo "the gNB wrote no $f" >&2; exit 1; }
+    done
+  fi
+  dc "$i" up -d --pull never
+done
 
 # The Amber programs: every rfsim5g-aiot-* container but the hub and the sink, which keep running.
 amber=()
-for name in $("${compose[@]}" ps --all --format '{{.Name}}'); do
+for name in $(containers); do
   case "$name" in
     rfsim5g-aiot-hub | rfsim5g-aiot-sink) ;;
     rfsim5g-aiot-*) amber+=("$name") ;;
@@ -95,8 +168,14 @@ for name in rfsim5g-oai-gnb rfsim5g-oai-nr-ue; do
   [ "$(docker inspect --format '{{.State.Running}}' "$name")" = true ] || fail "$name is not running"
 done
 
+# Topology 2: give the last datagrams of the UE time to reach amber.sink.
+if containers | grep -qx rfsim5g-aiot-sink; then
+  sleep 10
+fi
+gather
+
 # The Reader's records: data from every Tag.
-if ! docker run --rm -i -v "$volume:/out:ro" "$AMBER_IMG" python3 - "$sim_time_ms" <<'PY'
+if ! docker run --rm -i -v "$records:/out:ro" "$AMBER_IMG" python3 - "$sim_time_ms" <<'PY'
 import sys
 from amber.summary import summarize
 s = summarize("/out", int(sys.argv[1]))
@@ -113,18 +192,17 @@ then
   fail "the Reader did not decode data from every Tag"
 fi
 
-# Topology 2: what the UE heard reached the network. Give the last datagrams time to arrive.
-if "${compose[@]}" ps --all --format '{{.Name}}' | grep -qx rfsim5g-aiot-sink; then
-  sleep 10
-  if ! docker run --rm -v "$volume:/out:ro" "$AMBER_IMG" \
+# Topology 2: what the UE heard reached the network.
+if containers | grep -qx rfsim5g-aiot-sink; then
+  if ! docker run --rm -v "$records:/out:ro" "$AMBER_IMG" \
       sh -c 'grep -v ,collision, /out/reader_rx.csv | diff - /out/tag_data.csv'; then
     fail "tag_data.csv differs from reader_rx.csv without collisions"
   fi
 fi
 
 # The room next to a standalone Reader: the 5G cell must not change what the Tags send.
-if "${compose[@]}" ps --all --format '{{.Name}}' | grep -qx rfsim5g-aiot-reader; then
-  if ! docker run --rm -v "$room:/room:ro" -v "$volume:/out:ro" "$AMBER_IMG" sh -c '
+if containers | grep -qx rfsim5g-aiot-reader; then
+  if ! docker run --rm -v "$room:/room:ro" -v "$records:/out:ro" "$AMBER_IMG" sh -c '
       python3 -m amber.run /room/scenario.toml /tmp/ref > /dev/null &&
       cd /tmp/ref && for f in tag*.csv reader_tx.csv; do diff -q "$f" "/out/$f" || exit 1; done'; then
     fail "the Tags' files or reader_tx.csv differ from amber.run"
