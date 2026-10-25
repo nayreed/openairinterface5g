@@ -703,7 +703,8 @@ static int send_remote_r2d(nr_aiot_reader_t *r, int frame, int slot, int symbol,
 /* The MAC's window e gets an empty outcome at once: as if nothing was heard in it. */
 static void give_up_window(nr_aiot_reader_t *r, const aiot_d2r_expect_t *e, int64_t now)
 {
-  aiot_d2r_outcome_t *out = &r->remote_outcome->outcome;
+  /* the outcomes popped from the local receiver are all given to the MAC before this runs */
+  aiot_d2r_outcome_t *out = &r->outcomes[0];
   out->expect = *e;
   out->n_decoded = 0;
   out->collided = 0;
@@ -1009,14 +1010,27 @@ static int send_next(nr_aiot_reader_t *r, int64_t now)
     return -1;
   }
   const int64_t end = start + aiot_r2d_n_samples(n_sym);
-  int n = aiot_reader_r2d_sent(r->mac, start, end, now, r->expects, MAX_EXPECTS);
+  const int n = aiot_reader_r2d_sent(r->mac, start, end, now, r->expects, MAX_EXPECTS);
+  if (n < 0) {
+    LOG_E(NR_MAC, "A-IoT Reader: the MAC opened no window for the R2D at %d.%d.%d (%d); the Reader stops\n", frame, sl, symbol, n);
+    return -1;
+  }
   r->have_next = 0;
   r->stats.r2d_sent++;
-  for (int i = 0; i < n; i++)
-    if (r->remote_d2r)
+  for (int i = 0; i < n; i++) {
+    if (r->remote_d2r) {
       open_remote_window(r, &r->expects[i], now);
-    else if (nr_aiot_d2r_expect(r->d2r, &r->expects[i]) != 0)
-      LOG_E(NR_MAC, "A-IoT Reader: the D2R receiver refused a window at %ld\n", (long)r->expects[i].start);
+    } else if (nr_aiot_d2r_expect(r->d2r, &r->expects[i]) != 0) {
+      /* the MAC waits for an outcome of each window it opened */
+      r->stats.windows_lost++;
+      if (aiot_log_due(r->stats.windows_lost))
+        LOG_E(NR_MAC,
+              "A-IoT Reader: the D2R receiver refused the window at %ld: given up as empty (%lu so far)\n",
+              (long)r->expects[i].start,
+              (unsigned long)r->stats.windows_lost);
+      give_up_window(r, &r->expects[i], now);
+    }
+  }
   LOG_D(NR_MAC, "A-IoT Reader: R2D in %d.%d from symbol %d, %d symbols, %d windows\n", frame, sl, symbol, n_sym, n);
   return n > 0 ? 1 : 2; /* 2: nothing to wait for, the next R2D is ready */
 }
@@ -1043,7 +1057,7 @@ int nr_aiot_reader_step(nr_aiot_reader_t *r)
     report_split(r, now);
   }
   collect(r);
-  for (;;) {
+  while (!r->ended) {
     if (!r->have_next) {
       if (aiot_reader_next_r2d(r->mac, now, &r->next) != 1)
         break;

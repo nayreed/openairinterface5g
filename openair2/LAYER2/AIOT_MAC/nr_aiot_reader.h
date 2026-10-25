@@ -84,7 +84,7 @@ typedef struct {
   uint64_t probes; /* probe windows sent to the remote D2R before it first answered, instead of R2Ds */
   uint64_t windows_remote; /* windows sent to the remote D2R */
   uint64_t outcomes_remote; /* their outcomes back */
-  uint64_t windows_lost; /* windows given up as empty, their outcome not back in time */
+  uint64_t windows_lost; /* windows given up as empty: refused by the receiver, or their outcome not back in time */
   uint64_t outcomes_early; /* of the outcomes, those of windows opened before the remote D2R first answered */
   uint64_t windows_early_late; /* and of those, the ones that reached it after their start */
   /* the windows opened after the remote D2R first answered: */
