@@ -311,7 +311,7 @@ static cf_t gaussian_pair(int node, int64_t t)
 static int16_t saturate(float v)
 {
   float r = rintf(v);
-  return (int16_t)(r > 32767.f ? 32767.f : r < -32768.f ? -32768.f : r);
+  return (int16_t)(r > INT16_MAX ? INT16_MAX : r < INT16_MIN ? INT16_MIN : r);
 }
 
 void hub_room_write(hub_room_t *room, int node, uint64_t timestamp, const c16_t *samples, int64_t n, float gain_dB)
@@ -319,7 +319,7 @@ void hub_room_write(hub_room_t *room, int node, uint64_t timestamp, const c16_t 
   hub_node_t *nd = &room->nodes[node];
   const int64_t mask = room->conf.history - 1;
   int64_t ts = (int64_t)timestamp;
-  int64_t gap_start = nd->written > ts - room->conf.history ? nd->written : ts - room->conf.history;
+  int64_t gap_start = cmax(nd->written, ts - room->conf.history);
   for (int64_t t = gap_start; t < ts; t++) {
     nd->history[t & mask] = (c16_t){0, 0};
     if ((t & (GROUP - 1)) == 0)

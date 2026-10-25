@@ -20,6 +20,10 @@
 #include "rfsim_hub.h"
 
 #define HUB_SECTION "rfsim_hub"
+/* Defaults, as radio/rfsimulator/hub/README.md gives them */
+#define HUB_DEFAULT_QUANTUM 1440
+#define HUB_DEFAULT_HISTORY (1 << 18) /* a power of two */
+#define HUB_DEFAULT_IDLE_TIMEOUT_S 60.0
 
 configmodule_interface_t *uniqCfg = NULL;
 
@@ -119,9 +123,9 @@ int main(int argc, char **argv)
   // clang-format off
   paramdef_t desc[] = {
     DOUBLEPARAM("sample_rate",  "sample rate of every node, Hz\n",                          0, &conf.sample_rate, 0.0),
-    INTPARAM("quantum",         "samples per block the hub sends each node\n",              0, &quantum,          1440),
-    INTPARAM("history",         "samples kept per node, a power of two\n",                  0, &history,          262144),
-    DOUBLEPARAM("idle_timeout", "seconds without any sample moving before the hub stops\n", 0, &idle_timeout,     60.0),
+    INTPARAM("quantum",         "samples per block the hub sends each node\n",              0, &quantum,          HUB_DEFAULT_QUANTUM),
+    INTPARAM("history",         "samples kept per node, a power of two\n",                  0, &history,          HUB_DEFAULT_HISTORY),
+    DOUBLEPARAM("idle_timeout", "seconds without any sample moving before the hub stops\n", 0, &idle_timeout,     HUB_DEFAULT_IDLE_TIMEOUT_S),
   };
   // clang-format on
   if (config_get(config_get_if(), desc, sizeofArray(desc), HUB_SECTION) < 0) {

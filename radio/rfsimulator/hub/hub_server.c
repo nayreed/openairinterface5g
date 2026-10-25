@@ -124,7 +124,7 @@ static void flush(hub_room_t *room, hub_conn_t *conns, int i)
     if (s < 0 && (errno == EAGAIN || errno == EINTR))
       return;
     if (s <= 0) {
-      drop(room, conns, i, strerror(errno));
+      drop(room, conns, i, s == 0 ? "nothing sent" : strerror(errno));
       return;
     }
     c->out_off += s;
