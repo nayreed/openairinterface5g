@@ -86,7 +86,11 @@ HUB_IDLE_TIMEOUT_S = 60.0
 # The look-ahead of each node, in samples: the gNB sl_ahead (6 slots) ahead, the UE its rx-to-tx distance,
 # and Amber's Reader and CW node one block (they write block n, then read it).
 GNB_LOOKAHEAD, UE_LOOKAHEAD, AMBER_LOOKAHEAD = 6 * SAMPLES_PER_MS, 17024, SAMPLES_PER_MS
-HUB_ADDR = "192.168.71.141"
+# The room's network, 192.168.71.128/26 as in OAI's other rfsim rooms (/25 when the Tags need more
+# addresses), and the fixed addresses in it; docker gives the Tags theirs.
+ROOM_NET = "192.168.71.128"
+GNB_ADDR, HUB_ADDR, UE_ADDR = "192.168.71.140", "192.168.71.141", "192.168.71.150"
+ROOM_FIXED_ADDRS = 2 + 5  # network and broadcast, then the gateway, the hub, the gNB, the UE and the Reader
 GNB_PORT, UE_PORT, CW_PORT, READER_PORT, FIRST_TAG_PORT = 4043, 4044, 4049, 4050, 4051
 DL_SHIFT_HZ = 1980000.0  # A-IoT at DL PRB 1, the centre of the free PRBs 0-2
 UL_SHIFT_HZ = 1080000.0  # A-IoT at UL PRB 18, the centre of the free PRBs 15-21
@@ -130,6 +134,7 @@ def to_tag_db(amp, n_rb):
 # Topology 1: the gNB is the Reader. Its R2D and carrier are in DL PRBs 0 to 2 and its D2R receiver in
 # UL PRBs 15 to 21 (the PRBs the room keeps free).
 D2R_PRB_START = 15
+GNB_R2D_PRBS = range(0, 3)
 
 
 def gnb_reader(phy):
@@ -137,7 +142,7 @@ def gnb_reader(phy):
     PRBs 0 to 2 as the PRB grid allows, where the Tags' DL lands (their DC: the carrier), and the gain
     to each Tag."""
     n_rb = phy.rb
-    prb_start = (3 - n_rb) // 2
+    prb_start = GNB_R2D_PRBS[0] + (len(GNB_R2D_PRBS) - n_rb) // 2
     return prb_start, n_rb, -prbs_hz(prb_start, n_rb), to_tag_db(TX_AMP, n_rb)
 
 
@@ -412,13 +417,12 @@ def hub_conf(scenario_path, node_ids):
     return hub_file(scenario_path, about, nodes, links)
 
 
-# 192.168.71.128/26 as in OAI's other rfsim rooms, or /25 when the Tags need more addresses. Besides the
-# Tags it holds the gateway, the hub, the gNB, the UE and the Reader.
-MAX_ROOM_TAGS = 128 - 2 - 5
+# The Tags a /26 or, at most, a /25 room network has addresses for.
+MAX_ROOM_TAGS = 128 - ROOM_FIXED_ADDRS
 
 
 def subnet(n_tags):
-    return "192.168.71.128/26" if n_tags <= 64 - 2 - 5 else "192.168.71.128/25"
+    return f"{ROOM_NET}/26" if n_tags <= 64 - ROOM_FIXED_ADDRS else f"{ROOM_NET}/25"
 
 
 def prb_blacklists(reader, split=None):
@@ -428,7 +432,7 @@ def prb_blacklists(reader, split=None):
     UE's D2R, the CW node's carrier."""
     if reader == "ue" or split == "r2d":
         return [], list(T4_UL_PRBS)
-    return [0, 1, 2], list(range(D2R_PRB_START, D2R_PRB_START + D2R_N_RB))
+    return list(GNB_R2D_PRBS), list(range(D2R_PRB_START, D2R_PRB_START + D2R_N_RB))
 
 
 def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw_node=False, relay=False, split=None,
@@ -501,7 +505,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        depends_on: [rfsim-hub]",
         "        networks:",
         "            public_net:",
-        "                ipv4_address: 192.168.71.140",
+        f"                ipv4_address: {GNB_ADDR}",
         "        devices: [/dev/net/tun:/dev/net/tun]",
         "        volumes:",
         f"            - {cell_files[0]}:/opt/oai-gnb/etc/gnb.conf",
@@ -529,7 +533,7 @@ def room_compose(scenario_path, node_ids, image, reader=None, reader_opts=(), cw
         "        depends_on: [oai-gnb]",
         "        networks:",
         "            public_net:",
-        "                ipv4_address: 192.168.71.150",
+        f"                ipv4_address: {UE_ADDR}",
         "        healthcheck:",
         "            test: /bin/bash -c \"pgrep nr-uesoftmodem\"",
         "            interval: 10s",
