@@ -5,12 +5,12 @@
 /*! \file aiot_params.c
  * \brief Numerology, sequences and D2R parameter tables (38.291 §4.3, §7.1, §8.3; 38.391 Table 6.2.1.6-1). */
 
+#include <stddef.h>
+
 #include "aiot_phy.h"
 
-/* The bit durations 38.391 allows, in tau, with the largest R_SFS and the I_bit scale S of each. */
-static const struct {
-  int num, den, max_r_sfs, scale;
-} bit_durations[] = {
+/* 38.391 Table 6.2.1.6-1, by Bit Duration codepoint */
+static const aiot_bit_duration_t bit_durations[AIOT_N_BIT_DURATIONS] = {
     {2, 1, 128, 1},
     {1, 1, 64, 2},
     {1, 2, 32, 4},
@@ -20,9 +20,8 @@ static const struct {
     {1, 32, 2, 64},
     {1, 96, 1, 192},
 };
-#define N_BIT_DURATIONS ((int)(sizeof(bit_durations) / sizeof(bit_durations[0])))
 
-static const int i_bit_base[4] = {48, 96, 168, 240};
+static const int i_bit_base[AIOT_N_I_BIT] = {48, 96, 168, 240};
 
 int aiot_m_valid(int m)
 {
@@ -65,20 +64,24 @@ int aiot_m_sequence(int length, uint8_t *out)
   return length;
 }
 
-/* The row of a bit duration (num/den reduced or not), or -1. */
-static int bit_row(int num, int den)
+int aiot_bit_duration_code(int num, int den)
 {
   if (num <= 0 || den <= 0)
-    return -1;
-  for (int i = 0; i < N_BIT_DURATIONS; i++)
+    return AIOT_EINVAL;
+  for (int i = 0; i < AIOT_N_BIT_DURATIONS; i++)
     if ((int64_t)num * bit_durations[i].den == (int64_t)den * bit_durations[i].num)
       return i;
-  return -1;
+  return AIOT_EINVAL;
+}
+
+const aiot_bit_duration_t *aiot_bit_duration(int code)
+{
+  return code >= 0 && code < AIOT_N_BIT_DURATIONS ? &bit_durations[code] : NULL;
 }
 
 int aiot_allowed_r_sfs(int t_bit_num, int t_bit_den, int *out)
 {
-  int row = bit_row(t_bit_num, t_bit_den);
+  int row = aiot_bit_duration_code(t_bit_num, t_bit_den);
   if (row < 0)
     return AIOT_EINVAL;
   int n = 0;
@@ -89,12 +92,12 @@ int aiot_allowed_r_sfs(int t_bit_num, int t_bit_den, int *out)
 
 int aiot_i_bit_values(int t_bit_num, int t_bit_den, int *out)
 {
-  int row = bit_row(t_bit_num, t_bit_den);
+  int row = aiot_bit_duration_code(t_bit_num, t_bit_den);
   if (row < 0)
     return AIOT_EINVAL;
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < AIOT_N_I_BIT; i++)
     out[i] = bit_durations[row].scale * i_bit_base[i];
-  return 4;
+  return AIOT_N_I_BIT;
 }
 
 int aiot_bit_samples(const aiot_d2r_params_t *p)
@@ -115,7 +118,7 @@ int aiot_chip_samples(const aiot_d2r_params_t *p)
 
 int aiot_d2r_params_check(const aiot_d2r_params_t *p)
 {
-  int row = bit_row(p->t_bit_num, p->t_bit_den);
+  int row = aiot_bit_duration_code(p->t_bit_num, p->t_bit_den);
   if (row < 0)
     return AIOT_EINVAL;
   int r = p->r_sfs;
@@ -126,7 +129,7 @@ int aiot_d2r_params_check(const aiot_d2r_params_t *p)
   if (p->l_amble != 7 && p->l_amble != 31)
     return AIOT_EINVAL;
   int ok = 0;
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < AIOT_N_I_BIT; i++)
     ok |= p->i_bit == bit_durations[row].scale * i_bit_base[i];
   if (!ok)
     return AIOT_EINVAL;

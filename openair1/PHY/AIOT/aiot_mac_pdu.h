@@ -53,7 +53,7 @@ typedef struct {
   int t_bit_num; /* Bit Duration T_bit = num/den tau, one of 2, 1, 1/2, 1/4, 1/8, 1/16, 1/32, 1/96 */
   int t_bit_den;
   int n_sfs; /* number of R_SFS values: the bitmap bits set, or 1 for the Unicast value */
-  int r_sfs[8]; /* ascending, from 1 2 4 8 16 32 64 128 */
+  int r_sfs[AIOT_MAX_SHIFTS]; /* ascending, from 1 2 4 8 16 32 64 128 */
   int x; /* Time Resource Indication 1 or 2 (CBRA paging only, else 0) */
   int r_block; /* block repetition number, 1 or 2 */
   int r_code; /* 1 when FEC is used (Channel Coding Indicator codepoint 0) */

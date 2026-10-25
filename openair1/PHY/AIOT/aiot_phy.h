@@ -95,6 +95,22 @@ typedef struct {
   aiot_mod_t modulation;
 } aiot_d2r_params_t;
 
+/* The bit durations of 38.391 Table 6.2.1.6-1, in the order of their Bit Duration codepoint, and the
+ * Interval Bits codepoints of each: I_bit = S x 48, 96, 168 or 240. */
+#define AIOT_N_BIT_DURATIONS 8
+#define AIOT_N_I_BIT 4
+
+typedef struct {
+  int num, den; /* T_bit = num / den tau */
+  int max_r_sfs; /* the largest R_SFS allowed with it */
+  int scale; /* S, the scale factor of the Interval Bits */
+} aiot_bit_duration_t;
+
+/* The Bit Duration codepoint of T_bit = num / den tau (any equal fraction), or AIOT_EINVAL. */
+int aiot_bit_duration_code(int t_bit_num, int t_bit_den);
+/* The bit duration of codepoint code, 0 to AIOT_N_BIT_DURATIONS - 1, or NULL. */
+const aiot_bit_duration_t *aiot_bit_duration(int code);
+
 /* 0 when the spec allows these values together and a chip is a whole number of samples, else
  * AIOT_EINVAL. */
 int aiot_d2r_params_check(const aiot_d2r_params_t *p);
@@ -102,7 +118,8 @@ int aiot_bit_samples(const aiot_d2r_params_t *p);
 int aiot_chip_samples(const aiot_d2r_params_t *p);
 /* The R_SFS values 38.391 allows with this bit duration; returns how many (out has room for 8). */
 int aiot_allowed_r_sfs(int t_bit_num, int t_bit_den, int *out);
-/* The I_bit values allowed with this bit duration; returns how many (out has room for 4). */
+/* The I_bit values allowed with this bit duration, by Interval Bits codepoint; returns how many (out
+ * has room for AIOT_N_I_BIT). */
 int aiot_i_bit_values(int t_bit_num, int t_bit_den, int *out);
 
 /* V, the bits on air for an a_bits transport block (§6.1.2, §6.1.3). */
