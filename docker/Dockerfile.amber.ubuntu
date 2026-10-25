@@ -100,7 +100,8 @@ COPY --from=amber-build \
     ./
 COPY docker/scripts/amber_compose.py ./amber-compose
 # The 5G cells a scenario's [network] can name, which amber-compose copies into a room
-COPY ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
+COPY ci-scripts/conf_files/gnb.band8.u0.25prb.rfsim.dora.conf \
+     ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
      ci-scripts/conf_files/nrue.uicc.conf \
      /opt/oai-amber/etc/cells/
 # The checked-in 5G rooms, checked below

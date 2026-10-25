@@ -7,9 +7,9 @@
 writes into DIR (here the current folder):
 
 - docker-compose.yaml, always;
-- with a 5G cell in [network] (cell = "n28-25prb"): rfsim_hub.conf too, and the cell's gnb.conf and
-  nr-ue.conf, copied in, or mounted from a folder of DIR's with --cells-dir: the room of
-  ci-scripts/yaml_files/5g_rfsimulator_aiot (see the README there);
+- with a 5G cell in [network] (cell = "n8-25prb" or "n28-25prb"): rfsim_hub.conf too, and the
+  cell's gnb.conf and nr-ue.conf, copied in, or mounted from a folder of DIR's with --cells-dir: the
+  room of ci-scripts/yaml_files/5g_rfsimulator_aiot (see the README there);
 - without one: one amber-reader and one amber-tag per node of the scenario, over plain rfsim.
 
 A 5G room whose scenario places its nodes on several machines ([network.hosts]) gets one
@@ -189,17 +189,19 @@ class Cell(NamedTuple):
         return SC_PER_PRB * D2R_N_RB * self.scs_hz
 
 
-# The 5G cells a scenario's [network] can name. The image has their configuration files in
-# CELL_DIRS[0]; a checkout of this repository, in CELL_DIRS[1].
+# The 5G cells a scenario's [network] can name, in Ambient IoT bands (38.191 Table 5.2-1). The image
+# has their configuration files in CELL_DIRS[0]; a checkout of this repository, in CELL_DIRS[1].
 #
-# n28-25prb: 25 PRBs at 15 kHz, 5.76 Msps in a 384-point symbol. SSB and PDCCH occupy DL PRBs 4 to 24,
-# so DL PRBs 0 to 2 are the only ones that can stay empty in every symbol. In the UL, PRACH takes PRBs 0
-# to 11 (msg1_FrequencyStart 0) and PUCCH format 2 PRBs 0 to 7, then one PRB per UE from PRB 8; the
-# common resources of random access are in PRBs 0 to 7 and 17 to 24. The gNB's D2R takes UL PRBs 15 to
-# 21, and the UE's R2D UL PRBs 12 to 14, clear of PRACH and PUCCH.
-CELLS = {"n28-25prb": Cell("25-PRB n28", "gnb.band28.u0.25prb.rfsim.dora.conf", "nrue.uicc.conf",
-                           n_prb=25, scs_hz=15e3, fft_size=384, gnb_r2d_prbs=range(0, 3), gnb_d2r_prb_start=15,
-                           ue_r2d_prbs=range(12, 15))}
+# Both are 25 PRBs at 15 kHz, 5.76 Msps in a 384-point symbol, with one PRB layout: the n8 cell is the
+# n28 one at other frequencies. SSB and PDCCH occupy DL PRBs 4 to 24, so DL PRBs 0 to 2 are the only
+# ones that can stay empty in every symbol. In the UL, PRACH takes PRBs 0 to 11 (msg1_FrequencyStart 0)
+# and PUCCH format 2 PRBs 0 to 7, then one PRB per UE from PRB 8; the common resources of random access
+# are in PRBs 0 to 7 and 17 to 24. The gNB's D2R takes UL PRBs 15 to 21, and the UE's R2D UL PRBs 12 to
+# 14, clear of PRACH and PUCCH.
+PRB_LAYOUT_25 = dict(n_prb=25, scs_hz=15e3, fft_size=384, gnb_r2d_prbs=range(0, 3), gnb_d2r_prb_start=15,
+                     ue_r2d_prbs=range(12, 15))
+CELLS = {"n8-25prb": Cell("25-PRB n8", "gnb.band8.u0.25prb.rfsim.dora.conf", "nrue.uicc.conf", **PRB_LAYOUT_25),
+         "n28-25prb": Cell("25-PRB n28", "gnb.band28.u0.25prb.rfsim.dora.conf", "nrue.uicc.conf", **PRB_LAYOUT_25)}
 for _cell in CELLS.values():  # every node of a room runs at Amber's rate, and the UE's D2R fits the guard band
     assert _cell.samples_per_ms == AIR_SAMPLES, _cell
     assert _cell.n_prb + D2R_N_RB <= _cell.fft_size // SC_PER_PRB, _cell
@@ -952,6 +954,8 @@ def main():
         if not isinstance(node_id, int) or node_id < 0:
             parser.error(f"node ids must be non-negative integers, the scenario has {node_id!r}")
     network = scenario.network
+    if network.cell is not None and network.cell not in CELLS:
+        parser.error(f"{args.scenario}: [network] cell: no 5G cell {network.cell!r}; there are {', '.join(CELLS)}")
     reason = not_built(network, scenario.phy)
     if reason:
         parser.error(f"{args.scenario}: [network]: {reason}")
