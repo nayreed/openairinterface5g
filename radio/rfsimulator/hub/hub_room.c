@@ -148,11 +148,19 @@ static bool check_conf(const hub_conf_t *c, char *why, size_t why_len)
   if (c->num_nodes <= 0)
     return refuse(why, why_len, "the room has no node");
   for (int i = 0; i < c->num_nodes; i++) {
-    if (c->nodes[i].lookahead < 0)
-      return refuse(why, why_len, "node %s: lookahead must not be negative", c->nodes[i].name);
-    for (int j = 0; j < i; j++)
-      if (c->nodes[i].port == c->nodes[j].port)
-        return refuse(why, why_len, "nodes %s and %s share port %d", c->nodes[j].name, c->nodes[i].name, c->nodes[i].port);
+    const hub_node_conf_t *n = &c->nodes[i];
+    if (n->port < 1 || n->port > UINT16_MAX)
+      return refuse(why, why_len, "node %s: port %d is not a TCP port", n->name, n->port);
+    if (n->lookahead < 0)
+      return refuse(why, why_len, "node %s: lookahead must not be negative", n->name);
+    if (!(n->noise_counts >= 0))
+      return refuse(why, why_len, "node %s: noise_counts must not be negative", n->name);
+    for (int j = 0; j < i; j++) {
+      if (strcmp(n->name, c->nodes[j].name) == 0)
+        return refuse(why, why_len, "two nodes are named %s", n->name);
+      if (n->port == c->nodes[j].port)
+        return refuse(why, why_len, "nodes %s and %s share port %d", c->nodes[j].name, n->name, n->port);
+    }
   }
   for (int l = 0; l < c->num_links; l++) {
     const hub_link_conf_t *k = &c->links[l];

@@ -60,15 +60,24 @@ static double now_s(void)
   return t.tv_sec + t.tv_nsec * 1e-9;
 }
 
+/// The listening socket of a node's port, or -1 with the reason logged.
 static int listen_on(int port)
 {
   int s = socket(AF_INET, SOCK_STREAM, 0);
-  AssertFatal(s >= 0, "socket(): %s\n", strerror(errno));
+  if (s < 0) {
+    LOG_E(HW, "rfsim_hub: socket(): %s\n", strerror(errno));
+    return -1;
+  }
   int one = 1;
-  setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0)
+    LOG_W(HW, "rfsim_hub: setsockopt(SO_REUSEADDR) on port %d: %s\n", port, strerror(errno));
   struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_ANY)};
-  AssertFatal(bind(s, (struct sockaddr *)&a, sizeof(a)) == 0, "cannot bind port %d: %s\n", port, strerror(errno));
-  AssertFatal(listen(s, 1) == 0, "cannot listen on port %d: %s\n", port, strerror(errno));
+  // one rfsim client per port
+  if (bind(s, (struct sockaddr *)&a, sizeof(a)) != 0 || listen(s, 1) != 0) {
+    LOG_E(HW, "rfsim_hub: cannot listen on port %d: %s\n", port, strerror(errno));
+    close(s);
+    return -1;
+  }
   return s;
 }
 
@@ -199,9 +208,18 @@ int hub_serve(hub_room_t *room, double idle_timeout_s)
   const hub_conf_t *conf = hub_room_conf(room);
   const int n = conf->num_nodes;
   hub_conn_t *conns = calloc_or_fail(n, sizeof(*conns));
+  bool listening = true;
   for (int i = 0; i < n; i++) {
     conns[i].sock = -1;
     conns[i].listen_sock = listen_on(conf->nodes[i].port);
+    listening &= conns[i].listen_sock >= 0;
+  }
+  if (!listening) {
+    for (int i = 0; i < n; i++)
+      if (conns[i].listen_sock >= 0)
+        close(conns[i].listen_sock);
+    free(conns);
+    return -1;
   }
   struct pollfd *fds = calloc_or_fail(n, sizeof(*fds));
   c16_t *block = malloc_or_fail(conf->quantum * sizeof(c16_t));
@@ -251,13 +269,17 @@ int hub_serve(hub_room_t *room, double idle_timeout_s)
         continue;
       if (c->listen_sock >= 0) {
         c->sock = accept(c->listen_sock, NULL, NULL);
-        if (c->sock < 0)
+        if (c->sock < 0) {
+          LOG_W(HW, "rfsim_hub: accept() on port %d: %s\n", conf->nodes[i].port, strerror(errno));
           continue;
+        }
         close(c->listen_sock);
         c->listen_sock = -1;
         int one = 1, buf = SEND_BUFFER_BYTES;
-        setsockopt(c->sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        setsockopt(c->sock, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
+        // as simulator.cpp sets up an rfsim connection; the hub works without them, only slower
+        if (setsockopt(c->sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0
+            || setsockopt(c->sock, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf)) != 0)
+          LOG_W(HW, "rfsim_hub: setsockopt() for node %s: %s\n", conf->nodes[i].name, strerror(errno));
         // As an rfsim server does for a new client: one sample that tells the client the current time.
         const c16_t zero = {0};
         queue_block(c, hub_room_sent(room, i), &zero, 1);

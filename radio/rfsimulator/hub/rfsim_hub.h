@@ -75,8 +75,8 @@ typedef struct hub_room_s hub_room_t;
 
 /*! \brief Checks the configuration and creates the room.
  * \return NULL, with the reason in why, when the room cannot run: a link names an unknown node, a
- * node hears nobody, two nodes share a port, the history is too short, or a cycle of links has too
- * little lookahead and would wait on itself.
+ * node hears nobody, two nodes share a name or a port, a value is out of range, the history is too
+ * short, or a cycle of links has too little lookahead and would wait on itself.
  */
 hub_room_t *hub_room_create(const hub_conf_t *conf, char *why, size_t why_len);
 void hub_room_free(hub_room_t *room);
@@ -107,7 +107,8 @@ int64_t hub_room_sent(const hub_room_t *room, int node);
 
 /*! \brief Accepts one rfsim client on each node's port, starts the room at sample 0 once every node
  * is connected, and carries the samples until every node has left.
- * \return 0, or -1 if nothing moved for idle_timeout_s seconds after the start.
+ * \return 0, or -1 when a port cannot be listened on, or nothing moved for idle_timeout_s seconds
+ * after the start.
  */
 int hub_serve(hub_room_t *room, double idle_timeout_s);
 
