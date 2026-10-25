@@ -244,21 +244,6 @@ int nr_aiot_d2r_expect(nr_aiot_d2r_t *d, const aiot_d2r_expect_t *e)
   return ret;
 }
 
-/* The A-IoT sample after the last one window e can need (as the receiver's own last_sample). */
-static int64_t window_end(const aiot_d2r_expect_t *e)
-{
-  int64_t m = 0;
-  int n = e->n_r_sfs ? e->n_r_sfs : 1;
-  for (int i = 0; i < n; i++) {
-    aiot_d2r_params_t p = e->params;
-    p.r_sfs = e->n_r_sfs ? e->r_sfs[i] : e->params.r_sfs;
-    int64_t len = (int64_t)aiot_frame_bits(e->a_bits, &p) * aiot_bit_samples(&p);
-    if (len > m)
-      m = len;
-  }
-  return e->start + e->te + 1 + m;
-}
-
 /* Gives rx the windows opened since the last call. */
 static int take_windows(nr_aiot_d2r_t *d)
 {
@@ -268,7 +253,7 @@ static int take_windows(nr_aiot_d2r_t *d)
   int ret = 0;
   for (int i = 0; i < d->n_ex; i++) {
     aiot_d2r_expect_t e = d->ex[i];
-    if (e.start - e.te - 1 < d->received_until)
+    if (aiot_d2r_expect_first(&e) < d->received_until)
       d->stats.late++;
     e.start -= d->a0;
     ret = aiot_d2r_rx_expect(d->rx, &e);
@@ -278,9 +263,7 @@ static int take_windows(nr_aiot_d2r_t *d)
       continue;
     }
     d->in_rx++;
-    int64_t end = window_end(&d->ex[i]);
-    if (end > d->last_end)
-      d->last_end = end;
+    d->last_end = cmax(d->last_end, aiot_d2r_expect_end(&d->ex[i]));
   }
   d->n_ex = 0;
   pthread_mutex_unlock(&d->lock);

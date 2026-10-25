@@ -269,6 +269,10 @@ aiot_d2r_rx_t *aiot_d2r_rx_new(double noise_w, int enable_sic);
 void aiot_d2r_rx_free(aiot_d2r_rx_t *rx);
 /* 0 when the receiver can open window e (its length, and each R_SFS's parameters), else AIOT_EINVAL. */
 int aiot_d2r_expect_check(const aiot_d2r_expect_t *e);
+/* The first sample the receiver searches for window e, and the sample after the last one it may
+ * need: the window decodes once the receiver has every sample before aiot_d2r_expect_end(). */
+int64_t aiot_d2r_expect_first(const aiot_d2r_expect_t *e);
+int64_t aiot_d2r_expect_end(const aiot_d2r_expect_t *e);
 int aiot_d2r_rx_expect(aiot_d2r_rx_t *rx, const aiot_d2r_expect_t *e);
 /* Feed the next n samples (signal plus noise). Decodes every expected D2R whose window has fully
  * arrived, in the order they were expected. Returns how many outcomes it

@@ -140,20 +140,6 @@ int aiot_d2r_params_check(const aiot_d2r_params_t *p)
   return 0;
 }
 
-int aiot_frame_bits(int a_bits, const aiot_d2r_params_t *p)
-{
-  int b = a_bits + (a_bits > 24 ? 16 : 6);
-  int e = b * p->r_block * (p->r_code ? 3 : 1);
-  /* floor(E / I_bit) midambles, or ceil(E / I_bit) with the additional one (§6.1.3) */
-  int n_mid = p->i_add ? (e + p->i_bit - 1) / p->i_bit : e / p->i_bit;
-  return e + (1 + n_mid) * p->l_amble;
-}
-
-int aiot_frame_samples(int a_bits, const aiot_d2r_params_t *p)
-{
-  return aiot_frame_bits(a_bits, p) * aiot_bit_samples(p);
-}
-
 /* Fractions of tau as num/den with den > 0. */
 typedef struct {
   int64_t n, d;

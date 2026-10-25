@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "aiot_phy.h"
+#include "common/utils/utils.h" /* cmin, cmax */
 
 /* A preamble is accepted when its correlation reaches this SNR over the noise measured on the
  * frame's ambles, after the bit correlation. */
@@ -57,6 +58,16 @@ static int frame_bits_from_e(int e_bits, const aiot_d2r_params_t *p)
 {
   int n_mid = p->i_add ? (e_bits + p->i_bit - 1) / p->i_bit : e_bits / p->i_bit;
   return e_bits + (1 + n_mid) * p->l_amble;
+}
+
+int aiot_frame_bits(int a_bits, const aiot_d2r_params_t *p)
+{
+  return frame_bits_from_e(coded_len(a_bits, p), p);
+}
+
+int aiot_frame_samples(int a_bits, const aiot_d2r_params_t *p)
+{
+  return aiot_frame_bits(a_bits, p) * aiot_bit_samples(p);
 }
 
 static int tx_args_ok(int a_bits, const aiot_d2r_params_t *p)
@@ -115,7 +126,7 @@ int aiot_d2r_assemble(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
   if (!tx_args_ok(a_bits, p))
     return AIOT_EINVAL;
   int n_e = coded_len(a_bits, p);
-  int n_v = frame_bits_from_e(n_e, p);
+  int n_v = aiot_frame_bits(a_bits, p);
   if (n_v > max_v)
     return AIOT_ESPACE;
   uint8_t e[6 * (AIOT_MAX_TB_BITS + 16)];
@@ -161,7 +172,7 @@ int aiot_d2r_waveform(const uint8_t *tb_bits, int a_bits, const aiot_d2r_params_
 {
   if (!tx_args_ok(a_bits, p))
     return AIOT_EINVAL;
-  int n_v = frame_bits_from_e(coded_len(a_bits, p), p);
+  int n_v = aiot_frame_bits(a_bits, p);
   int cs = aiot_chip_samples(p);
   int64_t total = (int64_t)n_v * aiot_bit_samples(p);
   if (total > max_out)
@@ -959,16 +970,18 @@ static int shift_of(const aiot_d2r_expect_t *e, int i)
   return e->n_r_sfs ? e->r_sfs[i] : e->params.r_sfs;
 }
 
-/* Expect.last_sample */
-static int64_t last_sample(const aiot_d2r_expect_t *e)
+int64_t aiot_d2r_expect_first(const aiot_d2r_expect_t *e)
+{
+  return e->start - e->te - SEARCH_GUARD;
+}
+
+int64_t aiot_d2r_expect_end(const aiot_d2r_expect_t *e)
 {
   int64_t m = 0;
   for (int i = 0; i < n_shifts(e); i++) {
     aiot_d2r_params_t p = e->params;
     p.r_sfs = shift_of(e, i);
-    int64_t len = (int64_t)aiot_frame_bits(e->a_bits, &p) * aiot_bit_samples(&p);
-    if (len > m)
-      m = len;
+    m = cmax(m, (int64_t)aiot_frame_samples(e->a_bits, &p));
   }
   return e->start + e->te + SEARCH_GUARD + m;
 }
@@ -1009,7 +1022,7 @@ int aiot_d2r_rx_receive(aiot_d2r_rx_t *rx, const cd_t *y, int n, aiot_d2r_outcom
   int64_t end = rx->base + rx->n + n;
   int n_done = 0;
   for (int i = 0; i < rx->n_ex; i++)
-    n_done += last_sample(&rx->ex[i]) <= end;
+    n_done += aiot_d2r_expect_end(&rx->ex[i]) <= end;
   if (n_done > max_out)
     return AIOT_ESPACE;
   if (rx->n + n > rx->cap) {
@@ -1030,7 +1043,7 @@ int aiot_d2r_rx_receive(aiot_d2r_rx_t *rx, const cd_t *y, int n, aiot_d2r_outcom
     return AIOT_ENOMEM;
   int nd = 0, nk = 0;
   for (int i = 0; i < rx->n_ex; i++) {
-    if (last_sample(&rx->ex[i]) <= end)
+    if (aiot_d2r_expect_end(&rx->ex[i]) <= end)
       done[nd++] = rx->ex[i];
     else
       rx->ex[nk++] = rx->ex[i];
@@ -1055,8 +1068,7 @@ int aiot_d2r_rx_receive(aiot_d2r_rx_t *rx, const cd_t *y, int n, aiot_d2r_outcom
   free(done);
   int64_t keep_from = end;
   for (int i = 0; i < rx->n_ex; i++)
-    if (rx->ex[i].start - rx->ex[i].te - SEARCH_GUARD < keep_from)
-      keep_from = rx->ex[i].start - rx->ex[i].te - SEARCH_GUARD;
+    keep_from = cmin(keep_from, aiot_d2r_expect_first(&rx->ex[i]));
   int64_t drop = keep_from - rx->base;
   if (drop < 0)
     drop = 0;
