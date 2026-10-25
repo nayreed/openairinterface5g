@@ -6,6 +6,7 @@
 // random valid messages of every type.
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstring>
 #include <random>
 #include <string>
@@ -15,6 +16,7 @@
 namespace {
 
 using Bits = std::vector<uint8_t>;
+using Bytes = std::vector<uint8_t>;
 
 // Appends value as width bits, most significant first.
 void Put(Bits &b, int value, int width)
@@ -815,4 +817,318 @@ TEST(MacPdu, UnicastFrequencyLimitedByBitDuration)
           << row << " cp " << cp;
     }
   }
+}
+
+namespace {
+
+aiot_mac_r2d_msg_t Valid(aiot_r2d_kind_t kind)
+{
+  aiot_mac_r2d_msg_t m;
+  memset(&m, 0, sizeof(m));
+  m.kind = kind;
+  switch (kind) {
+    case AIOT_R2D_PAGING_CBRA:
+    case AIOT_R2D_PAGING_CFA:
+      m = Paging(kind, true, 16);
+      break;
+    case AIOT_R2D_RANDOM_ID_RESPONSE:
+      m.sched = Sched(AIOT_SCHED_RANDOM_ID_RESPONSE);
+      m.n_entries = 1;
+      m.entries[0] = {1, 2, 3};
+      break;
+    case AIOT_R2D_UPPER_LAYER_DATA:
+      m.sched = Sched(AIOT_SCHED_R2D_DATA);
+      m.as_id = 1;
+      break;
+    case AIOT_R2D_NACK_FEEDBACK:
+      m.n_as_ids = 1;
+      break;
+    default:
+      break;
+  }
+  return m;
+}
+
+int PackInto(const aiot_mac_r2d_msg_t &m)
+{
+  uint8_t bits[AIOT_MAC_MAX_PDU_BITS];
+  return aiot_mac_pack_r2d(&m, bits, (int)sizeof(bits));
+}
+
+} // namespace
+
+// Every bounded field at the top of its value range packs, one past it is refused rather than
+// cut to its width (6.2.1, 6.2.2).
+TEST(MacPdu, FieldsBeyondTheirRangeAreRefused)
+{
+  struct Case {
+    const char *field;
+    aiot_r2d_kind_t kind;
+    void (*set)(aiot_mac_r2d_msg_t &, int);
+    int top;
+  };
+  const Case cases[] = {
+      {"Transaction ID", AIOT_R2D_PAGING_CBRA, [](aiot_mac_r2d_msg_t &m, int v) { m.transaction_id = v; }, 63},
+      {"Number of Access Occasions",
+       AIOT_R2D_PAGING_CBRA,
+       [](aiot_mac_r2d_msg_t &m, int v) { m.num_access_occasions_code = v; },
+       15},
+      {"K", AIOT_R2D_PAGING_CBRA, [](aiot_mac_r2d_msg_t &m, int v) { m.k_bit = v; }, 1},
+      {"Echoed Random ID",
+       AIOT_R2D_RANDOM_ID_RESPONSE,
+       [](aiot_mac_r2d_msg_t &m, int v) { m.entries[0].echoed_random_id = v; },
+       0xFFFF},
+      {"Assigned AS ID",
+       AIOT_R2D_RANDOM_ID_RESPONSE,
+       [](aiot_mac_r2d_msg_t &m, int v) { m.entries[0].assigned_as_id = v; },
+       0xFFFF},
+      {"Frequency Index", AIOT_R2D_RANDOM_ID_RESPONSE, [](aiot_mac_r2d_msg_t &m, int v) { m.entries[0].freq_index = v; }, 7},
+      {"AS ID (R2D data)", AIOT_R2D_UPPER_LAYER_DATA, [](aiot_mac_r2d_msg_t &m, int v) { m.as_id = v; }, 0xFFFF},
+      {"Received Data Size", AIOT_R2D_UPPER_LAYER_DATA, [](aiot_mac_r2d_msg_t &m, int v) { m.received_data_size = v; }, 125},
+      {"AS ID (NACK)", AIOT_R2D_NACK_FEEDBACK, [](aiot_mac_r2d_msg_t &m, int v) { m.as_ids[0] = v; }, 0xFFFF},
+  };
+  for (const Case &c : cases) {
+    aiot_mac_r2d_msg_t m = Valid(c.kind);
+    c.set(m, c.top);
+    EXPECT_GT(PackInto(m), 0) << c.field << " " << c.top;
+    c.set(m, c.top + 1);
+    EXPECT_EQ(PackInto(m), AIOT_EINVAL) << c.field << " " << c.top + 1;
+    c.set(m, -2);
+    EXPECT_EQ(PackInto(m), AIOT_EINVAL) << c.field << " -2";
+  }
+  // the R2D TBS given by the caller: 1..125, and not below the message
+  aiot_mac_r2d_msg_t m = Valid(AIOT_R2D_PAGING_CFA);
+  m.r2d_tbs = AIOT_MAC_MAX_TBS;
+  EXPECT_EQ(PackInto(m), 8 * AIOT_MAC_MAX_TBS);
+  m.r2d_tbs = AIOT_MAC_MAX_TBS + 1;
+  EXPECT_EQ(PackInto(m), AIOT_EINVAL);
+  m.r2d_tbs = aiot_mac_r2d_natural_bytes(&m) - 1;
+  EXPECT_EQ(PackInto(m), AIOT_EINVAL);
+  // the Paging ID Length has 10 bits; the longest CFA Paging ID fills 125 bytes exactly
+  m = Valid(AIOT_R2D_PAGING_CFA);
+  m.paging_id_len = AIOT_MAC_MAX_PAGING_ID_BITS + 1;
+  EXPECT_EQ(PackInto(m), AIOT_EINVAL);
+  m.has_security_param = 0;
+  m.paging_id_len = 8 * AIOT_MAC_MAX_TBS - (3 + 7 + 1 + 1 + 10 + 24);
+  EXPECT_EQ(PackInto(m), 8 * AIOT_MAC_MAX_TBS);
+  m.paging_id_len++;
+  EXPECT_EQ(PackInto(m), AIOT_EINVAL);
+  // D2R: a 16-bit Random ID, an SDU of at most 123 bytes (6.2.2.2)
+  aiot_mac_d2r_msg_t d;
+  memset(&d, 0, sizeof(d));
+  uint8_t bits[AIOT_MAC_MAX_PDU_BITS];
+  d.kind = AIOT_D2R_ACCESS_RANDOM_ID;
+  d.random_id = 0xFFFF;
+  EXPECT_EQ(aiot_mac_pack_d2r(&d, bits, (int)sizeof(bits)), 16);
+  d.random_id = 0x10000;
+  EXPECT_EQ(aiot_mac_pack_d2r(&d, bits, (int)sizeof(bits)), AIOT_EINVAL);
+  d.random_id = 1;
+  EXPECT_EQ(aiot_mac_pack_d2r(&d, bits, 15), AIOT_ESPACE);
+  uint8_t sdu[AIOT_MAC_MAX_TBS] = {};
+  EXPECT_EQ(aiot_mac_d2r_for_tbs(sdu, AIOT_MAC_MAX_TBS - 2, AIOT_MAC_MAX_TBS, 0, &d), 0);
+  EXPECT_EQ(aiot_mac_pack_d2r(&d, bits, (int)sizeof(bits)), 8 * AIOT_MAC_MAX_TBS);
+  EXPECT_EQ(aiot_mac_d2r_for_tbs(sdu, AIOT_MAC_MAX_TBS - 1, AIOT_MAC_MAX_TBS, 0, &d), AIOT_EINVAL);
+  d.sdu_len = AIOT_MAC_MAX_TBS - 1;
+  d.padding_bytes = 0;
+  EXPECT_EQ(aiot_mac_pack_d2r(&d, bits, (int)sizeof(bits)), AIOT_EINVAL);
+  EXPECT_EQ(aiot_mac_d2r_for_tbs(sdu, 0, AIOT_MAC_MAX_TBS + 1, 0, &d), AIOT_EINVAL);
+  EXPECT_EQ(aiot_mac_d2r_for_tbs(sdu, 0, 1, 0, &d), AIOT_EINVAL) << "no room for the 2-byte header";
+}
+
+namespace {
+
+// The bits pack() gives for what parse() read, or an empty vector when parse() refuses them.
+Bits Reparse(const Bits &y, aiot_mac_r2d_msg_t *parsed)
+{
+  if (aiot_mac_parse_r2d(y.data(), (int)y.size(), parsed) != 0)
+    return {};
+  Bits z(AIOT_MAC_MAX_PDU_BITS);
+  const int n = aiot_mac_pack_r2d(parsed, z.data(), (int)z.size());
+  EXPECT_EQ(n, (int)y.size()) << "a parsed message must pack to the same TBS";
+  z.resize(std::max(n, 0));
+  return z;
+}
+
+// The bits of a parsed message the receiver ignores: the R bits (6.2.1.4, 6.2.1.5) and the Fill
+// Bits (6.2.1.1, 6.2.1.3).
+std::vector<bool> Ignored(const aiot_mac_r2d_msg_t &p, int n)
+{
+  std::vector<bool> ign(n);
+  auto mark = [&](int from, int to) {
+    for (int i = from; i < to && i < n; i++)
+      ign[i] = true;
+  };
+  const int r_at = 3 + 7 + 16 + aiot_mac_sched_width(AIOT_SCHED_R2D_DATA) + 1; // after CI
+  switch (p.kind) {
+    case AIOT_R2D_NACK_FEEDBACK:
+      mark(10, 16);
+      break;
+    case AIOT_R2D_UPPER_LAYER_DATA:
+      mark(r_at, r_at + (p.has_sdu ? 2 : 3));
+      break;
+    default:
+      mark(aiot_mac_r2d_body_bits(&p), n);
+      break;
+  }
+  return ign;
+}
+
+} // namespace
+
+// What parse() accepts is exactly what pack() writes: a valid PDU with any one bit flipped is
+// either refused, or read as a message that packs back to the flipped bits, but for the bits the
+// receiver ignores (packed as zeros). A PDU cut by any number of bytes, or one byte too long, is
+// refused.
+TEST(MacPdu, ParseAcceptsOnlyWhatPackWrites)
+{
+  std::mt19937 gen(11);
+  int refused = 0, accepted = 0;
+  for (int t = 0; t < 120; t++) {
+    const aiot_r2d_kind_t kind = (aiot_r2d_kind_t)(t % 6);
+    if (kind == AIOT_R2D_ACCESS_TRIGGER)
+      continue;
+    aiot_mac_r2d_msg_t m = RandomR2d(gen, kind);
+    if (aiot_mac_r2d_natural_bytes(&m) < 0)
+      continue;
+    const Bits x = Pack(m);
+    for (size_t i = 0; i < x.size(); i++) {
+      Bits y = x;
+      y[i] ^= 1;
+      aiot_mac_r2d_msg_t p;
+      const Bits z = Reparse(y, &p);
+      if (z.empty()) {
+        refused++;
+        continue;
+      }
+      accepted++;
+      const std::vector<bool> ign = Ignored(p, (int)z.size());
+      for (size_t j = 0; j < z.size(); j++)
+        ASSERT_EQ(z[j], ign[j] ? 0 : y[j]) << "kind " << kind << " read as " << p.kind << ", bit " << i << " flipped, bit " << j;
+      if (!ign[i] && p.kind == kind) {
+        aiot_mac_r2d_msg_t again;
+        ASSERT_EQ(aiot_mac_parse_r2d(z.data(), (int)z.size(), &again), 0);
+        ExpectSameR2d(p, again);
+      }
+    }
+    aiot_mac_r2d_msg_t p;
+    for (size_t cut = 8; cut < x.size(); cut += 8)
+      EXPECT_TRUE(Reparse(Bits(x.begin(), x.end() - cut), &p).empty()) << "kind " << kind << " cut " << cut;
+    Bits longer = x;
+    longer.insert(longer.end(), 8, 0);
+    EXPECT_TRUE(Reparse(longer, &p).empty()) << "kind " << kind;
+  }
+  EXPECT_GT(refused, 0);
+  EXPECT_GT(accepted, 0);
+}
+
+// The same for the D2R Upper Layer Data Transfer, whose ignored bits are the R bits and the MAC
+// Padding.
+TEST(MacPdu, D2RParseAcceptsOnlyWhatPackWrites)
+{
+  std::mt19937 gen(12);
+  for (int t = 0; t < 80; t++) {
+    const int tbs = 2 + gen() % (AIOT_MAC_MAX_TBS - 1);
+    Bytes sdu(gen() % (tbs - 1));
+    for (auto &c : sdu)
+      c = gen() & 0xff;
+    aiot_mac_d2r_msg_t m, p;
+    ASSERT_EQ(aiot_mac_d2r_for_tbs(sdu.data(), (int)sdu.size(), tbs, gen() % 2, &m), 0);
+    Bits x(8 * tbs);
+    ASSERT_EQ(aiot_mac_pack_d2r(&m, x.data(), (int)x.size()), 8 * tbs);
+    for (size_t i = 0; i < x.size(); i++) {
+      Bits y = x;
+      y[i] ^= 1;
+      if (aiot_mac_parse_d2r(y.data(), (int)y.size(), AIOT_D2R_UPPER_LAYER_DATA, tbs, &p) != 0)
+        continue;
+      Bits z(8 * tbs);
+      ASSERT_EQ(aiot_mac_pack_d2r(&p, z.data(), (int)z.size()), 8 * tbs);
+      const int body = 16 + 8 * p.sdu_len;
+      for (int j = 0; j < 8 * tbs; j++) {
+        const bool ignored = (j >= 2 && j < 8) || j >= body; // R, MAC Padding
+        ASSERT_EQ(z[j], ignored ? 0 : y[j]) << "bit " << i << " flipped, bit " << j;
+      }
+    }
+    for (int cut = 8; cut < 8 * tbs; cut += 8)
+      EXPECT_EQ(aiot_mac_parse_d2r(x.data(), 8 * tbs - cut, AIOT_D2R_UPPER_LAYER_DATA, tbs, &p), AIOT_EINVAL);
+  }
+}
+
+// NACK Feedback (6.2.1.5) with the most AS IDs a TBS holds, 61 in 124 bytes: every one comes back,
+// a 125-byte PDU (half an AS ID left over) and a 2-byte one (no AS ID) are refused.
+TEST(MacPdu, NackWithSixtyOneAsIds)
+{
+  aiot_mac_r2d_msg_t m;
+  memset(&m, 0, sizeof(m));
+  m.kind = AIOT_R2D_NACK_FEEDBACK;
+  m.n_as_ids = AIOT_MAC_MAX_NACK_IDS;
+  for (int i = 0; i < m.n_as_ids; i++)
+    m.as_ids[i] = (i * 1093 + 7) & 0xFFFF;
+  m.as_ids[0] = 0;
+  m.as_ids[60] = 0xFFFF;
+  const Bits b = Pack(m);
+  ASSERT_EQ((int)b.size(), 8 * 124);
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  ExpectSameR2d(m, back);
+  EXPECT_EQ(back.r2d_tbs, 124);
+
+  Bits odd = b;
+  odd.insert(odd.end(), 8, 0);
+  for (int j = 0; j < 7; j++)
+    odd[3 + j] = (125 >> (6 - j)) & 1;
+  EXPECT_EQ(aiot_mac_parse_r2d(odd.data(), (int)odd.size(), &back), AIOT_EINVAL);
+  Bits empty;
+  Put(empty, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, 3);
+  Put(empty, 2, 7);
+  Put(empty, 0, 6);
+  EXPECT_EQ(aiot_mac_parse_r2d(empty.data(), (int)empty.size(), &back), AIOT_EINVAL);
+}
+
+// Random ID Response (6.2.1.3): at most 8 ID entries and at most 7 Fill Bits. The largest message,
+// 8 entries with Frequency Index and Assigned AS ID, is 35 + 8 x 36 = 323 bits in 41 bytes.
+TEST(MacPdu, RandomIdResponseEntriesAndFillBits)
+{
+  aiot_mac_r2d_msg_t m;
+  memset(&m, 0, sizeof(m));
+  m.kind = AIOT_R2D_RANDOM_ID_RESPONSE;
+  m.sched = Sched(AIOT_SCHED_RANDOM_ID_RESPONSE);
+  m.n_entries = AIOT_MAC_MAX_ID_ENTRIES;
+  for (int i = 0; i < m.n_entries; i++)
+    m.entries[i] = {0xFFFF - i, i, i};
+  EXPECT_EQ(aiot_mac_r2d_body_bits(&m), 323);
+  Bits b = Pack(m);
+  ASSERT_EQ((int)b.size(), 8 * 41);
+  aiot_mac_r2d_msg_t back;
+  ASSERT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), 0);
+  ExpectSameR2d(m, back);
+
+  m.n_entries = AIOT_MAC_MAX_ID_ENTRIES + 1;
+  EXPECT_EQ(PackInto(m), AIOT_EINVAL);
+  m.n_entries = 2;
+  m.entries[1].freq_index = -1; // FIPI applies to every entry
+  EXPECT_EQ(PackInto(m), AIOT_EINVAL);
+
+  // a ninth entry (AIPI 0: 3 + 16 + 1 bits) in the room after eight
+  Bits nine(b.begin(), b.begin() + 323);
+  Put(nine, 0, 3);
+  Put(nine, 0x1234, 16);
+  Put(nine, 0, 1);
+  while (nine.size() % 8)
+    nine.push_back(0);
+  for (int j = 0; j < 7; j++)
+    nine[3 + j] = ((int)nine.size() / 8 >> (6 - j)) & 1;
+  EXPECT_EQ(aiot_mac_parse_r2d(nine.data(), (int)nine.size(), &back), AIOT_EINVAL);
+
+  // one entry (FIPI 0, AIPI 0: 35 + 17 = 52 bits) and a whole spare byte of Fill Bits
+  memset(&m, 0, sizeof(m));
+  m.kind = AIOT_R2D_RANDOM_ID_RESPONSE;
+  m.sched = Sched(AIOT_SCHED_RANDOM_ID_RESPONSE);
+  m.n_entries = 1;
+  m.entries[0] = {0x4321, -1, -1};
+  b = Pack(m);
+  ASSERT_EQ((int)b.size(), 8 * 7);
+  b.insert(b.end(), 8, 0);
+  for (int j = 0; j < 7; j++)
+    b[3 + j] = (8 >> (6 - j)) & 1;
+  EXPECT_EQ(aiot_mac_parse_r2d(b.data(), (int)b.size(), &back), AIOT_EINVAL);
 }
