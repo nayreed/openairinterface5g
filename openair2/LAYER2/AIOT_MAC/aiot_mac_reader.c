@@ -276,7 +276,7 @@ int aiot_reader_next_r2d(aiot_reader_t *r, int64_t now, aiot_reader_r2d_t *out)
   return 1;
 }
 
-/* T_R->D of a D2R the Reader expects (link.d2r_start_offset). */
+/* T_R->D of a D2R the Reader expects (38.291 Tables 7.1.2-1 to 7.1.2-3, aiot_t_r_to_d). */
 static int
 offset(const aiot_reader_t *r, aiot_d2r_msg_t kind, const aiot_d2r_params_t *p, int tbs, const int *cand, int n_cand, int slot)
 {
