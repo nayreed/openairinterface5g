@@ -293,6 +293,44 @@ TEST(Coding, TbccDecodesThroughErrors)
   EXPECT_EQ(aiot_tbcc_decode(soft, 4, out), AIOT_EINVAL);
 }
 
+// The coders work on stack buffers sized by the longest word: the largest input is coded right, the
+// next size up is refused rather than written past them.
+TEST(Coding, LongestWordsAreCodedAndLongerOnesRefused)
+{
+  std::mt19937 gen(4);
+  const int crc_max = AIOT_MAX_WORD_BITS + 8;
+  std::vector<uint8_t> bits = RandomBits(gen, crc_max + 1);
+  std::vector<uint8_t> parity(AIOT_MAX_CRC_LEN);
+  ASSERT_EQ(aiot_crc(bits.data(), crc_max, 16, parity.data()), 16);
+  EXPECT_EQ(parity, ReferenceCrc(std::vector<uint8_t>(bits.begin(), bits.begin() + crc_max), 16, kCrc16));
+  EXPECT_EQ(aiot_crc(bits.data(), crc_max + 1, 16, parity.data()), AIOT_EINVAL);
+  EXPECT_EQ(aiot_crc(bits.data(), -1, 16, parity.data()), AIOT_EINVAL);
+
+  std::vector<uint8_t> word(crc_max + 1 + AIOT_MAX_CRC_LEN);
+  ASSERT_EQ(aiot_attach_crc(bits.data(), AIOT_MAX_TB_BITS, word.data()), AIOT_MAX_WORD_BITS);
+  int a = -1;
+  EXPECT_EQ(aiot_check_crc(word.data(), AIOT_MAX_WORD_BITS, &a), 1);
+  EXPECT_EQ(a, AIOT_MAX_TB_BITS);
+  EXPECT_EQ(aiot_attach_crc(bits.data(), crc_max + 1, word.data()), AIOT_EINVAL);
+  // a received word longer than any the receiver takes is refused, not compared with stale parity
+  EXPECT_EQ(aiot_check_crc(word.data(), crc_max + 1 + AIOT_MAX_CRC_LEN, &a), AIOT_EINVAL);
+
+  const int k = AIOT_MAX_BLOCK_BITS;
+  std::vector<uint8_t> c = RandomBits(gen, k);
+  std::vector<uint8_t> e(3 * (k + 1));
+  ASSERT_EQ(aiot_tbcc_encode(c.data(), k, e.data()), 3 * k);
+  e.resize(3 * k);
+  EXPECT_EQ(e, ReferenceTbcc(c));
+  std::vector<double> soft = Soft(e);
+  std::vector<uint8_t> out(k);
+  ASSERT_EQ(aiot_tbcc_decode(soft.data(), 3 * k, out.data()), k);
+  EXPECT_EQ(out, c);
+  c.push_back(1);
+  e.resize(3 * (k + 1));
+  EXPECT_EQ(aiot_tbcc_encode(c.data(), k + 1, e.data()), AIOT_EINVAL);
+  EXPECT_EQ(aiot_tbcc_encode(c.data(), 0, e.data()), AIOT_EINVAL);
+}
+
 TEST(Coding, Repetition)
 {
   const uint8_t bits[5] = {1, 0, 0, 1, 1};
