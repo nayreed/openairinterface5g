@@ -307,8 +307,10 @@ TEST(NrAiotD2R, DecimatesAndStopsWhatWouldAlias)
   ExpectDecoded(got[0], tb, start, 8, 1);
 }
 
-// Slots that never came are received as zeros, a slot that came twice is received once, and
-// after more than a second without samples the receiver starts again on the same clock.
+// Slots that never came are received as zeros, a slot that came twice is received once, a read that
+// starts inside what was already received (a radio stepping its timestamp back) is received from
+// where the stream had got to, and after more than a second without samples the receiver starts
+// again on the same clock.
 TEST(NrAiotD2R, GapsAndRepeats)
 {
   std::mt19937_64 gen(4);
@@ -325,8 +327,10 @@ TEST(NrAiotD2R, GapsAndRepeats)
   for (int s = 0; s * kSlot < (int)c.size(); s++) {
     if (s >= 2 && s <= 4)
       continue; // never came
-    int n = std::min(kSlot, (int)c.size() - s * kSlot);
-    ASSERT_EQ(nr_aiot_d2r_feed(d.get(), (int64_t)s * kSlot, c.data() + s * kSlot, n), 0);
+    // slot 9, inside the Tag's frame, comes with the last third of slot 8 before it
+    const int at = s == 9 ? s * kSlot - kSlot / 3 : s * kSlot;
+    int n = std::min(s * kSlot + kSlot, (int)c.size()) - at;
+    ASSERT_EQ(nr_aiot_d2r_feed(d.get(), (int64_t)at, c.data() + at, n), 0);
     if (s == 6) { // came twice
       ASSERT_EQ(nr_aiot_d2r_feed(d.get(), (int64_t)s * kSlot, c.data() + s * kSlot, n), 0);
     }
