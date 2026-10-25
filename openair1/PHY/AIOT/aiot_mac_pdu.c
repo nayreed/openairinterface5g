@@ -10,9 +10,11 @@
 
 #include "aiot_mac_pdu.h"
 
-#define MAX_TBS AIOT_MAC_MAX_TBS
 #define RIDR_ENTRY_MIN_BITS 17 /* Echoed Random ID (16) + AIPI (1) */
 #define PAGING_ID_LEN_BITS 10 /* Paging ID Length field of the Paging message (V19.4.0) */
+#define R2D_TYPE_BITS 3 /* R2D Message Type, Table 6.1-1 */
+#define D2R_TYPE_BITS 2 /* D2R Message Type of the upper layer data PDU, Figure 6.2.2.2-1 */
+#define D2R_TYPE_UPPER_LAYER_DATA 0
 #define SEC_BITS AIOT_MAC_SECURITY_PARAM_BITS
 #define SCRATCH_BITS 2048 /* above any PDU body: the largest valid one is 8 * 125 bits plus checks */
 
@@ -172,7 +174,7 @@ int aiot_mac_sched_validate(const aiot_sched_info_t *s)
   } else {
     if (s->x != 0)
       return AIOT_EINVAL;
-    if (s->d2r_tbs < 1 || s->d2r_tbs > MAX_TBS)
+    if (s->d2r_tbs < 1 || s->d2r_tbs > AIOT_MAC_MAX_TBS)
       return AIOT_EINVAL;
   }
   if (s->n_sfs < 1 || s->n_sfs > AIOT_MAX_SHIFTS)
@@ -275,7 +277,7 @@ int aiot_mac_sched_parse(const uint8_t *bits, int n, aiot_sched_variant_t varian
   s->i_add = rd_take(&r, 1);
   if (variant != AIOT_SCHED_PAGING_CBRA) {
     s->d2r_tbs = rd_take(&r, 7) + 1;
-    if (s->d2r_tbs > MAX_TBS) /* codepoints 125..127 are not used in this release */
+    if (s->d2r_tbs > AIOT_MAC_MAX_TBS) /* codepoints 125..127 are not used in this release */
       return AIOT_EINVAL;
   }
   return aiot_mac_sched_validate(s) < 0 ? AIOT_EINVAL : 0;
@@ -363,7 +365,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         return AIOT_EINVAL;
       if (!security_ok(m))
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
+      put(&w, AIOT_MAC_R2D_TYPE_PAGING, R2D_TYPE_BITS);
       put(&w, tbs_cp, 7);
       put(&w, m->has_security_param, 1); /* SPPI */
       if (m->has_security_param)
@@ -388,7 +390,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         return AIOT_EINVAL;
       if (!security_ok(m))
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_PAGING, 3);
+      put(&w, AIOT_MAC_R2D_TYPE_PAGING, R2D_TYPE_BITS);
       put(&w, tbs_cp, 7);
       put(&w, m->has_security_param, 1); /* SPPI */
       if (m->has_security_param)
@@ -417,7 +419,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
         if ((e->freq_index != -1) != fipi) /* FIPI applies to all entries */
           return AIOT_EINVAL;
       }
-      put(&w, AIOT_MAC_R2D_TYPE_RANDOM_ID_RESPONSE, 3);
+      put(&w, AIOT_MAC_R2D_TYPE_RANDOM_ID_RESPONSE, R2D_TYPE_BITS);
       put(&w, tbs_cp, 7);
       if (aiot_mac_sched_validate(&m->sched) < 0)
         return AIOT_EINVAL;
@@ -440,10 +442,10 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
     case AIOT_R2D_UPPER_LAYER_DATA: /* Figures 6.2.1.4-1 and -2 */
       if (m->sched.variant != AIOT_SCHED_R2D_DATA)
         return AIOT_EINVAL;
-      if (m->has_sdu ? (m->sdu_len < 0 || m->sdu_len > MAX_TBS)
+      if (m->has_sdu ? (m->sdu_len < 0 || m->sdu_len > AIOT_MAC_MAX_TBS)
                      : (m->received_data_size < 0 || m->received_data_size > AIOT_MAC_MAX_RECEIVED_DATA_SIZE))
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, 3);
+      put(&w, AIOT_MAC_R2D_TYPE_UPPER_LAYER_DATA, R2D_TYPE_BITS);
       put(&w, tbs_cp, 7);
       put(&w, m->as_id, 16);
       if (aiot_mac_sched_validate(&m->sched) < 0)
@@ -462,7 +464,7 @@ static int r2d_body(const aiot_mac_r2d_msg_t *m, int tbs, uint8_t *out)
     case AIOT_R2D_NACK_FEEDBACK: /* Figure 6.2.1.5-1 */
       if (m->n_as_ids < 1 || m->n_as_ids > AIOT_MAC_MAX_NACK_IDS)
         return AIOT_EINVAL;
-      put(&w, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, 3);
+      put(&w, AIOT_MAC_R2D_TYPE_NACK_FEEDBACK, R2D_TYPE_BITS);
       put(&w, tbs_cp, 7);
       put(&w, 0, 6); /* R */
       for (int i = 0; i < m->n_as_ids; i++)
@@ -482,7 +484,7 @@ static int r2d_natural(const aiot_mac_r2d_msg_t *m)
   if (nb < 0)
     return AIOT_EINVAL;
   int nat = (nb + 7) / 8;
-  return nat > MAX_TBS ? AIOT_EINVAL : nat;
+  return nat > AIOT_MAC_MAX_TBS ? AIOT_EINVAL : nat;
 }
 
 int aiot_mac_r2d_natural_bytes(const aiot_mac_r2d_msg_t *m)
@@ -499,7 +501,7 @@ int aiot_mac_r2d_body_bits(const aiot_mac_r2d_msg_t *m)
   if (!m)
     return AIOT_EINVAL;
   if (m->kind == AIOT_R2D_ACCESS_TRIGGER)
-    return 3;
+    return R2D_TYPE_BITS;
   uint8_t scratch[SCRATCH_BITS];
   return r2d_body(m, 0, scratch);
 }
@@ -508,19 +510,16 @@ int aiot_mac_pack_r2d(const aiot_mac_r2d_msg_t *m, uint8_t *bits, int cap)
 {
   if (!m || (cap > 0 && !bits))
     return AIOT_EINVAL;
-  if (m->kind == AIOT_R2D_ACCESS_TRIGGER) { /* only the 3-bit type (6.1.1) */
-    if (cap < 3)
-      return AIOT_ESPACE;
-    bits[0] = 0;
-    bits[1] = 1;
-    bits[2] = 0;
-    return 3;
+  if (m->kind == AIOT_R2D_ACCESS_TRIGGER) { /* only the type (6.1.1) */
+    wr_t w = {bits, 0, cap, 0};
+    put(&w, AIOT_MAC_R2D_TYPE_ACCESS_TRIGGER, R2D_TYPE_BITS);
+    return w.err ? w.err : w.n;
   }
   int nat = r2d_natural(m);
   if (nat < 0)
     return AIOT_EINVAL;
   int tbs = m->r2d_tbs == 0 ? nat : m->r2d_tbs;
-  if (tbs < 1 || tbs > MAX_TBS || tbs < nat)
+  if (tbs < 1 || tbs > AIOT_MAC_MAX_TBS || tbs < nat)
     return AIOT_EINVAL;
   /* the paging messages may carry extra Fill Bits ("future extensions"), packed as zeros and ignored on
    * parse (6.2.1.1, CR 0016), the others may not */
@@ -543,22 +542,22 @@ int aiot_mac_parse_r2d(const uint8_t *bits, int n, aiot_mac_r2d_msg_t *m)
   if (!m)
     return AIOT_EINVAL;
   memset(m, 0, sizeof(*m));
-  if (!bits_clean(bits, n) || n < 3)
+  if (!bits_clean(bits, n) || n < R2D_TYPE_BITS)
     return AIOT_EINVAL;
-  int mtype = bits_to_int(bits, 3);
+  int mtype = bits_to_int(bits, R2D_TYPE_BITS);
   if (!aiot_mac_r2d_type_valid(mtype)) /* 000, 110, 111 are reserved */
     return AIOT_EINVAL;
   if (mtype == AIOT_MAC_R2D_TYPE_ACCESS_TRIGGER) {
-    if (n != 3)
+    if (n != R2D_TYPE_BITS)
       return AIOT_EINVAL;
     m->kind = AIOT_R2D_ACCESS_TRIGGER;
     return 0;
   }
   if (n % 8)
     return AIOT_EINVAL;
-  rd_t r = {bits, n, 3};
+  rd_t r = {bits, n, R2D_TYPE_BITS};
   int tbs = rd_take(&r, 7) + 1; /* R2D TBS: first codepoint = 1 byte (6.1.1) */
-  if (tbs < 1 || tbs > MAX_TBS || n != 8 * tbs) /* codepoints 125..127 are not used in this release */
+  if (tbs < 1 || tbs > AIOT_MAC_MAX_TBS || n != 8 * tbs) /* codepoints 125..127 are not used in this release */
     return AIOT_EINVAL;
   m->r2d_tbs = tbs;
 
@@ -693,13 +692,14 @@ int aiot_mac_pack_d2r(const aiot_mac_d2r_msg_t *m, uint8_t *bits, int cap)
   }
   if (m->kind != AIOT_D2R_UPPER_LAYER_DATA) /* Figure 6.2.2.2-1 */
     return AIOT_EINVAL;
-  if (!flag_ok(m->mdi) || m->sdu_len < 0 || m->sdu_len > MAX_TBS || m->padding_bytes < 0 || m->padding_bytes > MAX_TBS)
+  if (!flag_ok(m->mdi) || m->sdu_len < 0 || m->sdu_len > AIOT_MAC_MAX_TBS || m->padding_bytes < 0
+      || m->padding_bytes > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
-  if (2 + m->sdu_len + m->padding_bytes > MAX_TBS)
+  if (2 + m->sdu_len + m->padding_bytes > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
   if (cap < 8 * (2 + m->sdu_len + m->padding_bytes))
     return AIOT_ESPACE;
-  put(&w, 0, 2); /* type 00 */
+  put(&w, D2R_TYPE_UPPER_LAYER_DATA, D2R_TYPE_BITS);
   put(&w, 0, 6); /* R */
   put(&w, m->mdi, 1);
   put(&w, m->sdu_len, 7);
@@ -725,12 +725,12 @@ int aiot_mac_parse_d2r(const uint8_t *bits, int n, aiot_d2r_kind_t kind, int d2r
   }
   if (kind != AIOT_D2R_UPPER_LAYER_DATA)
     return AIOT_EINVAL;
-  if (n % 8 || n < 16 || n > 8 * MAX_TBS)
+  if (n % 8 || n < 16 || n > 8 * AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
   if (d2r_tbs != 0 && n != 8 * d2r_tbs)
     return AIOT_EINVAL;
   rd_t r = {bits, n, 0};
-  if (rd_take(&r, 2) != 0) /* 01, 10, 11 are reserved */
+  if (rd_take(&r, D2R_TYPE_BITS) != D2R_TYPE_UPPER_LAYER_DATA) /* 01, 10, 11 are reserved */
     return AIOT_EINVAL;
   rd_take(&r, 6);
   m->kind = kind;
@@ -747,7 +747,7 @@ int aiot_mac_parse_d2r(const uint8_t *bits, int n, aiot_d2r_kind_t kind, int d2r
 
 int aiot_mac_d2r_for_tbs(const uint8_t *sdu, int sdu_len, int tbs, int mdi, aiot_mac_d2r_msg_t *m)
 {
-  if (!m || sdu_len < 0 || (sdu_len > 0 && !sdu) || tbs < 1 || tbs > MAX_TBS)
+  if (!m || sdu_len < 0 || (sdu_len > 0 && !sdu) || tbs < 1 || tbs > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
   int pad = tbs - 2 - sdu_len;
   if (pad < 0 || !flag_ok(mdi))
