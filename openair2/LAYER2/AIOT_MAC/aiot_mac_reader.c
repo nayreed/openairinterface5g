@@ -42,6 +42,7 @@ typedef struct {
   int slot;
   int entry;
   int as_id;
+  int in; /* its outcome came */
 } expect_info_t;
 
 struct aiot_reader {
@@ -462,9 +463,10 @@ int aiot_reader_r2d_sent(aiot_reader_t *r, int64_t start, int64_t end, int64_t n
 int aiot_reader_d2r_outcome(aiot_reader_t *r, const aiot_d2r_outcome_t *o, int64_t now)
 {
   const int64_t tag = o->expect.tag;
-  if (r->waiting == 0 || tag / MAX_EXPECTS != r->seq || tag % MAX_EXPECTS >= r->n_expects)
+  if (r->waiting == 0 || tag / MAX_EXPECTS != r->seq || tag % MAX_EXPECTS >= r->n_expects || r->exp[tag % MAX_EXPECTS].in)
     return AIOT_EINVAL;
-  const expect_info_t *info = &r->exp[tag % MAX_EXPECTS];
+  expect_info_t *info = &r->exp[tag % MAX_EXPECTS];
+  info->in = 1;
   aiot_reader_heard_t *h = r->open;
   h->collided += o->collided;
   for (int i = 0; i < o->n_decoded; i++) {

@@ -584,3 +584,26 @@ TEST(Reader, PushedPagingKeepsItsSecurityParameter)
   ASSERT_TRUE(air.step());
   EXPECT_EQ(security_of(air.heard.back()->sent), security_of(cfa));
 }
+
+// Each window gives one outcome. With two windows open (X = 2), a second outcome for the first
+// must not stand in for the second: the R2D would close with a window still unheard.
+TEST(Reader, RejectsASecondOutcomeForTheSameWindow)
+{
+  aiot_link_config_t c = default_link();
+  c.t_bit_den = 2;
+  c.n_r_sfs = 2;
+  c.x = 2;
+  Air air("broadcast", {{"occasions_exp", 3}}, 1, c);
+  aiot_reader_r2d_t r2d;
+  ASSERT_EQ(aiot_reader_next_r2d(air.reader, 0, &r2d), 1);
+  aiot_d2r_expect_t exp[16];
+  ASSERT_EQ(aiot_reader_r2d_sent(air.reader, 0, 1000, 1000, exp, 16), 2);
+  auto o = std::make_unique<aiot_d2r_outcome_t>();
+  o->expect = exp[0];
+  EXPECT_EQ(aiot_reader_d2r_outcome(air.reader, o.get(), 2000), 0);
+  EXPECT_LT(aiot_reader_d2r_outcome(air.reader, o.get(), 2000), 0) << "window 0 is already in";
+  EXPECT_EQ(aiot_reader_next_r2d(air.reader, 2000, &r2d), 0) << "window 1 is still open";
+  o->expect = exp[1];
+  EXPECT_EQ(aiot_reader_d2r_outcome(air.reader, o.get(), 3000), 0);
+  EXPECT_EQ(aiot_reader_next_r2d(air.reader, 3000, &r2d), 1);
+}
