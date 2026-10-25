@@ -99,7 +99,7 @@ static int within(const char *name, double v, double lo, double hi, char *err, i
 #define MAX_REGISTERED 4000
 
 typedef struct {
-  int started, polling, nacked;
+  bool started, polling, nacked;
   aiot_sched_info_t sched;
   int tid, i, n;
   int n_registered, j;
@@ -141,7 +141,7 @@ static int registration_step(void *state,
   registration_t *s = state;
   (void)h1;
   if (!s->started) {
-    s->started = 1;
+    s->started = true;
     if (aiot_link_cbra(ctx->cfg, NULL, 0, 0, &s->sched) < 0)
       return 0;
     s->tid = next_tid(ctx);
@@ -152,7 +152,7 @@ static int registration_step(void *state,
   }
   if (!s->polling) {
     if (s->nacked) {
-      s->nacked = 0; /* the NACK Feedback brings nothing back */
+      s->nacked = false; /* the NACK Feedback brings nothing back */
     } else if (h2) {
       /* A Tag whose data was heard has joined. One whose data was lost has its AS ID too and
        * would ignore the pagings that follow (38.391 5.2): NACK it, so that it releases the AS ID
@@ -172,7 +172,7 @@ static int registration_step(void *state,
       }
       if (nack.msg.n_as_ids > 0) {
         *next = nack;
-        s->nacked = 1;
+        s->nacked = true;
         return 1;
       }
     }
@@ -180,7 +180,7 @@ static int registration_step(void *state,
       registration_join(s, p, next);
       return 1;
     }
-    s->polling = 1;
+    s->polling = true;
     s->j = 0;
   } else {
     s->j++;
@@ -197,7 +197,7 @@ static int registration_step(void *state,
     next->msg.received_data_size = 0;
     return 1;
   }
-  s->polling = 0;
+  s->polling = false;
   s->i = 0;
   registration_join(s, p, next);
   return 1;
@@ -206,7 +206,7 @@ static int registration_step(void *state,
 /* -- broadcast -------------------------------------------------------------------------------- */
 
 typedef struct {
-  int started;
+  bool started;
   aiot_sched_info_t sched;
   int i, n;
 } broadcast_t;
@@ -222,7 +222,7 @@ static int broadcast_step(void *state,
   (void)h1;
   (void)h2;
   if (!s->started) {
-    s->started = 1;
+    s->started = true;
     if (aiot_link_cbra(ctx->cfg, NULL, 0, 0, &s->sched) < 0)
       return 0;
     s->n = r2d_per_paging((int)p[0], &s->sched);
@@ -239,7 +239,7 @@ static int broadcast_step(void *state,
 /* -- unicast ---------------------------------------------------------------------------------- */
 
 typedef struct {
-  int started;
+  bool started;
   aiot_sched_info_t sched;
   int k;
 } unicast_t;
@@ -258,7 +258,7 @@ static int unicast_step(void *state,
   if (ctx->n_nodes == 0)
     return 0;
   if (!s->started) {
-    s->started = 1;
+    s->started = true;
     if (aiot_link_cfa(ctx->cfg, 0, 0, &s->sched) < 0)
       return 0;
     s->k = 0;
@@ -277,7 +277,7 @@ static int unicast_step(void *state,
 /* -- gen2_q ----------------------------------------------------------------------------------- */
 
 typedef struct {
-  int started;
+  bool started;
   aiot_sched_info_t sched;
   double qf;
   int q, i;
@@ -311,7 +311,7 @@ static int gen2_q_step(void *state,
   gen2_q_t *s = state;
   (void)h2;
   if (!s->started) {
-    s->started = 1;
+    s->started = true;
     s->qf = p[0];
     /* one occasion per R2D, as Gen2's slots: the first R_SFS, one time slot */
     if (aiot_link_cbra(ctx->cfg, ctx->cfg->r_sfs, 1, 1, &s->sched) < 0)
@@ -337,7 +337,7 @@ static int gen2_q_step(void *state,
 /* -- adaptive_aloha --------------------------------------------------------------------------- */
 
 typedef struct {
-  int started;
+  bool started;
   aiot_sched_info_t sched;
   int v;
   double load;
@@ -380,7 +380,7 @@ static int adaptive_aloha_step(void *state,
   adaptive_aloha_t *s = state;
   (void)h2;
   if (!s->started) {
-    s->started = 1;
+    s->started = true;
     s->v = (int)p[AA_START];
     s->load = 0.0;
     if (aiot_link_cbra(ctx->cfg, NULL, 0, 0, &s->sched) < 0)

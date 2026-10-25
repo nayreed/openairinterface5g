@@ -12,6 +12,7 @@
  * seeded generator repeats its runs), so the code follows the procedures step by step.
  */
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,7 +30,7 @@ struct aiot_device {
   int as_id; /* -1: none */
   int failed_tid; /* Transaction ID whose procedure was found failed, -1: none */
   /* CBRA in progress */
-  int cbra_active, cbra_success;
+  bool cbra_active, cbra_success;
   int counter; /* ACCESS_OCCASION_COUNTER, -1 once Msg1 is sent */
   aiot_sched_info_t cbra_sched;
   int random_id; /* -1: none */
@@ -37,8 +38,8 @@ struct aiot_device {
   int msg2_budget; /* Access Trigger / Paging still allowed while waiting for Msg2 */
   int k;
   /* CFA and data */
-  int cfa_in_procedure;
-  int nack_monitoring;
+  bool cfa_in_procedure;
+  bool nack_monitoring;
   int sending_len; /* the SDU being sent, kept while segmented; -1: none */
   uint8_t sending[SENDING_CAP];
 };
@@ -98,9 +99,9 @@ int aiot_device_send_offset(const aiot_device_send_t *s, int m_chip_symb)
  * Upper layer
  * ------------------------------------------------------------------------------------------- */
 
-static int upper_paging_id_matched(const aiot_device_t *d, const uint8_t *id, int len)
+static bool upper_paging_id_matched(const aiot_device_t *d, const uint8_t *id, int len)
 {
-  return d->upper.paging_id_matched ? d->upper.paging_id_matched(d->upper.user, id, len) : 1;
+  return d->upper.paging_id_matched ? d->upper.paging_id_matched(d->upper.user, id, len) != 0 : true;
 }
 
 /* 5.2: forward the Security Parameter of a paging, when SPPI says it is present */
@@ -204,7 +205,7 @@ static int occasions(const aiot_device_t *d)
 
 static void stop_cbra(aiot_device_t *d)
 {
-  d->cbra_active = 0;
+  d->cbra_active = false;
   d->counter = -1;
 }
 
@@ -253,8 +254,8 @@ static int start_cbra(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device
   int n = aiot_mac_num_access_occasions(m->num_access_occasions_code);
   if (k < 0 || n < 0)
     return AIOT_EINVAL;
-  d->cbra_active = 1;
-  d->cbra_success = 0;
+  d->cbra_active = true;
+  d->cbra_success = false;
   d->cbra_sched = m->sched;
   d->k = k;
   d->counter = (int)d->upper.draw(d->upper.user, (uint32_t)n);
@@ -283,24 +284,24 @@ static int paging(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_sen
   if (d->cbra_active && !d->cbra_success)
     d->failed_tid = d->transaction_id;
   stop_cbra(d);
-  d->nack_monitoring = 0; /* 5.5.2: NACK monitoring ends at a paging */
+  d->nack_monitoring = false; /* 5.5.2: NACK monitoring ends at a paging */
   d->msg2_budget = 0;
 
   if (m->kind == AIOT_R2D_PAGING_CBRA) {
     int tid = m->transaction_id;
-    int fresh = d->transaction_id < 0 || tid != d->transaction_id || (tid == d->transaction_id && d->failed_tid == tid);
+    bool fresh = d->transaction_id < 0 || tid != d->transaction_id || (tid == d->transaction_id && d->failed_tid == tid);
     if (!fresh)
       return 0; /* 5.2: already done */
     d->as_id = -1;
     d->transaction_id = tid;
     d->failed_tid = -1;
-    d->cfa_in_procedure = 0;
+    d->cfa_in_procedure = false;
     upper_security_param(d, m);
-    int selected;
+    bool selected;
     if (!m->has_paging_id) {
       if (d->upper.selected)
         d->upper.selected(d->upper.user);
-      selected = 1;
+      selected = true;
     } else {
       selected = upper_paging_id_matched(d, m->paging_id, m->paging_id_len);
     }
@@ -315,10 +316,10 @@ static int paging(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_sen
   d->failed_tid = -1;
   upper_security_param(d, m);
   if (!upper_paging_id_matched(d, m->paging_id, m->paging_id_len)) {
-    d->cfa_in_procedure = 0;
+    d->cfa_in_procedure = false;
     return 0;
   }
-  d->cfa_in_procedure = 1; /* 5.3.2 */
+  d->cfa_in_procedure = true; /* 5.3.2 */
   return d2r_data(d, &m->sched, SEND_CFA, 0, out);
 }
 
@@ -333,7 +334,7 @@ static int after_msg2(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, int i, aiot
   int r = d2r_data(d, &m->sched, SEND_MSG2, m->sched.r_sfs[i], out);
   if (r < 0)
     return r;
-  d->nack_monitoring = 1; /* 5.5.2: the first data after CBRA */
+  d->nack_monitoring = true; /* 5.5.2: the first data after CBRA */
   return r;
 }
 
@@ -350,7 +351,7 @@ static int random_id_response(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aio
         continue;
       if (e->freq_index >= 0 && aiot_mac_freq_index_to_r_sfs(e->freq_index) != d->msg1_r_sfs)
         continue;
-      d->cbra_success = 1;
+      d->cbra_success = true;
       d->as_id = e->assigned_as_id >= 0 ? e->assigned_as_id : e->echoed_random_id;
       return after_msg2(d, m, i, out);
     }
@@ -379,7 +380,7 @@ static int r2d_data(aiot_device_t *d, const aiot_mac_r2d_msg_t *m, aiot_device_s
 {
   if (d->as_id >= 0 && m->as_id == d->as_id) {
     /* 5.5.2, 5.3.1.3: NACK and Random ID Response monitoring end at R2D data addressed to the device */
-    d->nack_monitoring = 0;
+    d->nack_monitoring = false;
     d->msg2_budget = 0;
     if (m->has_sdu) {
       /* 5.4.2: no D2R after an integrity protection failure */
@@ -420,7 +421,7 @@ static void nack(aiot_device_t *d, const aiot_mac_r2d_msg_t *m)
     return;
   d->as_id = -1;
   d->failed_tid = d->transaction_id;
-  d->nack_monitoring = 0;
+  d->nack_monitoring = false;
 }
 
 int aiot_device_on_r2d(aiot_device_t *d, const aiot_mac_r2d_msg_t *msg, aiot_device_send_t *out)
