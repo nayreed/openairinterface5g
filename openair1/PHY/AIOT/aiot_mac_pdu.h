@@ -26,12 +26,12 @@
 extern "C" {
 #endif
 
-#define AIOT_MAC_MAX_TBS 125 /* MAX_TBS: largest R2D and D2R transport block, bytes */
+#define AIOT_MAC_MAX_TBS AIOT_MAX_TBS_BYTES /* MAX_TBS: largest R2D and D2R transport block, bytes */
 #define AIOT_MAC_MAX_ID_ENTRIES 8 /* MAX_ID_ENTRIES of a Random ID Response */
 #define AIOT_MAC_MAX_PAGING_ID_BITS 1023 /* 10-bit Paging ID Length (V19.4.0); 125 bytes hold at most 954 (CFA, SPPI 0) */
 #define AIOT_MAC_SECURITY_PARAM_BITS 128 /* Security Parameter: RAND_AIOT_n of TS 33.369 */
-#define AIOT_MAC_MAX_RECEIVED_DATA_SIZE 125 /* Received Data Size {0..125} (6.2.1.4) */
-#define AIOT_MAC_MAX_NACK_IDS 61 /* TBS = 2 + 2 n <= 125 */
+#define AIOT_MAC_MAX_RECEIVED_DATA_SIZE AIOT_MAC_MAX_TBS /* Received Data Size {0..MAX_TBS} (6.2.1.4) */
+#define AIOT_MAC_MAX_NACK_IDS ((AIOT_MAC_MAX_TBS - 2) / 2) /* 61: TBS = 2 + 2 n <= MAX_TBS */
 #define AIOT_MAC_MAX_PDU_BITS (8 * AIOT_MAC_MAX_TBS)
 
 /* ---------------------------------------------------------------------------------------------
