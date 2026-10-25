@@ -129,8 +129,14 @@ int aiot_link_config_check(const aiot_link_config_t *cfg)
     return AIOT_EINVAL;
   if (cfg->d2r_tbs < 1 || cfg->d2r_tbs > AIOT_MAC_MAX_TBS)
     return AIOT_EINVAL;
+  if (cfg->n_r_sfs < 0 || cfg->n_r_sfs > AIOT_MAX_SHIFTS)
+    return AIOT_EINVAL;
+  /* no value twice, wherever it is in the list */
+  int sorted[AIOT_MAX_SHIFTS];
+  memcpy(sorted, cfg->r_sfs, cfg->n_r_sfs * sizeof(*sorted));
+  aiot_link_sort_r_sfs(sorted, cfg->n_r_sfs);
   for (int i = 1; i < cfg->n_r_sfs; i++)
-    if (cfg->r_sfs[i] == cfg->r_sfs[i - 1])
+    if (sorted[i] == sorted[i - 1])
       return AIOT_EINVAL;
   aiot_sched_info_t s;
   return aiot_link_cbra(cfg, NULL, 0, 0, &s);
