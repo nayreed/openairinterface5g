@@ -38,6 +38,7 @@
  * The time in a table row is the Reader's clock in milliseconds when the row is added. */
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -94,23 +95,27 @@ static int within(const char *name, double v, double lo, double hi, char *err, i
 
 /* -- registration ----------------------------------------------------------------------------- */
 
-#define MAX_REGISTERED 1000
+/* the AS IDs polled, as many as the protocol state holds next to the rest (asserted below) */
+#define MAX_REGISTERED 4000
 
 typedef struct {
   int started, polling, nacked;
   aiot_sched_info_t sched;
   int tid, i, n;
   int n_registered, j;
-  int registered[MAX_REGISTERED];
+  uint16_t registered[MAX_REGISTERED];
 } registration_t;
 
-static void registration_add(registration_t *s, int as_id)
+/* true when as_id is, or now is, in the list; false when the list is full */
+static bool registration_add(registration_t *s, int as_id)
 {
   for (int r = 0; r < s->n_registered; r++)
     if (s->registered[r] == as_id)
-      return;
-  if (s->n_registered < MAX_REGISTERED)
-    s->registered[s->n_registered++] = as_id;
+      return true;
+  if (s->n_registered == MAX_REGISTERED)
+    return false;
+  s->registered[s->n_registered++] = (uint16_t)as_id;
+  return true;
 }
 
 static int registration_check(const double *p, char *err, int err_len)
@@ -151,7 +156,8 @@ static int registration_step(void *state,
     } else if (h2) {
       /* A Tag whose data was heard has joined. One whose data was lost has its AS ID too and
        * would ignore the pagings that follow (38.391 5.2): NACK it, so that it releases the AS ID
-       * and finds its procedure failed (5.5.2), and joins again at the next paging. */
+       * and finds its procedure failed (5.5.2), and joins again at the next paging. A Tag heard
+       * when the list is full is NACKed too, rather than left holding an AS ID never polled. */
       aiot_policy_msg_t nack = {.msg.kind = AIOT_R2D_NACK_FEEDBACK};
       for (int k = 0; k < h2->sent.n_entries; k++) {
         const aiot_mac_rid_entry_t *e = &h2->sent.entries[k];
@@ -159,9 +165,9 @@ static int registration_step(void *state,
         int heard = 0;
         for (int a = 0; a < h2->n_answers && !heard; a++)
           heard = h2->answers[a].kind == AIOT_ANSWER_DATA && h2->answers[a].as_id == as_id;
-        if (heard)
-          registration_add(s, as_id);
-        else if (nack.msg.n_as_ids < AIOT_MAC_MAX_NACK_IDS)
+        if (heard && registration_add(s, as_id))
+          continue;
+        if (nack.msg.n_as_ids < AIOT_MAC_MAX_NACK_IDS)
           nack.msg.as_ids[nack.msg.n_as_ids++] = as_id;
       }
       if (nack.msg.n_as_ids > 0) {
