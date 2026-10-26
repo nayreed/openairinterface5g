@@ -10,10 +10,13 @@ the Rel-19 A-IoT study: there is no standalone Reader, and the gNB reads the Tag
 
 ```toml
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "gnb"      # the gNB sends the R2D
 d2r = "gnb"      # and receives the D2R
 cw = "gnb-dl"    # and sends the carrier the Tags reflect, in its own DL
+[[network.ue]]
+x = 50.0             # m from the base station, where the Tags are; the gNB, the Reader, stands there
+y = 80.0
 ```
 
 and `amber-compose` writes the other files from it, as there. The containers are `rfsim-hub`,
@@ -43,6 +46,7 @@ level Amber's own Reader would give it.
 |:-----|-----:|:----|
 | gnb → tagN | +19.02 dB, shifted +1.98 MHz | the carrier leaves the gNB at 917.5 counts (TX_AMP 519 × 10 × √12 / √384); Amber's Tag takes 8192 counts as its Reader's carrier |
 | tagN → gnb | 0 dB, shifted +1.08 MHz, UL PRBs 15 to 21 only | Amber writes a Tag's D2R as its Reader's receiver sees it |
+| ue → gnb | +25.91 dB | 0 | the UE's UL from where it is, in the scale of the gNB's D2R receiver (thermal noise at 1 count): TR 38.769's UMa between the UE and the base station |
 | gnb noise | 1 count rms | the hub adds the receiver noise Amber's Reader has (`noise_counts` of the gNB's node) |
 
 The shift puts DL PRB 1's centre at each Tag's DC, and the Tags' D2R at UL PRB 18's centre.

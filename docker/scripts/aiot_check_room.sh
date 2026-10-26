@@ -19,11 +19,11 @@
 # is pulled: the images must be on this host. OUT_DIR (default: none) receives the room's records
 # and every container's log, so a failed run can be read afterwards.
 #
-# A room whose scenario places its nodes on several machines ([network.hosts]) has one
+# A room whose scenario places its nodes on several machines (the host keys of [network]) has one
 # docker-compose.<machine>.yaml per machine instead of docker-compose.yaml. This script runs them
 # all on this host, as one compose project each: the hub's machine first, the UE's last, with the
 # gNB's reconfig.raw and rbconfig.raw copied into the UE's ./rrc as one would between machines. The
-# hub's machine is then this host, as [network.hosts] must say (an address of this host that
+# hub's machine is then this host, as [network.hub] must say (an address of this host that
 # containers reach, such as its own address on the default route).
 
 set -euo pipefail

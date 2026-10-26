@@ -100,7 +100,8 @@ COPY --from=amber-build \
     ./
 COPY docker/scripts/amber_compose.py ./amber-compose
 # The 5G cells a scenario's [network] can name, which amber-compose copies into a room
-COPY ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
+COPY ci-scripts/conf_files/gnb.band8.u0.25prb.rfsim.dora.conf \
+     ci-scripts/conf_files/gnb.band28.u0.25prb.rfsim.dora.conf \
      ci-scripts/conf_files/nrue.uicc.conf \
      /opt/oai-amber/etc/cells/
 # The checked-in 5G rooms, checked below
@@ -123,15 +124,13 @@ RUN ldconfig && \
     echo "---- each checked-in 5G room is what amber-compose writes from its scenario ----" && \
     mkdir -p /tmp/conf_files && cp /opt/oai-amber/etc/cells/* /tmp/conf_files/ && \
     for room in /tmp/rooms/*; do \
-      new=/tmp/new/${room##*/} && mkdir -p "$new" && cp "$room/scenario.toml" "$new/" && \
-      amber-compose --image oai-amber:latest "$new/scenario.toml" "$new" --cells-dir ../../conf_files && \
-      diff -r --exclude=README.md "$room" "$new" || exit 1; \
+      amber-compose --image oai-amber:latest "$room/scenario.toml" "$room" --cells-dir ../../conf_files --check || exit 1; \
     done && \
-    echo "---- the room with the gNB and the UE placed: gains from positions ----" && \
-    mkdir -p /tmp/new/geometry && cp /tmp/rooms/5g_rfsimulator_aiot/scenario.toml /tmp/new/geometry/ && \
-    printf '\n[network.gnb]\nx = 300.0\ny = 0.0\n\n[network.ue]\nx = 50.0\ny = 80.0\n' >> /tmp/new/geometry/scenario.toml && \
-    amber-compose /tmp/new/geometry/scenario.toml /tmp/new/geometry && \
-    ! diff -q /tmp/rooms/5g_rfsimulator_aiot/rfsim_hub.conf /tmp/new/geometry/rfsim_hub.conf && \
+    echo "---- topology 1 with the UE elsewhere: other gains ----" && \
+    mkdir -p /tmp/new/moved && cp /tmp/rooms/5g_rfsimulator_aiot_t1/scenario.toml /tmp/new/moved/ && \
+    sed -i '/^\[\[network.ue\]\]$/,/^$/s/^x = .*/x = 200.0/' /tmp/new/moved/scenario.toml && \
+    amber-compose /tmp/new/moved/scenario.toml /tmp/new/moved && \
+    ! diff -q /tmp/rooms/5g_rfsimulator_aiot_t1/rfsim_hub.conf /tmp/new/moved/rfsim_hub.conf && \
     rm -r /tmp/rooms /tmp/new /tmp/conf_files
 
 WORKDIR /opt/oai-amber

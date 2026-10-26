@@ -12,10 +12,14 @@ Its [scenario.toml](scenario.toml) is the topology 1 CW room's, with
 
 ```toml
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "ue"           # the UE sends the R2D
 d2r = "gnb"          # the gNB receives the D2R, and runs the MAC
 cw = "cw-node-ul"    # a CW node sends the carrier, in the UL band
+[[network.ue]]
+x = 0.0              # among the Tags, close enough for its R2D to reach them
+y = 25.0
+indoor = true
 ```
 
 and `amber-compose` writes the other files from it. The containers are `rfsim-hub`, `oai-gnb`,
@@ -46,18 +50,24 @@ and `amber-compose` writes the other files from it. The containers are `rfsim-hu
 
 ## Levels
 
-As in the other rooms, the gains bring each signal to the level Amber's own Reader would give it.
-The links to the Tags are topology 4's, and the links to the gNB topology 1's, with the shifts of
-the UL band.
+As in the other rooms, the gains bring each signal to the level Amber's own Reader would give it,
+and the links between the cell and the A-IoT nodes come from where they are. The links to the Tags
+are topology 4's, and the links to the gNB topology 1's, with the shifts of the UL band.
 
 | Link | Gain | Shift | Why |
 |:-----|-----:|------:|:----|
-| ue → tagN | +19.13 dB | −0.18 MHz | UL PRB 13 at each Tag's DC, the R2D's "on" chips at 8192 counts, as in topology 4 |
+| ue → tagN | +17.2 to +21.0 dB | −0.18 MHz | UL PRB 13 at each Tag's DC: the R2D's "on" chips at 8192 counts, as in topology 4, changed by what the UE's 23 dBm and its place give against the base station's carrier (InH-Office); at the Tags, −29 to −26 dBm, within 2 dB of the carrier and over their −34 dBm sensitivity |
 | cw → tagN | 0 dB | +0.90 MHz | the carrier at 8192 counts, at UL PRB 18: 0.9 MHz above the R2D, as in the UL band |
 | tagN → gnb | 0 dB | +0.18 MHz | back to the UL band: the carrier's reflection at UL PRB 18's centre, the D2R around it in PRBs 15 to 21; the link passes only those PRBs (`pass_Hz`, `pass_width_Hz`) |
 | cw → gnb | −12.89 dB | +1.08 MHz | the carrier at 1858 counts in UL PRB 18: the leak Amber's Reader has of its own carrier, as in the topology 1 CW room |
 | gnb → cw | 0 dB | 0 | the CW node hears the gNB and ignores it: the hub needs every node to hear someone |
 | gnb noise | 1 count rms | | the receiver noise of Amber's Reader |
+| ue → gnb | +20.72 dB | 0 | the UE's UL from where it is, in the scale of the gNB's D2R receiver: UMa, through the wall of the UE's room |
+
+The base station, where the gNB and the CW node stand, sends 20 dBm a sector here, not the macro's
+46 dBm: the Tags make out the R2D only when it is about as strong as the carrier, and the UE's
+23 dBm cannot match a macro's carrier at any place. At 46 dBm the R2D reached the Tags 24 to 28 dB
+under the carrier and no Tag answered.
 
 Here the Tags' baseband holds the UL band, as a real Tag next to the UE would, so the carrier is
 0.9 MHz from the R2D as on the air, and the gNB hears the D2R where it is. Only the reflection of

@@ -10,11 +10,14 @@ Tags and the network, and sends what it reads to the gNB over its own 5G user pl
 
 ```toml
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "ue"           # the UE sends the R2D
 d2r = "ue"           # and receives the D2R
 relay = true         # and sends what it hears to the gNB
 cw = "cw-node-ul"    # a CW node sends the carrier, in the UL band
+[network.gnb]
+x = 300.0            # m from the base station, where the Tags are; the UE, the Reader, stands there
+y = 0.0
 ```
 
 and `amber-compose` writes the other files from it. The carrier is case 2-4 of the study, "CW is

@@ -10,10 +10,13 @@ and the gNB only runs the 5G cell. Its [scenario.toml](scenario.toml) is the
 
 ```toml
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "ue"           # the UE sends the R2D
 d2r = "ue"           # and receives the D2R
 cw = "cw-node-ul"    # a CW node sends the carrier, in the UL band
+[network.gnb]
+x = 300.0            # m from the base station, where the Tags are; the UE, the Reader, stands there
+y = 0.0
 ```
 
 (no `relay`: the Tags' data stays in the UE), and `amber-compose` writes the other files from it.
@@ -53,6 +56,9 @@ As in topology 1, the gains bring each signal to the level Amber's own Reader wo
 | tagN → ue | 0 dB | +1.98 MHz | the carrier's reflection at 2.88 MHz, the centre of the D2R's DL PRBs 25 to 31; the link passes only those PRBs (`pass_Hz`, `pass_width_Hz`) |
 | cw → ue | −12.89 dB | +2.88 MHz | the carrier at 1858 counts in the D2R's PRBs: the leak Amber's Reader has of its own carrier, as in the topology 1 CW room |
 | ue → cw | 0 dB | 0 | the CW node hears the UE and ignores it: the hub needs every node to hear someone |
+| gnb → ue | +32.48 dB | 0 | the gNB's DL from where it is, in the scale of the UE's D2R receiver (thermal noise at 1 count): UMa, through the wall of the UE's room |
+| cw → gnb | −36.83 dB | +1.08 MHz | the CW node's carrier at the gNB, from the base station: in UL PRB 18, which the gNB leaves free |
+| tagN → gnb | −82.4 to −77.2 dB | +0.18 MHz | each Tag's reflection at the gNB, from where it is, in UL PRBs 15 to 21 only |
 | ue noise | 1 count rms | | the receiver noise of Amber's Reader |
 
 **Why the guard band.** The room's UE has one receiver, in its DL band, where a real UE would need a

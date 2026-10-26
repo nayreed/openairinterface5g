@@ -19,7 +19,7 @@ name: oai-amber image
 #   rooms      each room in ci-scripts/yaml_files/5g_rfsimulator_aiot* with those three images
 #              (docker/scripts/aiot_check_room.sh)
 #   machines   rooms t1 and t2 split over a gNB machine and a device machine, with the hub on the
-#              gNB's or on a third ([network.hosts]), as compose projects on one runner
+#              gNB's or on a third (the host keys of [network]), as compose projects on one runner
 #   publish    on aiot-rfsim, once the rooms pass: oai-amber as :<commit> and :latest, and the gNB
 #              and UE the rooms ran with as :latest
 #
@@ -194,7 +194,7 @@ jobs:
           path: ${{ runner.temp }}/room
           retention-days: 14
 
-  # Rooms split over machines, as [network.hosts] places them: the gNB's and the devices', with
+  # Rooms split over machines, as the host keys of [network]'s node tables place them: the gNB's and the devices', with
   # the hub on the gNB's or on a third. The machines are compose projects on this runner, which
   # talk to the hub at the runner's own address, through its published ports, as they would over
   # a network; aiot_check_room.sh copies the gNB's radio configuration to the UE's machine and runs
@@ -238,15 +238,21 @@ jobs:
           [ -n "$addr" ] || { echo "no address on the default route" >&2; exit 1; }
           gnb=$addr
           [ "$HUB" = third ] && gnb=gnb-host
-          {
-            echo
-            echo "[network.hosts]"
-            echo "hub = \"$addr\""
-            echo "gnb = \"$gnb\""
-            echo "ue = \"device-host\""
-            echo "tags = \"device-host\""
-            if grep -q '^cw = "cw-node' "$room/scenario.toml"; then echo "cw = \"device-host\""; fi
-          } >> "$room/scenario.toml"
+          # host = in a node's table of [network], under its header, or in a new table at the end
+          place() {
+            if grep -qxF "$1" "$room/scenario.toml"; then
+              awk -v head="$1" -v line="host = \"$2\"" '{ print } $0 == head { print line }' \
+                "$room/scenario.toml" > "$room/placed.toml"
+              mv "$room/placed.toml" "$room/scenario.toml"
+            else
+              printf '\n%s\nhost = "%s"\n' "$1" "$2" >> "$room/scenario.toml"
+            fi
+          }
+          place "[network.hub]" "$addr"
+          place "[network.gnb]" "$gnb"
+          place "[[network.ue]]" device-host
+          place "[network.tags]" device-host
+          if grep -q '^cw = "cw-node' "$room/scenario.toml"; then place "[network.cw_node]" device-host; fi
           docker run --rm --user "$(id -u):$(id -g)" -v "$room:/room" "$AMBER_IMG" \
             amber-compose /room/scenario.toml /room
           ls "$room"

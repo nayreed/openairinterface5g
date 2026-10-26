@@ -6,12 +6,12 @@
 
 This folder puts a 5G cell and a 3GPP Rel-19 Ambient IoT (A-IoT) network in one shared air. One file
 describes it, [scenario.toml](scenario.toml): an Amber scenario whose `[network]` table names the 5G
-cell (`cell = "n28-25prb"`). `amber-compose` writes every other file of the folder from it (see
-[Another scenario](#another-scenario-any-number-of-tags)):
+cell (`cell = "n8-25prb"`) and where its gNB and its UE are. `amber-compose` writes every other
+file of the folder from it (see [Another scenario](#another-scenario-any-number-of-tags)):
 
-* `oai-gnb` and `oai-nr-ue`: a 25-PRB, 15 kHz FDD cell in band n28, in `--do-ra --noS1` mode
+* `oai-gnb` and `oai-nr-ue`: a 25-PRB, 15 kHz FDD cell in band n8, in `--do-ra --noS1` mode
   ([runmodem-nrue.md](../../../doc/runmodem-nrue.md)), from
-  [gnb.band28.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf) and
+  [gnb.band8.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band8.u0.25prb.rfsim.dora.conf) and
   [nrue.uicc.conf](../../conf_files/nrue.uicc.conf), which the compose file mounts from `../../conf_files`;
 * `amber-reader` and one `amber-tag<id>` per Tag: an A-IoT Reader and its devices running the
   scenario ([openair2/AMBER](../../../openair2/AMBER/README.md)); as checked in, the four Tags of
@@ -26,7 +26,11 @@ The folder is self-contained: copy it anywhere and run it.
 
 **One sample rate.** A-IoT runs at 5.76 Msps (38.291: a 384-point FFT at 15 kHz). With `-E`
 (three-quarter sampling) a 25-PRB, 15 kHz cell samples at 5.76 Msps too, so one hub carries both.
-n28 is one of the A-IoT operating bands (38.191 Table 5.2-1).
+n8 is one of the A-IoT operating bands (38.191 Table 5.2-1, with n5 and n28), and the band the
+A-IoT studies take near 900 MHz. The cell's DL point A is 932.4 MHz (NR-ARFCN 186480), its SSB at
+934.95 MHz (GSCN 2337), and its UL 45 MHz below. A `n28-25prb` cell (DL point A 777.6 MHz, from
+[gnb.band28.u0.25prb.rfsim.dora.conf](../../conf_files/gnb.band28.u0.25prb.rfsim.dora.conf)) has
+the same layout.
 
 **Room in the 5G carrier.** The gNB leaves PRBs free for the A-IoT carrier:
 
@@ -40,8 +44,39 @@ UL. Both shifts are multiples of 15 kHz, so the A-IoT carrier sits on a 5G subca
 
 **Links.** The Reader and its Tags hear each other at 0 dB: Amber applies its own path loss. The
 cross-links between the two systems have a gain and a frequency shift each (`links` in the hub
-configuration). Their gains come from the levels each node sends, measured in this room, and the
-interference-to-signal ratio (I/S) chosen at each receiver:
+configuration), and their gains come from where the scenario places the nodes. The gNB and the UE
+each have a table in `[network]`; the base station (`[[base_station]]`) and the Tags are Amber's:
+
+```toml
+[network.gnb]
+x = 300.0             # m; required, as is y
+y = 0.0
+# height = 25.0, power_dbm = 46.0, antenna_gain_dbi = 15.0: TR 38.769 Table 6.6.2.2-1
+[[network.ue]]        # one UE yet
+x = 50.0
+y = 80.0
+# height = 1.5, power_dbm = 23.0, antenna_gain_dbi = 0.0, indoor = false
+```
+
+In a topology room the node that is the A-IoT Reader (the gNB in topologies 1 and 3, the UE in 2
+and 4) stands at the base station, and indoors, as the study's Reader is: its table takes no place,
+and `amber-compose` refuses one. Every other 5G node must have one.
+
+Amber's `amber.coexist` gives each pair the TR 38.901 model of TR 38.769 Table 6.6.2.1-1 (gNB and
+UE: UMa; outdoor UE and Reader or Tag: UMi with the high O2I loss; indoor UE and Tag: InH-Office;
+indoor UE and Reader: InF-DH; the gNB and the A-IoT nodes, which the table leaves out: UMa with the
+O2I loss), with a minimum coupling loss of 70 dB to the gNB and the scenario's `[radio] los`. It
+leaves out the shadow fading and the 0.5 dB per indoor metre. The base station and its Tags keep
+Amber's own model, and a CW node at the base station reaches the other nodes as the node that
+stands there does. Each received power then becomes a gain in the receiver's own scale:
+
+| Receiver | Its scale |
+|:---------|:----------|
+| the D2R receiver (here the Reader) | its thermal noise at one count, as Amber's Reader has it |
+| a 5G node that is not | its wanted 5G signal at the level it is sent (the 5G link stays at 0 dB) |
+| a Tag | Amber's carrier at 8192 counts |
+
+with each node sending at the level measured in this room:
 
 | Node sends | Level |
 |:-----------|:------|
@@ -50,42 +85,10 @@ interference-to-signal ratio (I/S) chosen at each receiver:
 | Reader, carrier and R2D | 7466 counts rms (−13 dBFS); the R2D sidebands are within ±146 kHz |
 | Tag, D2R at the Reader | 568 counts rms while on; Amber puts the Reader's thermal noise at one count |
 
-| Link | The receiver hears | I/S | Gain |
-|:-----|:-------------------|----:|-----:|
-| reader → ue | the Reader in DL PRBs 0 to 2 | +10 dB over the 5G DL | 20 log10(166 √10 / 7466) = −23 dB |
-| gnb → tagN | the 5G DL | −40 dB under the Reader's carrier at the Tag | 20 log10(8192 × 0.01 / 166) = −6 dB |
-| tagN → gnb | a Tag's D2R in UL PRBs 15 to 21 | −20 dB under the UE's UL | 20 log10(118 × 0.1 / 568) = −34 dB |
-| reader → gnb | the Reader's carrier in UL PRB 18 | +10 dB over the UE's UL | 20 log10(118 √10 / 7466) = −26 dB |
-| ue → reader | the UE's UL | 0 dB, as strong as a Tag's D2R | 20 log10(568 / 118) = +14 dB |
-
-**Gains from positions.** The gains above are chosen levels. Place the gNB and the UE in the
-scenario instead, in the plane of the Tags and the base station, and `amber-compose` computes every
-link between the two systems from the geometry:
-
-```toml
-[network.gnb]
-x = 300.0             # m; required, as is y
-y = 0.0
-# height = 25.0, power_dbm = 46.0, antenna_gain_dbi = 15.0: TR 38.769 Table 6.6.2.2-1
-[network.ue]
-x = 50.0
-y = 80.0
-# height = 1.5, power_dbm = 23.0, antenna_gain_dbi = 0.0, indoor = false
-```
-
-Amber's `amber.coexist` gives each pair the TR 38.901 model of TR 38.769 Table 6.6.2.1-1 (gNB and
-UE: UMa; outdoor UE and Reader or Tag: UMi with the high O2I loss; indoor UE and Tag: InH-Office;
-indoor UE and Reader: InF-DH; the gNB and the A-IoT nodes, which the table leaves out: UMa with the
-O2I loss), with a minimum coupling loss of 70 dB to the gNB and the scenario's `[radio] los`. It
-leaves out the shadow fading and the 0.5 dB per indoor metre. The Reader and its Tags keep Amber's
-own model. Each received power then becomes a gain in the receiver's own scale: the levels in the
-first table stand for the gNB's, the UE's and the Reader's powers, the 5G receivers take their wanted
-signal (the 5G link stays at 0 dB, the RFsimulator adds no noise), a Tag takes Amber's carrier at
-8192 counts, and the Reader its thermal noise at one count. With the gNB at (300, 0) and the UE at
-(50, 80) in this room, for example, the Reader reaches the UE 10 dB under the 5G DL, and the 5G DL
-reaches each Tag 43 to 47 dB under the Reader's carrier. `amber-compose` refuses positions whose
-gains would bring a receiver over −6 dBFS. Only this room, with a standalone Reader, takes positions
-yet.
+With the gNB at (300, 0) and the UE at (50, 80), as checked in, the Reader reaches the UE 10 dB
+under the 5G DL, and the 5G DL reaches each Tag 42 to 47 dB under the Reader's carrier.
+`amber-compose` refuses places whose gains would bring a receiver over −6 dBFS, and an R2D
+frequency (`[radio] freq_hz`) other than the cell's: here DL PRB 1, 932.67 MHz.
 
 **PRACH detection.** The RFsimulator adds no noise, so the gNB's PRACH detector measures almost no
 noise floor, and the A-IoT signals in the UL band reach 18 to 23 dB in it. With OAI's default
@@ -93,8 +96,9 @@ threshold of 15 dB they fake preambles; a fake one on the UE's dedicated preambl
 random access before the UE has sent anything. The gNB runs with
 `--L1s.[0].prach_dtx_threshold 300` (30 dB); the UE's preamble arrives at 54 dB.
 
-Every receiver's sum stays far below 16-bit full scale. To try other levels, edit the gains in
-`rfsim_hub.conf` and restart the containers.
+Every receiver's sum stays far below 16-bit full scale. To try other levels, move the nodes
+in `scenario.toml` and write the folder again (see
+[Another scenario](#another-scenario-any-number-of-tags)).
 
 ## Build the images
 
@@ -180,10 +184,15 @@ docker run --rm -v "$PWD/../..:/ci" oai-amber:latest amber-compose /ci/yaml_file
 `docker-compose.yaml` and `rfsim_hub.conf`, and the compose file mounts the cell's files from
 `../../conf_files`. In a folder outside this repository, leave `--cells-dir` out: `amber-compose`
 then copies them in, as `gnb.conf` and `nr-ue.conf`. Either way there is one container and
-one hub node per Tag, with the same gains on every Tag's links. The containers see this folder as
-`/room`. Amber's 12-Tag `gen2_q`, for example, is `tests/scenarios/gen2_q.toml` in Amber with
-`[network]` and `cell = "n28-25prb"` added. The room's network has addresses for 121 Tags, and each
-Tag is a container of its own. `git checkout -- .` brings back the checked-in room.
+one hub node per Tag, each Tag's links with the gains of where it is. The containers see this
+folder as `/room`. Amber's 12-Tag `gen2_q`, for example, is `tests/scenarios/gen2_q.toml` in Amber
+with this room's `[network]` tables and `freq_hz = 932.67e6`. The room's network has addresses for
+121 Tags, and each Tag is a container of its own. `git checkout -- .` brings back the checked-in
+room.
+
+Add `--check` to the same command to write nothing and only compare: it shows how the folder's files
+differ from what the scenario gives, and fails if any does. The `oai-amber` image build runs it on
+every checked-in room.
 
 `[network]` also names who sends R2D, who receives D2R and who sends the carrier: the four
 topologies of the Rel-19 study. As checked in, a standalone Reader does all three. With
@@ -203,21 +212,26 @@ other carriers are not built yet, and `amber-compose` refuses those scenarios wi
 
 ### On several machines
 
-Every machine pulls the same three images and runs only its own part of the room. Add a
-`[network.hosts]` table to the scenario that says where each node runs, by the machine's address
-or host name:
+Every machine pulls the same three images and runs only its own part of the room. Give each node's
+table in `[network]` the machine it runs on (`host`), by the machine's address or host name:
 
 ```toml
-[network.hosts]
-hub = "192.0.2.3"     # required: the address the other machines reach the hub at
-gnb = "192.0.2.1"     # the gNB, and amber.sink in topology 2
-ue = "192.0.2.2"
-tags = "192.0.2.2"    # every Tag
-cw = "192.0.2.2"      # the CW node, when the scenario has one
-# reader = ...        # the standalone Reader, when the scenario has one
+[network.hub]
+host = "192.0.2.3"    # required: the address the other machines reach the hub at
+[network.gnb]
+host = "192.0.2.1"    # the gNB, and amber.sink in topology 2
+x = 300.0
+y = 0.0
+[[network.ue]]
+host = "192.0.2.2"
+x = 50.0
+y = 80.0
+[network.tags]
+host = "192.0.2.2"    # every Tag
+# [network.cw_node] the CW node, and [network.reader] the standalone Reader, when the room has one
 ```
 
-A node it does not name runs with the hub. `amber-compose` then writes one
+A node without a host runs with the hub. `amber-compose` then writes one
 `docker-compose.<machine>.yaml` per machine instead of `docker-compose.yaml`, and the same
 `rfsim_hub.conf`. The hub's machine keeps the room's network and publishes the ports of the nodes
 that run elsewhere, which connect to the hub's address. Only the hub's address is dialled: the

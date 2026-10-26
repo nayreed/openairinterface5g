@@ -12,10 +12,13 @@ room's, with
 
 ```toml
 [network]
-cell = "n28-25prb"
+cell = "n8-25prb"
 r2d = "gnb"          # the gNB sends the R2D
 d2r = "gnb"          # and receives the D2R
 cw = "cw-node-ul"    # a CW node sends the carrier, in the UL band
+[[network.ue]]
+x = 50.0             # m from the base station, where the Tags are; the gNB, the Reader, stands there
+y = 80.0
 ```
 
 and `amber-compose` writes the other files from it. The containers are `rfsim-hub`, `oai-gnb`,
@@ -43,13 +46,14 @@ As in topology 1, the gains bring each signal to the level Amber's own Reader wo
 | tagN → gnb | 0 dB | +1.98 MHz | the carrier's reflection at UL PRB 18's centre (+1.08 MHz), the D2R around it in PRBs 15 to 21; the link passes only those PRBs, as in [topology 1](../5g_rfsimulator_aiot_t1/README.md#levels) |
 | cw → gnb | −12.89 dB | +1.08 MHz | the carrier at 1858 counts in UL PRB 18: the leak Amber's Reader has of its own carrier (`cw_leak_dbm`, −38 dBm as 38.194 REFSENS assumes) over its 1-count noise |
 | gnb → cw | 0 dB | 0 | the CW node hears the gNB and ignores it: the hub needs every node to hear someone |
+| ue → gnb | +25.91 dB | 0 | the UE's UL from where it is, in the scale of the gNB's D2R receiver (thermal noise at 1 count): TR 38.769's UMa between the UE and the base station |
 | gnb noise | 1 count rms | | the receiver noise of Amber's Reader, as in topology 1 |
 
 **Why −0.90 MHz.** A Tag's 5.76 MHz baseband holds the gNB's DL around DL PRB 1, and cannot also
 hold the UL band 45 MHz away. So the carrier sits 0.90 MHz under the Tag's DC instead. The Tag's
 envelope detector makes the same of it: a steady level under the R2D, plus a beat with the R2D near
-0.9 MHz that each chip's average removes. In band n8 the beat would be at 45 MHz, where the Tag's
-low-pass filter removes it.
+0.9 MHz that each chip's average removes. On the air the beat is at 45 MHz, where the Tag's low-pass
+filter removes it.
 
 **Why +1.98 MHz to the gNB.** The Tag reflects everything it hears. The shift puts the carrier's
 reflection at UL PRB 18's centre, and puts the gap between the gNB's DL PRBs 24 (wrapped round the
